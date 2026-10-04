@@ -189,3 +189,11 @@ class AgentMessage:
     """Typed source identity — the durable sender (human / wechat / subagent
     / heartbeat / a2a / system) that drives display and persistence.  Always
     set by producers; defaults to human for convenience."""
+
+    context_seed: list[dict] | None = None
+    """The parent's conversation as it stood when this task was sent — set by
+    the local-subagent send path only, and consumed by the worker's history
+    store, which seeds one task's history from it.  It rides the message
+    because it is per task: the worker's reader can post several tasks before
+    the first is processed, so a value held on the process would seed whichever
+    task happened to be created last.  Every other channel leaves it None."""

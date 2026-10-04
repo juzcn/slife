@@ -93,7 +93,6 @@ class TestListSubagentsTool:
         mock_proc.pid = 12345
         mock_proc.is_ready = True
         mock_proc.is_running = True
-        mock_proc.context_source = "cloned"
         mock_proc.is_busy = True
         mock_proc.queued = 2
         mock_proc.pending_async_count = 1
@@ -108,7 +107,6 @@ class TestListSubagentsTool:
             assert "sub-1" in result
             assert "sub-2" in result
             assert "pid=12345" in result
-            assert "context: cloned" in result
             assert "busy: 2 in flight" in result
             assert "async: 1" in result
 
@@ -152,44 +150,6 @@ class TestSpawnSubagentTool:
             assert "reused" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_a_reused_worker_reports_the_context_it_really_has(self):
-        """spawn() does not re-context a running worker — say what it has.
-
-        Reporting the requested context would be a fact the caller acts on (a
-        "cloned" worker that is in fact clean answers from an empty history).
-        """
-        from slife.agent.message_history import MessageHistory
-        from slife.config import Config, ModelConfig
-        from slife.tools.context import ToolContext
-
-        conv = MessageHistory(system_prompt="SYS")
-        conv.add_user_message("t1")
-        conv.add_assistant_message("r1")
-        mc = ModelConfig(
-            ref="t/m", provider="t", api_model="m", display_name="M",
-            api_key="k", context_window=1000,
-        )
-        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
-
-        mock_mgr = MagicMock()
-        mock_mgr.spawn = AsyncMock(return_value="worker")
-        mock_mgr.spawned_running = MagicMock(return_value=True)
-        existing = MagicMock()
-        existing.context_source = "clean"
-        mock_mgr.get = MagicMock(return_value=existing)
-
-        with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = SpawnSubagentTool()
-            object.__setattr__(tool, "_ctx", ToolContext(message_history=conv, config=cfg))
-            result = await tool.execute(subagent_name="worker", clone_context=True)
-
-        # It asked for a clone; the live worker is clean, and that is what the
-        # caller is told (the request was not applied to it).
-        assert mock_mgr.spawn.call_args.kwargs["context_source"] == "cloned"
-        assert "Context: clean" in result
-        assert "kept from its original spawn" in result
-
-    @pytest.mark.asyncio
     async def test_spawn_requires_name(self):
         """No auto-generated id — subagent_name is required."""
         mock_mgr = MagicMock()
@@ -213,8 +173,8 @@ class TestSpawnSubagentTool:
             assert "Error" in result
 
     @pytest.mark.asyncio
-    async def test_spawn_clone_context_default_false(self):
-        """Spawn defaults to a clean context (no cloned messages)."""
+    async def test_spawn_takes_no_context(self):
+        """A spawn starts a process — the context is the task's, not the spawn's."""
         mock_mgr = MagicMock()
         mock_mgr.spawn = AsyncMock(return_value="sub-3")
 
@@ -222,38 +182,7 @@ class TestSpawnSubagentTool:
             tool = SpawnSubagentTool()
             await tool.execute(subagent_name="worker")
 
-        kwargs = mock_mgr.spawn.call_args.kwargs
-        assert kwargs["context_source"] == "clean"
-        assert kwargs["context_messages"] is None
-
-    @pytest.mark.asyncio
-    async def test_spawn_clone_context_true_clones(self):
-        """clone_context=True passes the parent history messages to spawn."""
-        from slife.agent.message_history import MessageHistory
-        from slife.config import Config, ModelConfig
-        from slife.tools.context import ToolContext
-
-        conv = MessageHistory(system_prompt="SYS")
-        conv.add_user_message("t1")
-        conv.add_assistant_message("r1")
-        mc = ModelConfig(
-            ref="t/m", provider="t", api_model="m", display_name="M",
-            api_key="k", context_window=1000,
-        )
-        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
-
-        mock_mgr = MagicMock()
-        mock_mgr.spawn = AsyncMock(return_value="sub-4")
-        with patch(MANAGER_PATH, return_value=mock_mgr):
-            tool = SpawnSubagentTool()
-            object.__setattr__(tool, "_ctx", ToolContext(message_history=conv, config=cfg))
-            await tool.execute(subagent_name="worker", clone_context=True)
-
-        kwargs = mock_mgr.spawn.call_args.kwargs
-        assert kwargs["context_source"] == "cloned"
-        assert kwargs["context_messages"] is not None
-        roles = [m["role"] for m in kwargs["context_messages"]]
-        assert roles == ["user", "assistant"]
+        assert mock_mgr.spawn.call_args.kwargs == {"name": "worker"}
 
     def test_serialize_cloned_context_drops_system(self):
         """The parent's system message is not serialized."""
@@ -321,6 +250,24 @@ class TestStopSubagentTool:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _tool_with_parent_context(tool):
+    """Give *tool* a live parent context, as the loop does per tool batch."""
+    from slife.agent.message_history import MessageHistory
+    from slife.config import Config, ModelConfig
+    from slife.tools.context import ToolContext
+
+    conv = MessageHistory(system_prompt="PARENT_SYS")
+    conv.add_user_message("t1")
+    conv.add_assistant_message("r1")
+    mc = ModelConfig(
+        ref="t/m", provider="t", api_model="m", display_name="M",
+        api_key="k", context_window=1000,
+    )
+    cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
+    object.__setattr__(tool, "_ctx", ToolContext(message_history=conv, config=cfg))
+    return tool
+
+
 class TestSubagentSendTaskTool:
     @pytest.mark.asyncio
     async def test_missing_params(self):
@@ -345,7 +292,9 @@ class TestSubagentSendTaskTool:
             tool = SubagentSendTaskTool()
             result = await tool.execute(subagent_name="sub-1", task="do X")
         assert result == "done result"
-        mock_mgr.send_task.assert_awaited_once_with("sub-1", "do X", timeout=None)
+        mock_mgr.send_task.assert_awaited_once_with(
+            "sub-1", "do X", timeout=None, seed=None,
+        )
 
     @pytest.mark.asyncio
     async def test_send_timeout_reports_preempted(self):
@@ -396,8 +345,43 @@ class TestSubagentSendTaskTool:
         assert "queued" in result
         assert "converted to async" in result
         assert "rpc-9" in result
-        mock_mgr.send_task_async.assert_awaited_once_with("sub-1", "do X")
+        mock_mgr.send_task_async.assert_awaited_once_with(
+            "sub-1", "do X", seed=None,
+        )
         mock_mgr.send_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_task_carries_the_context_as_it_stands_at_send_time(self):
+        """The parent's live messages ride the task, its system prompt dropped.
+
+        This is the whole point of the refactor: the context is decided when
+        the task is sent, because that is the only moment it is in hand.
+        """
+        mock_mgr = MagicMock()
+        mock_mgr.is_busy = MagicMock(return_value=False)
+        mock_mgr.send_task = AsyncMock(return_value="ok")
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = _tool_with_parent_context(SubagentSendTaskTool())
+            await tool.execute(subagent_name="sub-1", task="do X")
+
+        seed = mock_mgr.send_task.call_args.kwargs["seed"]
+        assert [m["role"] for m in seed] == ["user", "assistant"]
+
+    @pytest.mark.asyncio
+    async def test_a_queued_task_keeps_the_context_of_its_own_send(self):
+        """A task queued behind a busy worker still carries its own snapshot."""
+        mock_mgr = MagicMock()
+        mock_mgr.is_busy = MagicMock(return_value=True)
+        mock_mgr.queued_count = MagicMock(return_value=1)
+        mock_mgr.send_task_async = AsyncMock(return_value="rpc-9")
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = _tool_with_parent_context(SubagentSendTaskTool())
+            await tool.execute(subagent_name="sub-1", task="do X")
+
+        seed = mock_mgr.send_task_async.call_args.kwargs["seed"]
+        assert [m["role"] for m in seed] == ["user", "assistant"]
 
 
 class TestSubagentSendTaskAsyncTool:
@@ -426,7 +410,21 @@ class TestSubagentSendTaskAsyncTool:
         assert "delivered automatically" in result
         assert "subagent_get_task_result" in result  # auto is also pollable
         # mode defaults to "auto" (push).
-        mock_mgr.send_task_async.assert_awaited_once_with("sub-1", "do X", mode="auto")
+        mock_mgr.send_task_async.assert_awaited_once_with(
+            "sub-1", "do X", mode="auto", seed=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_task_carries_the_context_as_it_stands_at_send_time(self):
+        mock_mgr = MagicMock()
+        mock_mgr.send_task_async = AsyncMock(return_value="rpc-1")
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = _tool_with_parent_context(SubagentSendTaskAsyncTool())
+            await tool.execute(subagent_name="sub-1", task="do X")
+
+        seed = mock_mgr.send_task_async.call_args.kwargs["seed"]
+        assert [m["role"] for m in seed] == ["user", "assistant"]
 
     @pytest.mark.asyncio
     async def test_send_async_poll_mode_disables_push(self):
@@ -441,7 +439,9 @@ class TestSubagentSendTaskAsyncTool:
         assert "rpc-2" in result
         assert "Auto-push disabled" in result
         assert "subagent_get_task_result" in result
-        mock_mgr.send_task_async.assert_awaited_once_with("sub-1", "do X", mode="poll")
+        mock_mgr.send_task_async.assert_awaited_once_with(
+            "sub-1", "do X", mode="poll", seed=None,
+        )
 
     @pytest.mark.asyncio
     async def test_send_async_rejects_invalid_mode(self):

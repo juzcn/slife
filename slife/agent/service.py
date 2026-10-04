@@ -314,10 +314,6 @@ class AgentService:
         #: ``tests/test_subagent_parity.py`` holds it to that.
         self.role = role
         self.caps = caps_for(role)
-        #: The parent's cloned history, when the transport delivered one at
-        #: spawn.  A worker's per-task history is seeded from it; the main
-        #: agent never sets it (its context is its own continuity).
-        self.inherited_context: list[dict] | None = None
 
         # Build the shared ToolContext, which carries the config + registry
         # that tools need at runtime.
@@ -388,20 +384,27 @@ class AgentService:
             schedule_provider=self._schedule_pending_provider,
             a2a_stale_provider=self._a2a_stale_provider,
             # The persisted live-context list has ONE owner — the process whose
-            # turns are the thing it describes.  A worker's trim compacts its
-            # own in-memory history and must not evict turns from its parent's
-            # context, so the hook is the grant, not the role.
+            # turns are the thing it describes.  All three writers follow that
+            # one grant: a worker's trim compacts its own in-memory history, and
+            # its rebuild replaces that same in-memory list, so neither may
+            # evict turns from — or publish itself over — its parent's context.
+            # The hook is the grant, not the role.
             drop_context_turns=(
                 self.drop_context_turns if self.caps.turn_persistence else None
             ),
-            set_context_turns=self.set_context_turns,
-            clear_context_turns=self.clear_context_turns,
+            set_context_turns=(
+                self.set_context_turns if self.caps.turn_persistence else None
+            ),
+            clear_context_turns=(
+                self.clear_context_turns if self.caps.turn_persistence else None
+            ),
+            # Reading is not owning: a worker rebuilds over the same shared
+            # turns DB its parent's context was selected from.
             recall_turns=self.recall_turns,
             recall_available=lambda: self.memdb_enabled,
             turns_by_ids=self.turns_by_ids,
-            # A worker's history is one-shot per task, so recall has nothing to
-            # select from — and it would cost a discriminator call per task.
-            # The role decides, not the config.
+            # The role decides, not the config: a worker's per-task context is
+            # seeded from its parent's clone and rebuilt like any other.
             rebuild_message=(
                 self.config.rebuild_message and self.caps.recall
             ),
@@ -645,18 +648,15 @@ class AgentService:
 
         One grant, seen from the other side: the process that persists its
         turns is the one whose context is continuous for the session.  A
-        process that does not gets a fresh one-shot history per task, seeded
-        from the clone its parent sent at spawn — and a worker's system prompt
+        process that does not gets a fresh history per task, seeded from the
+        clone its parent sent *with that task* — and a worker's system prompt
         is the subagent one, so the store is built from the grant rather than
         replaced afterwards.  (The worker's boot used to swap
         ``inbox._histories`` and clear ``_on_turn_complete`` after the service
         had wired itself; the differences belong where the role is known.)
         """
         if not self.caps.turn_persistence:
-            return WorkerHistoryStore(
-                self._role_system_prompt(),
-                context_provider=lambda: self.inherited_context,
-            )
+            return WorkerHistoryStore(self._role_system_prompt())
         return MessageHistoryStore(system_prompt=self._role_system_prompt())
 
     def _role_system_prompt(self) -> str:
@@ -3311,22 +3311,16 @@ class AgentService:
             logger.info("heartbeat_quiet")
             await self._notify_heartbeat("quiet")
 
-    async def fire_schedule_now(self, name: str, due_at: str = "",
-                                clone_context: bool = False) -> str:
+    async def fire_schedule_now(self, name: str, due_at: str = "") -> str:
         """Run a scheduled task immediately (backfill / manual trigger).
 
         Delegates to :func:`slife.agent.schedules.fire_task_now`, which
-        records a run and injects the task's trigger into the inbox.  *due_at*
-        targets an exact run (a missed/failed backfill); omit for a fresh
-        cron-fire run at now.  *clone_context* spawns the worker with the main
-        agent's current conversation, so a task with no stored description
-        still has substance to act on.
+        records a run and dispatches the worker.  *due_at* targets an exact run
+        (a missed/failed backfill); omit for a fresh cron-fire run at now.
         """
         from slife.agent.schedules import fire_task_now
 
-        return await fire_task_now(
-            self, name, due_at, clone_context=clone_context,
-        )
+        return await fire_task_now(self, name, due_at)
 
     async def schedule_wakeup(self, delay_seconds: float, note: str) -> None:
         """Schedule a one-shot ``[Timer]`` wake after *delay_seconds*.

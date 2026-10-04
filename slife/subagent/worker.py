@@ -173,10 +173,10 @@ async def run_worker(argv: list[str] | None = None) -> None:
     # thread calling os.read() instead, which bypasses IOCP and works
     # reliably on pipe handles across all platforms.
     loop = asyncio.get_running_loop()
-    # One stdin protocol line can be the whole cloned parent history (the
-    # "context" message) — far beyond StreamReader's 64 KB default.  Raise
-    # the limit so an honest context is never misread as over-long; an
-    # over-long line beyond even the cap is discarded below, not fatal.
+    # One stdin protocol line can be a whole task plus the clone that travelled
+    # with it — far beyond StreamReader's 64 KB default.  Raise the limit so an
+    # honest context is never misread as over-long; an over-long line beyond
+    # even the cap is discarded below, not fatal.
     reader = asyncio.StreamReader(limit=PROTOCOL_LINE_LIMIT)
 
     def _feed_stdin() -> None:
@@ -250,21 +250,6 @@ async def run_worker(argv: list[str] | None = None) -> None:
             if method == "shutdown":
                 logger.info("subagent_shutdown requested task_count=%d", request_count)
                 break
-            elif method == "context":
-                # Cloned parent context, sent over stdin at spawn time.  It is
-                # the service's field, not this module's: the worker's history
-                # store reads it when a task creates its history.
-                messages = params.get("messages")
-                if isinstance(messages, list):
-                    service.inherited_context = messages
-                    logger.info(
-                        "subagent_context_received messages=%d", len(messages),
-                    )
-                else:
-                    logger.warning(
-                        "subagent_context_bad_shape type=%s",
-                        type(messages).__name__,
-                    )
             elif method == "worker/cancel":
                 # True cancellation: drop it if still queued, or preempt the
                 # running loop (same Esc mechanism as the main agent).
@@ -301,6 +286,15 @@ async def run_worker(argv: list[str] | None = None) -> None:
             elif method == "worker/send":
                 request_count += 1
                 task_text = params.get("task", "")
+                # The clone the parent took when it sent THIS task — it travels
+                # with the task, so a worker's several queued sends each keep
+                # the context their own send saw (see ``context_seed``).
+                seed = params.get("seed")
+                if seed is not None and not isinstance(seed, list):
+                    logger.warning(
+                        "subagent_seed_bad_shape type=%s", type(seed).__name__,
+                    )
+                    seed = None
                 if not task_text:
                     _write(
                         error={"code": -32602, "message": "Invalid params: task required"},
@@ -324,12 +318,13 @@ async def run_worker(argv: list[str] | None = None) -> None:
 
                 # The task text is posted as-is: routing back to the parent is
                 # by correlation_id and the _reply closure, never by the text,
-                # and each task gets a fresh one-shot context (no cross-task
-                # disambiguation needed).
+                # and the clone this task was sent with rides the message (no
+                # cross-task disambiguation needed).
                 await service.inbox.post(AgentMessage(
                     source=_source,
                     content=task_text,
                     correlation_id=str(rpc_id) if rpc_id else "",
+                    context_seed=seed,
                     on_reply=_reply,
                     channel=Channel.subagent(str(_source)),
                 ))

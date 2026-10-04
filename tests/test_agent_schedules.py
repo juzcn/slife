@@ -37,8 +37,8 @@ def test_trigger_text_has_mark_name_and_dispatch_hint():
     assert text.startswith(S.SCHEDULE_MARK + " daily_diary]")
     assert "Write today's diary" in text
     # The dispatch hint shows the tool shape for a fresh run: name known,
-    # due_at omitted (default ""), clone_context left as the judgment slot.
-    assert 'run_schedule_now(name="daily_diary", clone_context=' in text
+    # due_at omitted (default "").
+    assert 'run_schedule_now(name="daily_diary")' in text
     # Dispatch is delegated to the tool — no subagent instructions leak.
     assert "subagent_send_task_async" not in text
     assert "spawn_subagent" not in text
@@ -223,10 +223,6 @@ async def test_fire_task_now_dispatches_directly(monkeypatch):
     manager = MagicMock()
     manager.spawn = AsyncMock(return_value="daily")
     manager.send_task_async = AsyncMock(return_value="rpc-1")
-    # get() is synchronous — it hands back the live process object, whose
-    # context_source is what the dispatch reports (the requested one is not
-    # necessarily the one a reused worker has).
-    manager.get = MagicMock(return_value=MagicMock(context_source="clean"))
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     result = await S.fire_task_now(service, "daily")
@@ -242,10 +238,10 @@ async def test_fire_task_now_dispatches_directly(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fire_task_now_clones_context_when_requested(monkeypatch):
-    """clone_context=True hands `service._tool_ctx`'s history to the worker
-    (cloned one-shot context, minus the system message); run + dispatch are
-    unchanged and the reply notes the clone."""
+async def test_fire_task_now_sends_the_context_with_the_task(monkeypatch):
+    """Every dispatched task carries `service._tool_ctx`'s history — the
+    main agent's context at dispatch time, minus its system message.  A
+    scheduled task is a send like any other, so it gets the same rule."""
     S._SCHEDULE_WORKERS.clear()
     client = AsyncMock()
 
@@ -272,64 +268,19 @@ async def test_fire_task_now_clones_context_when_requested(monkeypatch):
     manager = MagicMock()
     manager.spawn = AsyncMock(return_value="daily")
     manager.send_task_async = AsyncMock(return_value="rpc-1")
-    # get() is synchronous and hands back the live process object, whose
-    # context_source is what the dispatch reports — a fresh spawn got the
-    # clone it asked for.
-    manager.get = MagicMock(return_value=MagicMock(context_source="cloned"))
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
-    result = await S.fire_task_now(service, "daily", clone_context=True)
-    assert "context: cloned" in result
-    manager.spawn.assert_awaited_once_with(
-        name="daily", context_source="cloned",
-        context_messages=[{"role": "user", "content": "u1"},
-                          {"role": "assistant", "content": "a1"}],
-    )
+    await S.fire_task_now(service, "daily")
+    manager.spawn.assert_awaited_once_with(name="daily")
+    seed = manager.send_task_async.call_args.kwargs["seed"]
+    assert seed == [{"role": "user", "content": "u1"},
+                    {"role": "assistant", "content": "a1"}]
 
 
 @pytest.mark.asyncio
-async def test_fire_task_now_reports_the_context_the_worker_really_has(monkeypatch):
-    """A reused worker keeps its own context — the note must not claim the
-    requested one (a "cloned" label on a clean worker is a lie the caller
-    would act on)."""
-    S._SCHEDULE_WORKERS.clear()
-    client = AsyncMock()
-
-    async def fake_call_tool(name, arguments=None):
-        if name == "__scheduled_task_by_name":
-            return ('{"id": 7, "name": "daily", "description": "d", '
-                    '"schedule": "0 9 * * *", "timezone": "", '
-                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
-        if name == "__scheduled_record_run":
-            return "{}"
-        return "null"
-
-    client.call_tool = fake_call_tool
-    ctx = MagicMock()
-    ctx.memfiles_client = client
-    ctx.message_history = MagicMock(
-        messages=[{"role": "user", "content": "u1"}],
-    )
-    service = MagicMock()
-    service._tool_ctx = ctx
-
-    manager = MagicMock()
-    manager.spawn = AsyncMock(return_value="daily")
-    manager.send_task_async = AsyncMock(return_value="rpc-1")
-    manager.get = MagicMock(return_value=MagicMock(context_source="clean"))
-    monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
-
-    result = await S.fire_task_now(service, "daily", clone_context=True)
-
-    assert "context: clean" in result
-    # The spawn was still ASKED for the clone (a fresh worker would get it).
-    assert manager.spawn.call_args.kwargs["context_source"] == "cloned"
-
-
-@pytest.mark.asyncio
-async def test_fire_task_now_clone_falls_back_to_clean(monkeypatch):
-    """clone_context=True with no reachable history degrades to a clean
-    spawn (same contract as spawn_subagent's clone_context fallback)."""
+async def test_fire_task_now_without_a_reachable_context(monkeypatch):
+    """No reachable history seeds nothing — the task still dispatches (a
+    background task must not be refused because the context was not in hand)."""
     S._SCHEDULE_WORKERS.clear()
     client = AsyncMock()
 
@@ -352,15 +303,11 @@ async def test_fire_task_now_clone_falls_back_to_clean(monkeypatch):
     manager = MagicMock()
     manager.spawn = AsyncMock(return_value="daily")
     manager.send_task_async = AsyncMock(return_value="rpc-1")
-    # get() is synchronous — it hands back the live process object, whose
-    # context_source is what the dispatch reports (the requested one is not
-    # necessarily the one a reused worker has).
-    manager.get = MagicMock(return_value=MagicMock(context_source="clean"))
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
-    result = await S.fire_task_now(service, "daily", clone_context=True)
-    assert "context: cloned" not in result
+    await S.fire_task_now(service, "daily")
     manager.spawn.assert_awaited_once_with(name="daily")
+    assert manager.send_task_async.call_args.kwargs["seed"] is None
 
 
 @pytest.mark.asyncio
@@ -419,10 +366,6 @@ async def test_fire_task_now_backfill_transitions_given_due_at(monkeypatch):
     manager = MagicMock()
     manager.spawn = AsyncMock(return_value="daily")
     manager.send_task_async = AsyncMock(return_value="rpc-1")
-    # get() is synchronous — it hands back the live process object, whose
-    # context_source is what the dispatch reports (the requested one is not
-    # necessarily the one a reused worker has).
-    manager.get = MagicMock(return_value=MagicMock(context_source="clean"))
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     due = "2026-08-27T10:55:00+08:00"
@@ -510,10 +453,6 @@ async def test_fire_marks_pending_guard_then_clears_on_dispatch(monkeypatch):
     manager = MagicMock()
     manager.spawn = AsyncMock(return_value="daily")
     manager.send_task_async = AsyncMock(return_value="rpc-1")
-    # get() is synchronous — it hands back the live process object, whose
-    # context_source is what the dispatch reports (the requested one is not
-    # necessarily the one a reused worker has).
-    manager.get = MagicMock(return_value=MagicMock(context_source="clean"))
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     await S.fire_task_now(service, "daily")
@@ -773,7 +712,7 @@ async def test_run_schedule_now_tool_calls_hook():
     object.__setattr__(tool, "_ctx", ctx)
     result = await tool.execute(name="daily")
     assert result == "dispatched"
-    ctx.fire_schedule_now.assert_awaited_once_with("daily", "", clone_context=False)
+    ctx.fire_schedule_now.assert_awaited_once_with("daily", "")
 
 
 @pytest.mark.asyncio
@@ -787,22 +726,7 @@ async def test_run_schedule_now_tool_passes_backfill_due_at():
     due = "2026-08-27T10:55:00+08:00"
     result = await tool.execute(name="daily", due_at=due)
     assert result == "dispatched"
-    ctx.fire_schedule_now.assert_awaited_once_with("daily", due, clone_context=False)
-
-
-@pytest.mark.asyncio
-async def test_run_schedule_now_tool_passes_clone_context():
-    from slife.tools.schedule import RunScheduleNowTool
-
-    tool = RunScheduleNowTool()
-    ctx = MagicMock()
-    ctx.fire_schedule_now = AsyncMock(return_value="dispatched")
-    object.__setattr__(tool, "_ctx", ctx)
-    result = await tool.execute(name="daily", clone_context=True)
-    assert result == "dispatched"
-    ctx.fire_schedule_now.assert_awaited_once_with(
-        "daily", "", clone_context=True,
-    )
+    ctx.fire_schedule_now.assert_awaited_once_with("daily", due)
 
 
 # ── completion reconciliation: run record, not worker narration ─────

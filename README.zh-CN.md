@@ -361,7 +361,7 @@ Embeddings 是 `slife.yaml` 中**一级顶层的 `embeddings` 配置段**（由 
 
 ### 定时任务
 
-让 agent 按计划做事——"每晚 12 点写日记"、"每周五总结本周"——它会注册一个 cron 定时任务（`scheduled_task_set`）。任务名同时也是执行它的 worker 的名字，所以请用简短的 ASCII 标识符。任务触发时，agent 把工作派发给一个以任务名命名的 subagent worker（`run_schedule_now`）而非亲自执行，worker 完成后把结果作为**报告**存入文件柜（`report_save`）并通知你。每次触发都有记录（`scheduled_run_list`），所以你能看到跑了什么、产出了什么（`report_list` / `report_read`）。任务在创建时**必须有描述**——它就是 worker 的指令，因此空任务不可能存在。`run_schedule_now` 接受 `clone_context=True`，在任务依赖你正在讨论的内容时给 worker 一份当前对话的克隆。
+让 agent 按计划做事——"每晚 12 点写日记"、"每周五总结本周"——它会注册一个 cron 定时任务（`scheduled_task_set`）。任务名同时也是执行它的 worker 的名字，所以请用简短的 ASCII 标识符。任务触发时，agent 把工作派发给一个以任务名命名的 subagent worker（`run_schedule_now`）而非亲自执行，worker 完成后把结果作为**报告**存入文件柜（`report_save`）并通知你。每次触发都有记录（`scheduled_run_list`），所以你能看到跑了什么、产出了什么（`report_list` / `report_read`）。任务在创建时**必须有描述**——它就是 worker 的指令，因此空任务不可能存在。派发的任务和任何一次委派一样携带你当前的对话，所以依赖正在讨论的内容的任务可以直接照此写。
 
 任务**只在 Slife 运行时触发**。下次启动时，一次性扫描会结算上一会话留在 `scheduled_run_list` 里的记录：没跑完的记为**未完成（failed）**，Slife 关闭期间到点没做的记为**错过（missed）**。不做任何提示、也不等你的输入——未完成或错过的运行仍可用 `run_schedule_now` 补做（立即触发），或用 `scheduled_run_skip` 关闭。
 
@@ -410,7 +410,7 @@ job 还能驱动 `tools.yaml` 里配置的**任意外部 MCP server**——包�
 A2A 让彼此独立的智能体——同一台机器上或跨机器——互相发现、委派任务、推送结果。它说的是官方 **A2A-over-MQTT** profile，因此 Slife agent 能与任何其它实现互操作：
 
 - **网格工具**（统一 `a2a_` 前缀）：`a2a_send_message`（异步——立即返回 task_id，结果稍后到达）、`a2a_cancel_task`、`a2a_list_agents`、`a2a_broadcast`（发后即忘的事件）。入站的 peer 流量统一以一个 `[A2A:…]` 信封到达模型（`from` 是发送方 peer——永远不是接收者自己）；TUI 显示 `A2A(<peer>)>`。`a2a` 插件只在 MQTT broker 可达时启动。
-- **Subagent 是本地 worker，不是 A2A peer**：`spawn_subagent` / `subagent_send_task` / `subagent_get_task_result` / ……创建共享你的插件、一次处理一个任务的 worker（对忙碌 worker 的同步发送会自动转为异步入队）。异步结果自动推送到你的聊天（`mode="auto"`，默认）或只能轮询（`mode="poll"`）。Subagent 绝不清空你的收件箱——所有回复与管理都属于主 agent。
+- **Subagent 是本地 worker，不是 A2A peer**：`spawn_subagent` / `subagent_send_task` / `subagent_get_task_result` / ……创建共享你的插件、一次处理一个任务的 worker（对忙碌 worker 的同步发送会自动转为异步入队）。每个任务都会带上发送那一刻你对话的副本，worker 据此重建自己的上下文——所以上下文无需预先设置，对同一个 worker 委派两次，每个任务拿到的都是它被发出时的情形。异步结果自动推送到你的聊天（`mode="auto"`，默认）或只能轮询（`mode="poll"`）。Subagent 绝不清空你的收件箱——所有回复与管理都属于主 agent。
 
 所有消息——人类输入、微信、MQTT、subagent 结果——都流经单一收件箱队列，逐轮处理。
 

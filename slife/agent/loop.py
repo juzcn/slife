@@ -841,6 +841,27 @@ class AgentLoop:
             messages = messages[1:]
         return MessageHistory.extract_turns(messages)
 
+    @staticmethod
+    def _carried_tail(live: list[dict]) -> list[dict]:
+        """Messages of the trailing turns the store holds no row for.
+
+        A turn carries its rowid as ``_turn_id`` once it is saved, so a live
+        turn without one is a turn the store cannot be asked for again — in a
+        worker, the parent's turn in flight, which its clone ends on.  A
+        rebuild replaces the message list from stored rows, so these come back
+        verbatim rather than being lost (``rebuild_messages``'s *carried*).
+
+        The trailing run, not every unbacked turn: turns are saved in order, so
+        anything unbacked is newer than everything backed — and a rebuild may
+        only re-order what it can re-fetch.
+        """
+        carried: list[dict] = []
+        for turn in reversed(live):
+            if turn.get("turn_id") is not None:
+                break
+            carried = [dict(m) for m in turn["messages"]] + carried
+        return carried
+
     async def _recall_and_rebuild(
         self, history: MessageHistory, user_input: str,
         handler: object | None = None,
@@ -940,9 +961,9 @@ class AgentLoop:
             # nothing added, nothing dropped.  It stands **as it is**:
             # rendering it again from the store would cost a round-trip, the
             # turn's live image blocks and the prompt-cache prefix, to arrive
-            # at the same list.  `len(live) == len(by_id)` is what makes the
-            # skip safe — a turn the store holds no rowid for could not be
-            # re-fetched, so a rebuild would silently lose it.
+            # at the same list.  The rebuild itself is safe with an unbacked
+            # turn (`_carried_tail` carries it), so this is purely the cost of
+            # an identical re-render.
             logger.info("recall_not_needed reason=context_unchanged")
             return False
 
@@ -964,7 +985,11 @@ class AgentLoop:
         # announcing a clear over an already-empty one (a fresh store's first
         # turn) would report a change that did not happen.
         had_turns = len(history.messages) > 1
-        history.rebuild_messages(turns)
+        # The turn in flight is not context: a selection names stored turns,
+        # and a turn the store holds no row for is carried through untouched
+        # rather than silently dropped (a worker's seeded clone ends on its
+        # parent's in-flight turn, which is where the task came from).
+        history.rebuild_messages(turns, carried=self._carried_tail(live))
         # Deliberately NOT resetting the cached usage: `context_tokens_for`
         # reports the previous round's real API usage and returns 0 when there
         # is none (it never presents an estimate as real usage), so clearing it

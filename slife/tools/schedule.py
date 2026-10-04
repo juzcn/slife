@@ -280,20 +280,10 @@ class RunScheduleNowTool(Tool):
                 "omit for a fresh run."
             ),
         },
-        clone_context={
-            "type": "boolean",
-            "default": False,
-            "description": (
-                "Clone the main agent's current conversation into the worker, "
-                "so it knows the live context. Set True when the task depends "
-                "on what we discussed; omit for a self-contained task."
-            ),
-        },
     )
 
     async def execute(
-        self, name: str = "", due_at: str = "", clone_context: bool = False,
-        **kwargs,
+        self, name: str = "", due_at: str = "", **kwargs,
     ) -> str:
         if err := require_params(name=name):
             return err
@@ -304,4 +294,4 @@ class RunScheduleNowTool(Tool):
                 "Error: the scheduler is not available yet — call this after "
                 "the agent service has started."
             )
-        return await fire(name, due_at, clone_context=clone_context)
+        return await fire(name, due_at)

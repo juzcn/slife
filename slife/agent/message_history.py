@@ -572,18 +572,18 @@ class MessageHistory:
     ) -> "MessageHistory":
         """Build a history seeded from an inherited message history.
 
-        Used by subagents with a cloned context: *messages* are the parent
-        agent's history (any system message is dropped), and the
-        subagent's own system prompt is prepended.  Messages are copied so
-        the source history is never mutated.
+        Used by a worker for each task it is sent: *messages* are the parent
+        agent's context (any system message is dropped), and the worker's own
+        system prompt is prepended.  Messages are copied so the source history
+        is never mutated.
 
         The copy gets the guarantee a rebuild and a restore get
         (:meth:`_ensure_turn_consistent`), because of when a snapshot is
-        taken: the parent is *inside* the tool call that spawned this
-        worker, so its last message is the ``assistant(tool_calls=…)``
-        whose results do not exist yet.  Sent as-is, every provider rejects
-        it ("tool_calls must be followed by tool messages") — and a worker
-        fails fast, so it would reject every cloned task.
+        taken: the parent is *inside* the tool call that sent this task, so
+        its last message is the ``assistant(tool_calls=…)`` whose results do
+        not exist yet.  Sent as-is, every provider rejects it ("tool_calls
+        must be followed by tool messages") — and a worker fails fast, so it
+        would reject every cloned task.
         """
         conv = cls(system_prompt=system_prompt)
         for msg in messages:
@@ -596,6 +596,8 @@ class MessageHistory:
     def rebuild_messages(
         self,
         turns: list[dict],
+        *,
+        carried: list[dict] | None = None,
     ) -> int:
         """Replace the context with a rebuild from *turns* (oldest-first).
 
@@ -605,6 +607,15 @@ class MessageHistory:
         turns by :func:`messages_from_turns`, the same builder session restore
         uses.  Sharing that builder is what makes a rebuilt turn render
         identically to a restored one.
+
+        *carried* is the messages of the turn(s) the store holds no row for —
+        a selection is a statement about *stored* turns, so a rebuild must not
+        drop what it cannot re-fetch.  A worker's seeded context is the standing
+        case: its clone ends on the parent's turn in flight, which has no
+        ``_turn_id`` yet, so a rebuild would otherwise lose the very work the
+        task was delegated from.  They are appended after the restored turns
+        (chronology holds: a turn is unbacked only until it is saved, so the
+        unbacked ones are the newest) and then repaired with everything else.
 
         In place, and never by rebinding the object: the loop, the TUI handler
         and ``save_to_memory`` all hold this instance.
@@ -628,7 +639,10 @@ class MessageHistory:
             if self.messages and self.messages[0].get("role") == "system"
             else None
         )
-        self.messages = messages_from_turns(ordered, system_message=sys_msg)
+        built = messages_from_turns(ordered, system_message=sys_msg)
+        if carried:
+            built.extend(dict(m) for m in carried)
+        self.messages = built
         # The one invariant enforcer — a rebuild splices an arbitrary turn set,
         # so it gets the same guarantee on load that a restored history does.
         self._ensure_turn_consistent()

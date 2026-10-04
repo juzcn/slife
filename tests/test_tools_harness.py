@@ -301,8 +301,13 @@ class TestRecallRebuild:
     @pytest.mark.asyncio
     async def test_a_clear_empties_the_context(self):
         """``"clear"`` — the explicit wipe.  Nothing else can do this now: it
-        is a decision in its own right, and it needs no store call to make."""
-        conv = self._history()
+        is a decision in its own right, and it needs no store call to make.
+
+        The fixture carries rowids because a clear is a statement about
+        *stored* turns: a turn the store holds no row for is carried through
+        the rebuild instead (its own test, below).
+        """
+        conv = self._history(with_ids=True)
         persisted: list[list[int]] = []
         cleared: list[bool] = []
         asked: list[tuple] = []
@@ -333,6 +338,39 @@ class TestRecallRebuild:
             "partial selection); the clear tool is the write for this case"
         )
         assert asked == [], "a clear asks the store for nothing"
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_carries_the_turn_the_store_has_no_row_for(self):
+        """A selection is about *stored* turns — a rebuild may not drop the rest.
+
+        The standing case is a worker's seeded context: its clone ends on the
+        parent's turn in flight, which has no ``_turn_id`` (ids are stamped at
+        save), so nothing could re-fetch it.  Losing it would lose exactly the
+        work the task was delegated from.  It rides through the rebuild.
+        """
+        conv = self._history()                    # untracked: the in-flight shape
+        tail = [dict(m) for m in conv.messages[1:]]
+        cleared: list[bool] = []
+
+        async def recall(*_a, **_k):
+            return []
+
+        async def save(ids):                      # pragma: no cover - must not run
+            raise AssertionError("no stored turn is kept, so nothing is written")
+
+        async def clear():
+            cleared.append(True)
+            return True
+
+        loop = self._loop(
+            reply='{"context": "clear"}', recall=recall, set=save, clear=clear,
+        )
+        assert await loop._recall_and_rebuild(conv, "new input") is True
+
+        assert conv.messages[1:] == tail, (
+            "the turns the store holds no row for are carried, not dropped"
+        )
+        assert cleared == [True]
 
     @pytest.mark.asyncio
     async def test_an_empty_recall_adds_nothing_and_wipes_nothing(self):

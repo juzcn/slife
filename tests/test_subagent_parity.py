@@ -32,7 +32,7 @@ from types import SimpleNamespace
 import pytest
 
 from slife.agent.inbox import MessageHistoryStore, WorkerHistoryStore
-from slife.agent.roles import ALL_CAPS, Caps, Role, caps_for
+from slife.agent.roles import ALL_CAPS, WORKER_GRANTS, Caps, Role, caps_for
 from slife.agent.service import AgentService
 from slife.config import EmbeddingsConfig
 from slife.tools.catalog_service import ToolCatalogService
@@ -138,17 +138,22 @@ def test_the_guard_recognises_every_role_spelling():
         )
 
 
-def test_the_worker_is_granted_nothing_by_default():
-    """A worker holds no harness capability — and a NEW one is withheld too.
+def test_the_worker_holds_only_the_declared_grants():
+    """A worker holds no harness capability but the ones granted on purpose —
+    and a NEW one is withheld until it is named here.
 
     ``Caps`` defaults describe the main agent (the full harness); the worker's
-    set is derived from the field list, so adding a capability cannot quietly
-    hand a second owner of some singleton to every worker.  Granting one on
-    purpose means editing this expectation in the same commit as the grant.
+    set is derived from the field list filtered by :data:`WORKER_GRANTS`, so
+    adding a capability cannot quietly hand a second owner of some singleton to
+    every worker.  Granting one on purpose means editing this expectation in the
+    same commit as the grant.
     """
     assert caps_for(Role.MAIN) == Caps()
+    # The grant list is the whole exception, spelled out — a grant that is not
+    # named here is not a grant.
+    assert WORKER_GRANTS == frozenset({"recall"})
     assert caps_for(Role.WORKER) == Caps(
-        **dict.fromkeys(ALL_CAPS, False),
+        **{name: name in WORKER_GRANTS for name in ALL_CAPS},
     )
     # ``ALL_CAPS`` is derived from the fields, so it cannot go stale — this
     # only pins that the derivation is what the worker's set is built from.
@@ -192,8 +197,19 @@ def test_the_two_roles_differ_by_exactly_the_declared_capabilities(sample_config
     # it must not hold the hook that edits the parent's persisted context list.
     assert main.agent_loop.persist_turns is True
     assert worker.agent_loop.persist_turns is False
+    # All three writers of the one persisted list follow that one grant: a
+    # worker rebuilds its own in-memory context and must not publish it over —
+    # or evict turns from — the context its parent is running on.
     assert main.agent_loop.drop_context_turns is not None
     assert worker.agent_loop.drop_context_turns is None
+    assert main.agent_loop.set_context_turns is not None
+    assert worker.agent_loop.set_context_turns is None
+    assert main.agent_loop.clear_context_turns is not None
+    assert worker.agent_loop.clear_context_turns is None
+    # Reading is not owning — the recall half is granted, so a worker selects
+    # over the same shared turns DB its parent's context came from.
+    assert worker.agent_loop.recall_turns is not None
+    assert worker.agent_loop.turns_by_ids is not None
 
     # The hooks the scheduling / cut-in capabilities wire onto the tool ctx.
     assert main._tool_ctx.fire_schedule_now is not None
@@ -212,14 +228,15 @@ def test_the_two_roles_differ_by_exactly_the_declared_capabilities(sample_config
     assert main_tools == worker_tools != set()
 
 
-def test_a_worker_never_rebuilds_its_context(sample_config):
-    """The per-turn rebuild is the main agent's policy — a worker runs it off.
+def test_a_worker_rebuilds_its_context_like_the_main_agent(sample_config):
+    """Both roles run the per-turn rebuild — the worker's context is selected.
 
-    A worker's history is one-shot per task, so recall has nothing to select
-    from and the discriminator call would be a model round-trip per task spent
-    deciding nothing.  It has to hold whatever the config says: the yaml's
-    ``rebuild_message`` is a *policy* switch, and the grant (``recall``) is what
-    decides who holds it.
+    A worker's history is seeded per task from its parent's clone, and the turn
+    then runs on the same selection machinery the main agent's does (``recall``
+    is the grant): the parts of the clone that are stored turns can be kept or
+    dropped, and memory can be recalled over the same shared turns DB.  It
+    still holds whatever the config says: the yaml's ``rebuild_message`` is a
+    *policy* switch, and the grant is what decides who holds it.
     """
     import dataclasses
 
@@ -227,7 +244,10 @@ def test_a_worker_never_rebuilds_its_context(sample_config):
     main = AgentService(cfg, role=Role.MAIN)
     worker = AgentService(cfg, role=Role.WORKER)
     assert main.agent_loop.rebuild_message is True
-    assert worker.agent_loop.rebuild_message is False
+    assert worker.agent_loop.rebuild_message is True
+    # …and with the policy switched off, off for both.
+    off = dataclasses.replace(sample_config, rebuild_message=False)
+    assert AgentService(off, role=Role.WORKER).agent_loop.rebuild_message is False
 
 
 def test_a_worker_never_cuts_into_its_own_turn(sample_config):
@@ -247,13 +267,13 @@ def test_a_worker_never_cuts_into_its_own_turn(sample_config):
     assert worker.agent_loop.cutin_enabled is False
 
 
-def test_a_worker_history_is_one_shot_and_seeded_by_the_clone(sample_config):
-    """A worker's context is per-task: the clone seeds it, nothing carries over.
+def test_a_worker_history_is_one_shot_and_seeded_per_task(sample_config):
+    """A worker's context is per-task: the task's own clone seeds it.
 
-    The parent's history is sent once, at spawn; each task then runs on its own
-    history so a subagent cannot accumulate context across tasks (``DESIGN.md``
-    §6.2).  Turn persistence is off for the same reason — the result reaches the
-    parent's history as the parent's own turn.
+    The parent's context is taken when the task is *sent* and rides that task,
+    so no task can inherit another's context or accumulate across tasks
+    (``DESIGN.md`` §6.2).  Turn persistence is off for the same reason — the
+    result reaches the parent's history as the parent's own turn.
     """
     _main, worker = _services(sample_config)
     from slife.a2a.identity import AgentName
@@ -263,20 +283,23 @@ def test_a_worker_history_is_one_shot_and_seeded_by_the_clone(sample_config):
     assert first.messages == [] or first.messages[0]["role"] == "system"
     assert len(first.messages) <= 1                       # empty but for the prompt
 
-    worker.inherited_context = [
+    second = store.get_or_create(AgentName("worker"), seed=[
         {"role": "system", "content": "ignored"},
         {"role": "user", "content": "earlier"},
-    ]
-    second = store.get_or_create(AgentName("worker"))
+    ])
     # The clone is seeded, then repaired to a consistent history: it ends on a
     # user message, so a closing assistant line is added (the same invariant
     # restore and a rebuild enforce — a provider rejects a history whose roles
     # do not alternate).
     assert [m["role"] for m in second.messages] == ["system", "user", "assistant"]
     assert second.messages[1]["content"] == "earlier"
-    # A later task gets its own history, not the one already handed out.
-    third = store.get_or_create(AgentName("worker"))
+    # A later task gets its own history, seeded from ITS clone — never the one
+    # already handed out.
+    third = store.get_or_create(AgentName("worker"), seed=[
+        {"role": "user", "content": "another task's context"},
+    ])
     assert third is not second
+    assert third.messages[1]["content"] == "another task's context"
 
 
 @pytest.mark.asyncio

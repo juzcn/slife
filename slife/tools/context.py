@@ -110,10 +110,9 @@ class ToolContext:
     rare).  Populated by AgentService."""
 
     fire_schedule_now: Callable[..., Awaitable[str]] | None = None
-    """Run a scheduled task immediately — ``(name, due_at="", clone_context=False)``.
+    """Run a scheduled task immediately — ``(name, due_at="")``.
     Populated by AgentService (main agent only); used by the ``run_schedule_now``
-    tool to backfill a failed/missed run or fire a task now.  *clone_context*
-    hands the worker the main agent's current conversation."""
+    tool to backfill a failed/missed run or fire a task now."""
 
     schedule_wakeup: Callable[[float, str], Awaitable[None]] | None = None
     """Schedule a one-shot ``[Timer]`` wake after *delay_seconds*.

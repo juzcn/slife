@@ -525,7 +525,7 @@ class TestSubagentManagerSendTask:
         assert result == "task result"
         # None passes through — the worker resolves the registry default
         # (work.task_budget) at call time.
-        mock_proc.send_task.assert_called_once_with("do something", None)
+        mock_proc.send_task.assert_called_once_with("do something", None, seed=None)
 
     @pytest.mark.asyncio
     async def test_send_task_custom_timeout(self):
@@ -536,7 +536,7 @@ class TestSubagentManagerSendTask:
         manager._subagents = {"sub-1": mock_proc}
 
         await manager.send_task("sub-1", "task", timeout=60)  # noqa-timeout
-        mock_proc.send_task.assert_called_once_with("task", 60)
+        mock_proc.send_task.assert_called_once_with("task", 60, seed=None)
 
     @pytest.mark.asyncio
     async def test_send_task_unknown_agent(self):
@@ -628,6 +628,43 @@ class TestSendRequestLifecycle:
         # The abandoned task was preempted in the child (a serial worker must
         # not be wedged by it).
         assert [m["method"] for m in written] == ["worker/send", "worker/cancel"]
+
+    @pytest.mark.asyncio
+    async def test_the_task_carries_its_context_on_the_wire(self):
+        """The clone rides the task's own request, not the process.
+
+        The worker's reader is live while it works, so several sends can be in
+        flight at once — a clone held on the process would seed whichever task
+        happened to build its history last.
+        """
+        proc = _running_proc()
+        written: list[dict] = []
+        proc._process.stdin.write = lambda b: written.append(json.loads(b))
+        seed = [{"role": "user", "content": "earlier"}]
+
+        task = asyncio.create_task(proc.send_task("do X", seed=seed))
+        await _spin_until(lambda: bool(written))
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert written[0]["method"] == "worker/send"
+        assert written[0]["params"]["seed"] == seed
+
+    @pytest.mark.asyncio
+    async def test_a_send_without_a_context_omits_the_field(self):
+        """No context in hand is not the same as an empty one."""
+        proc = _running_proc()
+        written: list[dict] = []
+        proc._process.stdin.write = lambda b: written.append(json.loads(b))
+
+        task = asyncio.create_task(proc.send_task("do X"))
+        await _spin_until(lambda: bool(written))
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert "seed" not in written[0]["params"]
 
     @pytest.mark.asyncio
     async def test_a_cancelled_wait_preempts_the_child_too(self):

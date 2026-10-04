@@ -229,22 +229,18 @@ class TestBuild:
         assert "no personality" in result
         assert "peers see testbot as the sender" in result
 
-    def test_subagent_context_clean_by_default(self, cfg, monkeypatch):
-        """Context defaults to clean when SLIFE_SUBAGENT_CONTEXT unset."""
-        from slife.agent.system_prompt import build
-        monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
-        monkeypatch.delenv("SLIFE_SUBAGENT_CONTEXT", raising=False)
-        result = build(cfg, is_subagent=True)
-        assert "Context: clean" in result
-        assert "cloned from" not in result
+    def test_subagent_context_is_the_task_s(self, cfg, monkeypatch):
+        """The worker is told where its context comes from — the task.
 
-    def test_subagent_context_cloned(self, cfg, monkeypatch):
-        """SLIFE_SUBAGENT_CONTEXT=cloned renders the cloned-context identity."""
+        The context is per task now, so the prompt states the standing rule
+        rather than a per-process choice: nothing about it can differ between
+        two tasks (or two renders of the same worker's prompt).
+        """
         from slife.agent.system_prompt import build
         monkeypatch.setenv("SLIFE_SUBAGENT_NAME", "sub-7")
-        monkeypatch.setenv("SLIFE_SUBAGENT_CONTEXT", "cloned")
         result = build(cfg, is_subagent=True)
-        assert "Context: cloned from" in result
+        assert "arrives with a copy of testbot's conversation as it stood" in result
+        assert "Context: clean" not in result
 
     def test_a2a_section_when_configured(self, cfg):
         """A2A secondary heading visible when a2a is configured."""

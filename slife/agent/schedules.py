@@ -536,8 +536,7 @@ async def schedule_loop(service) -> None:
             logger.debug("schedule_loop_error err=%s", e)
 
 
-async def fire_task_now(service, name: str, due_at: str = "",
-                        clone_context: bool = False) -> str:
+async def fire_task_now(service, name: str, due_at: str = "") -> str:
     """Trigger a scheduled task now — the single dispatch path.
 
     Used by both the cron trigger (the agent calls ``run_schedule_now`` after
@@ -551,11 +550,11 @@ async def fire_task_now(service, name: str, due_at: str = "",
     the exact run via ``report_save(due_at=…)`` so ``pending`` →
     ``ran``.  Works for disabled tasks too (an explicit run is explicit).
 
-    *clone_context* spawns the worker with the main agent's current
-    conversation (``service._tool_ctx.message_history``) as its one-shot
-    history, so a worker whose task has no stored description — or depends on
-    what we discussed — still has real substance to act on.  Degrades to a
-    clean spawn when no history is reachable.
+    The dispatched task carries the main agent's current context
+    (``service._tool_ctx.message_history``) like every other send, so a task
+    with no stored description — or one that depends on what we discussed —
+    still has real substance to act on.  It degrades to an unseeded history
+    when no context is reachable.
     """
     from slife.tools.subagent import _serialize_cloned_context
     from slife.subagent.process import get_manager
@@ -578,22 +577,15 @@ async def fire_task_now(service, name: str, due_at: str = "",
             "Error: the subagent manager is not available yet — call this "
             "after the agent service has started."
         )
-    spawn_kw: dict = {}
-    if clone_context:
-        ctx = getattr(service, "_tool_ctx", None)
-        context_messages = _serialize_cloned_context(ctx) if ctx is not None else None
-        if context_messages:
-            spawn_kw = {
-                "context_source": "cloned",
-                "context_messages": context_messages,
-            }
+    seed = _serialize_cloned_context(getattr(service, "_tool_ctx", None))
     try:
-        await manager.spawn(name=worker, **spawn_kw)
+        await manager.spawn(name=worker)
         rpc_id = await manager.send_task_async(
             worker,
             build_worker_task(worker, task.get("description", ""),
                               due_at=due_iso),
             mode="auto",
+            seed=seed,
         )
     except Exception as e:
         logger.warning("schedule_dispatch_failed task=%s err=%s", name, e)
@@ -604,14 +596,7 @@ async def fire_task_now(service, name: str, due_at: str = "",
 
     _SCHEDULE_WORKERS.add(worker)
     _pending_fires.pop(worker, None)
-    # The context the worker actually has, not the one this dispatch asked for:
-    # a reused worker keeps whatever it was started with (spawn is idempotent
-    # by name), so announcing the request would state a fact that is not true.
-    proc = manager.get(worker)
-    context_note = (
-        f" (context: {proc.context_source})" if proc is not None else ""
-    )
     return (
         f"Scheduled task '{name}' dispatched now to worker "
-        f"'{worker}'{context_note} (task_id: {rpc_id})."
+        f"'{worker}' (task_id: {rpc_id})."
     )

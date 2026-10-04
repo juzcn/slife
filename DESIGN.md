@@ -358,8 +358,9 @@ message posted to the inbox
   again on load: **no orphaned tool calls** (an interrupted turn's call gets a synthetic
   interrupted-result message) and **alternating roles** (a history ending on `user`/`tool` gets a
   closing assistant message). The save, the restore and a subagent's clone all pass through the same
-  repair — the clone needs it *guaranteed* rather than accidental, because its snapshot ends on a
-  tool call whose results do not exist yet (§6.2).
+  repair — the clone needs it *guaranteed* rather than accidental, because it is taken while the
+  parent is inside the tool call that sends the task, so it ends on a tool call whose results do not
+  exist yet (§6.2).
 - **Why a turn stopped early** rides that closing assistant line, standardized as an
   interrupted-with-reason marker. Each layer labels what only it knows: the loop puts its own
   terminal state on the result (cancel, max-iterations), the inbox labels the failure it caught
@@ -644,8 +645,22 @@ answering `None`, not the store answering nothing — an empty selection is an *
 applies it like any other. Nothing was learned about what the turn needs, so a guess is not an
 improvement on what is already there.
 
-**Workers never rebuild** — a worker's history is one-shot per task, so there is nothing to select
-from. The role decides this, not the config.
+**A worker rebuilds the same way** — the role decides this, not the config, and the grant is
+`recall`. A worker's context is seeded per task from its parent's clone (§6.2), and that clone is a
+selection like any other: the turns of it the store holds a row for can be kept or dropped, and
+memory can be recalled over the same shared turn log its parent's context was selected from. What a
+worker does **not** do is *publish* the result: `set_context_turns` / `clear_context_turns` follow
+the `turn_persistence` grant, which a worker does not hold, so its rebuild is in-memory only and the
+persisted live-context list keeps its single owner. Reading is not owning — the store's recall half
+is wired for both roles.
+
+**A rebuild carries what it cannot re-fetch.** A selection names stored turns; the messages of any
+turn the store holds no row for — in a worker, the parent's turn in flight, which its clone ends on —
+are carried through the rebuild verbatim rather than dropped. The unbacked turns are always the
+newest (a turn is stamped with its rowid when it is saved), so the carried messages are restored
+after the selected turns and the chronology holds. The rule is shared, and inert for the main agent
+in the ordinary case; it also closes a hole there, where a save that returned no rowid would leave
+the last turn unstamped and a rebuild would otherwise lose it silently.
 
 ### 2.4 The system prompt
 
@@ -786,13 +801,15 @@ is a new turn. It dies with the process — anything that must survive a restart
 Both roles run the **identical** loop. What differs is the harness around it, and that difference is
 **declared once**, as a table of capabilities: one field per resource or policy, read through a
 single accessor for the role. A capability is a *grant* — the process either owns the resource or
-holds the policy — and the main agent holds every one of them while a worker holds none.
+holds the policy — and the main agent holds every one of them while a worker holds none but the ones
+granted on purpose. There is exactly one such grant today (`recall`, [§2.3](#23-recall--the-context-is-selected));
+it is a table entry rather than an exception to the table.
 
 This is written down rather than spread around because it used to be ~two dozen scattered
 role-condition branches, which made a worker's capability set an *emergent* property of wherever a
 gate happened to be written — so a capability added to the main agent's path could silently never
-reach a worker. Because the worker's set is derived by zeroing **every** field, a newly added
-capability is worker-denied by default. Two guards keep it honest: a static-source gate that fails on
+reach a worker. Because the worker's set is derived by zeroing **every** field and then granting back
+only the names in the explicit grant list, a newly added capability is worker-denied by default. Two guards keep it honest: a static-source gate that fails on
 any role branch outside the table, and a parity test asserting the two roles' observable difference
 is exactly what the table declares.
 
@@ -1506,15 +1523,17 @@ the mesh it sends **as the main agent**.
  │ Inbox ─ one turn per message │             │ a worker service, worker role    │
  │   ▲  subagent auto-push      │             │  inbox ─ worker/send = ONE turn  │
  │   │                          │  JSON-RPC   │  one-shot history per task       │
- │ done-hook ◄──────────────────┼─────────────┤  no TUI · no persistence         │
- │ SubagentProcess (pipes)      │  stdin/out  │  shared plugin clients           │
- └──────────────────────────────┘             └──────────────────────────────────┘
+ │ done-hook ◄──────────────────┼─────────────┤  (seeded by the task's clone,    │
+ │ SubagentProcess (pipes)      │  stdin/out  │   then rebuilt per turn)         │
+ └──────────────────────────────┘             │  no TUI · no persistence         │
+                                              │  shared plugin clients           │
+                                              └──────────────────────────────────┘
 ```
 
-Two agents, **one loop machine**. Both run the identical loop, including the per-turn harness pair
-and the internal trim, driven by the identical inbox. What differs is the harness around it — the
-declared capability table of §2.7, not scattered branches. "Does not run the main agent's harness" is
-a statement about the *service layer*, not the loop.
+Two agents, **one loop machine**. Both run the identical loop, including the per-turn harness pair,
+the per-turn rebuild and the internal trim, driven by the identical inbox. What differs is the
+harness around it — the declared capability table of §2.7, not scattered branches. "Does not run the
+main agent's harness" is a statement about the *service layer*, not the loop.
 
 **A subagent is not a plugin, and not a mesh peer.** A plugin is spawned and owned by the parent,
 speaks MCP over Streamable HTTP on a signalled port, and is watched. A subagent speaks JSON-RPC over
@@ -1527,10 +1546,9 @@ The wire is JSON-RPC 2.0, deliberately not the mesh protocol: the worker is *loc
 | Direction | Purpose |
 |---|---|
 | child → parent | startup readiness — the spawn await wakes on it, **or on child exit** |
-| parent → child | one task (one turn), correlated by request id, never by text |
+| parent → child | one task (one turn) **with the parent's context at send time**, correlated by request id, never by text |
 | parent → child | cancel — drop if queued, preempt if running |
 | parent → child | a shared plugin moved to a new port — reconnect |
-| parent → child | the cloned parent history, sent on stdin at spawn |
 | parent → child | graceful shutdown |
 | child → parent | the task's one-turn result |
 | child → parent | "the result above is final" |
@@ -1546,26 +1564,36 @@ Four implementation details carry real weight:
 - **Config never rides the process env.** The resolved config carries plaintext API keys, so it is
   passed via a restricted-permission temp file — never the environment, which is readable through the
   process table.
-- **Over-long protocol lines are discarded, never fatal.** One line may legitimately be the whole
-  cloned history or a many-megabyte result; a line past even the raised cap is dropped, tail and all,
-  so a pathological line cannot kill the reader or wedge the worker.
+- **Over-long protocol lines are discarded, never fatal.** One line may legitimately be a whole task
+  plus the context that travelled with it, or a many-megabyte result; a line past even the raised cap
+  is dropped, tail and all, so a pathological line cannot kill the reader or wedge the worker.
 
 ### 6.2 One turn per task
 
-A spawn call starts a named worker. **A worker's name is its identity** — explicit, never
-auto-generated, and validated, because the name lands in the child's system prompt *and* its log
-filename. Reuse is explicit: spawning a running name returns the live worker, **keeping the context
-that worker was started with** — a spawn request is not applied to an existing process, so what a
-caller reports back is the worker's live context source, never the one it asked for.
+A spawn call starts a named worker — nothing more. **A worker's name is its identity** — explicit,
+never auto-generated, and validated, because the name lands in the child's system prompt *and* its
+log filename. Reuse is explicit and trivial: spawning a running name returns the live worker. There
+is no state for a spawn to keep or re-apply, because **the context is not the worker's — it is the
+task's**.
 
-Context is chosen once, at spawn: **clean** (the default) runs each task in a bare history;
-**cloned** copies the parent's message history without the parent's system message (the worker
-renders its own) and ships it on stdin. A clone is a **spawn-time snapshot** — a cloned worker
-re-seeds from that fixed snapshot on *every* task, so it never accumulates context across tasks and
-never sees parent turns that happen after spawn. The snapshot is taken *inside* the tool call that
-spawns the worker, so it ends on an assistant tool call whose results do not exist yet; the worker's
-history is repaired on arrival (§2.1's turn-consistency invariant) rather than sent as-is, which
-every provider would reject.
+**Context is decided when a task is sent, not when a worker is started.** Every send carries a clone
+of the parent's in-context messages — everything it is running on at that moment, minus its system
+message (the worker renders its own) — and the worker seeds that task's history from it. A spawn
+could not do this honestly: the parent has not been given the task yet, so it cannot know what
+context the task needs; and a worker runs many tasks, so a context fixed at spawn is either stale for
+the second one or was never right for it. A snapshot is taken *inside* the tool call that sends the
+task, so it ends on the assistant tool call whose results do not exist yet — the parent's turn in
+flight; the worker's history is repaired on arrival (§2.1's turn-consistency invariant) rather than
+sent as-is, which every provider would reject. That in-flight turn is kept, because it is where the
+task came from: the worker's rebuild carries it through rather than re-fetching it, since the store
+holds no row for it yet (§2.3).
+
+Each task therefore runs on **its own**, freshly seeded context and never accumulates one across
+tasks, and a task queued behind a busy worker keeps the context of its own send. On top of that seed
+the task runs the *same* per-turn rebuild the main agent runs (§2.3): the discriminator sees the
+seeded context, the turns of it that are stored can be kept or dropped, and memory can be recalled
+over the shared turn log — read-only, since the persisted live-context list has one owner and it is
+not the worker.
 
 A task is one turn by construction: one send becomes one inbox message, which becomes exactly one
 loop run. Inside that run the loop may make many LLM and tool calls, bounded by the iteration limit
@@ -1578,8 +1606,9 @@ worker are queued by the *parent*, never refused and never re-sent.
 The worker renders its own system prompt from the worker identity template, which frames it as a
 worker process of the parent with the same capabilities, carrying **no identity of its own** — no
 presence, no personality, and in all external communication it acts as the main agent, never
-introducing itself. It is told it is ephemeral, and how it was seeded. Its completion posts back
-under a dedicated inbox source, so it is distinguishable from human turns in memory search yet
+introducing itself. It is told it is ephemeral, and where its context comes from — each task arrives
+with a copy of the parent's conversation as it stood when the task was sent. Its completion posts
+back under a dedicated inbox source, so it is distinguishable from human turns in memory search yet
 routed into the human history.
 
 **The worker has no result-push tool.** Its reply goes out as an ordinary JSON-RPC result on stdout.
