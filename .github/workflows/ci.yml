@@ -46,3 +46,4 @@ jobs:
           uv run pytest -v --tb=short --no-header --maxfail=5
           uv run --directory credstore pytest -v --tb=short --no-header --maxfail=5
           uv run --directory cc-switch pytest -v --tb=short --no-header --maxfail=5
+          uv run --directory local-embed pytest -v --tb=short --no-header --maxfail=5
