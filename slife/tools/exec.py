@@ -279,6 +279,20 @@ def _shell_output_codec() -> str:
 # execute_shell
 # ═══════════════════════════════════════════════════════════════════════
 
+# No process tool exists, so the shell is where a model does process
+# management — and a mis-parsed pid there is expensive.  ``wmic /format:list``
+# terminates each line with CR CR LF, so a blank-line split yields ONE block; a
+# name test matches the whole listing, the pid parsed out of it is arbitrary,
+# and ``taskkill /T`` on that pid takes a whole tree with slife's own
+# python.exe in it.  One tool call did exactly that and killed the TUI with
+# every plugin it owned — ``slife/bootstrap.py``'s unclean-exit marker is the
+# other half of the same incident.
+#
+# Deliberately NOT in the schema or the world spec: both halves are public
+# Windows knowledge, and the prompt does not teach the model how to work.  This
+# note is the record, for whoever has to judge whether the hazard still exists.
+
+
 class ShellTool(Tool):
     """Execute a shell command via the detected shell (PowerShell/cmd on
     Windows, $SHELL on POSIX incl. WSL) — matching what the system prompt
