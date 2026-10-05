@@ -1057,16 +1057,14 @@ async def _task_id_by_name(name: str) -> int | None:
     description="Internal: enabled scheduled tasks with their last run anchor.",
 )
 async def __scheduled_tasks_state() -> str:
-    """Return enabled tasks, each with its newest run ``due_at`` (anchor)
-    and whether it currently has a ``pending`` run."""
+    """Return enabled tasks, each with its newest run ``due_at`` (the anchor
+    the next fire is computed from)."""
     store = await _ensure_store()
     tasks = await store.scheduled_tasks_list(enabled_only=True)
-    pending_ids = await store.pending_run_task_ids()
     out = []
     for t in tasks:
         t = dict(t)
         t["last_run_due"] = await store.last_run_due(t["id"])
-        t["has_pending_run"] = t["id"] in pending_ids
         out.append(t)
     return json.dumps(out, ensure_ascii=False)
 
@@ -1134,6 +1132,21 @@ async def __scheduled_mark_run_failed(
     store = await _ensure_store()
     await store.mark_run_failed(task_id, due_at, error)
     return "{}"
+
+
+@mcp.tool(
+    name="__scheduled_run_status",
+    description=(
+        "Internal: the status of one run — identified by its due_at, never by "
+        "\"the newest one\", since runs of one task overlap.  null when no such "
+        "run is recorded."
+    ),
+)
+async def __scheduled_run_status(task_id: int, due_at: str) -> str:
+    store = await _ensure_store()
+    status = await store.run_status(task_id, due_at)
+    return json.dumps({"task_id": task_id, "due_at": due_at, "status": status},
+                      ensure_ascii=False)
 
 
 # Data-layer tools for the schedule registry.  The LLM-visible ``scheduled_*``

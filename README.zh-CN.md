@@ -367,7 +367,7 @@ Embeddings 是 `slife.yaml` 中**一级顶层的 `embeddings` 配置段**，由 
 
 ### 定时任务
 
-让 agent 按计划做事——"每晚 12 点写日记"、"每周五总结本周"——它会注册一个 cron 定时任务（`scheduled_task_set`）。任务名同时也是执行它的 worker 的名字，所以请用简短的 ASCII 标识符。任务触发时，agent 把工作派发给一个以任务名命名的 subagent worker（`run_schedule_now`）而非亲自执行，worker 完成后把结果作为**报告**存入文件柜（`report_save`）并通知你。每次触发都有记录（`scheduled_run_list`），所以你能看到跑了什么、产出了什么（`report_list` / `report_read`）。任务在创建时**必须有描述**——它就是 worker 的指令，因此空任务不可能存在。派发的任务和任何一次委派一样携带你当前的对话，所以依赖正在讨论的内容的任务可以直接照此写。
+让 agent 按计划做事——"每晚 12 点写日记"、"每周五总结本周"——它会注册一个 cron 定时任务（`scheduled_task_set`）。任务名是任务自己的标识——它的运行记录、报告、触发都以它为准——所以请用简短的 ASCII 标识符；它从来不是 worker 的名字。任务触发时，agent 从 subagent 池里取一个 worker（`run_schedule_now`）派发工作而非亲自执行，worker 完成后把结果作为**报告**存入文件柜（`report_save`）并通知你——完成提示读作 `📅 定时(<任务>)>`，因为由哪个 worker 执行并不属于这个任务。每次触发都有记录（`scheduled_run_list`），所以你能看到跑了什么、产出了什么（`report_list` / `report_read`）。任务在创建时**必须有描述**——它就是 worker 的指令，因此空任务不可能存在。派发的任务和任何一次委派一样携带你当前的对话，所以依赖正在讨论的内容的任务可以直接照此写。
 
 任务**只在 Slife 运行时触发**。下次启动时，一次性扫描会结算上一会话留在 `scheduled_run_list` 里的记录：没跑完的记为**未完成（failed）**，Slife 关闭期间到点没做的记为**错过（missed）**。不做任何提示、也不等你的输入——未完成或错过的运行仍可用 `run_schedule_now` 补做（立即触发），或用 `scheduled_run_skip` 关闭。
 

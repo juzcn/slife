@@ -3958,11 +3958,17 @@ class AgentService:
             from slife.agent.message_history import subagent_marker
             from slife.subagent.identity import SUBAGENT
             from slife.agent.schedules import (
-                _SCHEDULE_WORKERS, _schedule_completion_content,
+                _schedule_completion_content, take_scheduled_task,
             )
-            scheduled = agent_name in _SCHEDULE_WORKERS
-            if scheduled:
-                content = await _schedule_completion_content(self, agent_name)
+            # Which scheduled task this was is a fact about the task id, not
+            # about the worker: a scheduled run goes to whichever worker the
+            # pool handed out, so the worker's name never names the task.
+            scheduled = take_scheduled_task(task_id)
+            task_name = scheduled[0] if scheduled else ""
+            if scheduled is not None:
+                content = await _schedule_completion_content(
+                    self, task_name, scheduled[1],
+                )
             else:
                 # The [Subagent:…] marker names the worker and task id so the
                 # LLM can attribute the pushed result; the TUI drops it for
@@ -3977,7 +3983,7 @@ class AgentService:
                 source=SUBAGENT,
                 content=content,
                 channel=Channel.subagent(
-                    agent_name, task_id=task_id, scheduled=scheduled,
+                    agent_name, task_id=task_id, scheduled_task=task_name,
                 ),
             )
             await self.inbox.post(msg)

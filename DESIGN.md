@@ -767,9 +767,13 @@ input. **Main agent only** — a worker is task-driven.
   pending-fire guard keeps the poll from re-firing mid-turn.
 - **Trigger → execution.** The poller injects a schedule trigger on the **system** channel; the run
   is recorded when the agent *dispatches*, not at fire time. The agent handles the trigger by
-  delegating: one dispatch tool — also used to backfill — records a pending run, spawns or reuses the
-  worker named after the task, and sends it deterministic task text instructing it to save a report
-  and notify the user. Completion rides the ordinary subagent auto-push (§6.3).
+  delegating: one dispatch tool — also used to backfill — records a pending run, takes a worker from
+  the pool (§6.2 — an idle one reused, otherwise a new one), and sends it deterministic task text
+  instructing it to save a report and notify the user. **A task name is not a worker name**: the pool
+  hands out the worker, and the task name rides only where the task's identity belongs — its
+  instructions, its report and its run record. A full pool is reported and the run is recorded
+  failed, so it surfaces for backfill. Completion rides the ordinary subagent auto-push (§6.3),
+  reported as the task rather than as the worker that ran it.
 - **Record.** Tasks, runs and reports live in the cabinet DB. A report bound to a task backfills the
   newest unlinked run at the store layer — pending → ran is the **only** success writeback;
   everything else is failed-by-default.
@@ -1678,8 +1682,11 @@ routed into the human history.
 **The worker has no result-push tool.** Its reply goes out as an ordinary JSON-RPC result on stdout.
 The **parent harness** does all the pushing: a synchronous caller's future resolves; an async result
 is stored and the manager is notified; the manager posts an inbox message carrying the subagent
-marker of §2.5 so the model can attribute it, and the channel records whether it was a scheduled
-task. The TUI drops the marker and shows the `Subagent(<name>)>` bubble. There is deliberately no
+marker of §2.5 so the model can attribute it, and the channel records the **scheduled task's name**
+when the send was a schedule dispatch — keyed by the worker task id, because a pool worker's name
+says nothing about what it is running. The TUI drops the marker and shows the channel's bubble:
+`Subagent(<worker>)>` for an ordinary delegation, `📅 Scheduled(<task>)>` for a scheduled run — which
+worker the pool handed a task to stays a technical detail. There is deliberately no
 subscribe call — async results are auto-subscribed, and a poll mode suppresses only the *push*, never
 the retrievability. Retrieval is **non-consuming and states what it is**: a task answers pending,
 completed, failed or cancelled from its own record (only an id that was never sent reads unknown), so

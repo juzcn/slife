@@ -3,9 +3,8 @@
 The loop is deliberately thin: it *times* tasks and *injects* a trigger
 message into the unified inbox.  Execution happens elsewhere — the agent
 calls ``run_schedule_now`` on the trigger turn, which records a pending run
-and dispatches the task to a subagent worker (worker name = task name); the
-worker saves its report via ``report_save``.  The loop itself never
-runs a task.
+and dispatches the task to a worker taken from the subagent pool; the worker
+saves its report via ``report_save``.  The loop itself never runs a task.
 
 State lives in the memfiles DB (``scheduled_tasks`` / ``scheduled_runs``),
 not in memory.  Each poll recomputes from the DB, so the loop is stateless
@@ -83,9 +82,28 @@ def is_autonomous_trigger(text: str) -> bool:
 #: (a fire whose due time is within it of "now" is freshly due; older, it was
 #: missed while slife was down).
 
-#: Scheduled-task worker names dispatched this session — used to reword the
-#: completion notification (hide the subagent) and to target recycling.
-_SCHEDULE_WORKERS: set[str] = set()
+#: Scheduled dispatches in flight this session: the worker's task id →
+#: ``(task name, due_at)``.  A scheduled task runs on whichever worker the pool
+#: handed out, so the worker's name says nothing about what it is running — the
+#: task id is what a completion is keyed by, and the task name plus the run's
+#: due time are what identify the run it must be judged against.
+_SCHEDULE_TASKS: dict[str, tuple[str, str]] = {}
+
+
+def track_scheduled_task(task_id: str, name: str, due_at: str) -> None:
+    """Remember that worker task *task_id* runs scheduled task *name*."""
+    _SCHEDULE_TASKS[task_id] = (name, due_at)
+
+
+def take_scheduled_task(task_id: str) -> tuple[str, str] | None:
+    """Return ``(task name, due_at)`` for worker task *task_id*, forgetting it.
+
+    Read-and-forget: the completion push is the only reader and a task id is
+    announced exactly once, so a second read of an id is not a scheduled
+    completion at all.
+    """
+    return _SCHEDULE_TASKS.pop(task_id, None)
+
 
 #: Tasks whose trigger was injected but whose dispatch is not yet confirmed by
 #: ``run_schedule_now`` — prevents the 30s poll re-firing mid-turn.
@@ -337,18 +355,24 @@ async def _pending_schedule_runs(client) -> list[dict]:
     return runs[:_TURN_PROMPT_MAX_RUNS]
 
 
-async def _schedule_completion_content(service, name: str) -> str:
+async def _schedule_completion_content(service, name: str, due_at: str) -> str:
     """Post-hoc truth for a scheduled worker's completion notification.
 
     A run is confirmed only by ``report_save``, so the run record — never the
-    worker's narrated success — decides what the user is told.  The worker's
-    report generation is one LLM stream; when it dies (stall/timeout exhausted
-    the retry ladder) before the save landed, the run is still ``pending`` at
-    completion.  Settle such runs to ``failed`` (best-effort —
-    ``mark_run_failed`` only flips a genuinely still-pending row) so the
-    incomplete run is visible for backfill instead of silently waiting for the
-    next-process startup sweep, and say so honestly rather than claiming the
-    report was saved.
+    worker's narrated success — decides what the user is told.  The record
+    asked about is the exact run the worker was dispatched for (its *due_at*),
+    never "the newest run": any idle worker can take a fire now, so runs of one
+    task overlap, and a newer run still in flight must neither answer for an
+    older one nor be settled by it.
+
+    The worker's report generation is one LLM stream; when it dies
+    (stall/timeout exhausted the retry ladder) before the save landed, the run
+    is still ``pending`` at completion.  Settle such a run to ``failed``
+    (best-effort — ``mark_run_failed`` only flips a genuinely still-pending
+    row) so the incomplete run is visible for backfill instead of silently
+    waiting for the next-process startup sweep, and say so honestly rather than
+    claiming the report was saved.  A run a *later* report confirms is never
+    touched: ``report_save``'s writeback is keyed by ``(task, due_at)`` too.
     """
     client = _memfiles_client(service)
     if client is None:
@@ -362,21 +386,27 @@ async def _schedule_completion_content(service, name: str) -> str:
             f"Scheduled task **{name}** finished — but no scheduled-task "
             f"record exists, so no run could be confirmed."
         )
-    task_id = task["id"]
-    data = await _call(client, "__scheduled_runs_list",
-                       {"name": name, "status": "", "limit": 1})
-    runs = (data or {}).get("runs") or []
-    if runs and runs[0].get("status") == "ran":
+    status = await _call(client, "__scheduled_run_status",
+                         {"task_id": task["id"], "due_at": due_at})
+    if not isinstance(status, dict):
+        # The record could not be read — no verdict is available, and a guess
+        # either way would be a fact the user cannot check.
+        return (
+            f"Scheduled task **{name}** finished — report status unverified "
+            f"(the run record could not be read)."
+        )
+    if status.get("status") == "ran":
         return f"Scheduled task **{name}** completed — report saved."
-    # The newest run was not confirmed.  Whatever is still pending can never
-    # complete (this worker is done) — close it so the run shows up for
-    # backfill, then report honestly.
-    pending = await _call(client, "__scheduled_runs_list",
-                          {"name": name, "status": "pending", "limit": 20})
-    for r in (pending or {}).get("runs") or []:
-        await _call(client, "__scheduled_mark_run_failed",
-                    {"task_id": task_id, "due_at": r.get("due_at", ""),
-                     "error": "worker finished without confirming the run"})
+    if status.get("status") is None:
+        return (
+            f"Scheduled task **{name}** finished — but no run record matches "
+            f"this dispatch, so nothing could be confirmed."
+        )
+    # This run was not confirmed, and it can never complete now (this worker is
+    # done) — close it so it shows up for backfill, then report honestly.
+    await _call(client, "__scheduled_mark_run_failed",
+                {"task_id": task["id"], "due_at": due_at,
+                 "error": "worker finished without confirming the run"})
     return (
         f"Scheduled task **{name}** finished, but its report was not saved — "
         f"the run is recorded as **failed**. Ask me to backfill it or run it "
@@ -445,37 +475,6 @@ async def schedule_startup_sweep(service) -> None:
     await _refresh_schedule_status(service, client)
 
 
-async def _recycle_idle_workers(states) -> None:
-    """Stop schedule workers whose task is settled (no pending run) and idle.
-
-    Runs on the schedule cadence.  Only workers named after a scheduled task
-    that was dispatched this session (in ``_SCHEDULE_WORKERS``) are touched,
-    and only when they are not busy and have no pending async tasks — so a
-    result still in flight is never cut off.
-    """
-    from slife.subagent.process import get_manager
-
-    manager = get_manager()
-    if manager is None:
-        return
-    for task in states:
-        name = task.get("name")
-        if not name or name not in _SCHEDULE_WORKERS:
-            continue
-        if task.get("has_pending_run"):
-            continue  # a run is still in flight — keep the worker
-        proc = manager.get(name)
-        if proc is None or not proc.is_running:
-            continue
-        if proc.is_busy or proc.pending_async_count > 0:
-            continue
-        try:
-            await manager.stop(name)
-            logger.info("schedule_worker_recycled name=%s", name)
-        except Exception as e:
-            logger.debug("schedule_worker_recycle_error name=%s err=%s", name, e)
-
-
 async def schedule_loop(service) -> None:
     """Time enabled scheduled tasks and inject triggers (main agent only).
 
@@ -484,7 +483,10 @@ async def schedule_loop(service) -> None:
     past being fired; runs a previous process lifetime left unfinished are
     settled exactly once at startup by :func:`schedule_startup_sweep`
     (unconfirmed runs → ``failed``, fires due while down → ``missed``).
-    Also reaps idle schedule workers whose task has settled.
+
+    Worker lifetime is not the loop's: a dispatched task runs on whichever
+    worker the pool hands it (``fire_task_now``), and the pool is what a worker
+    belongs to.
     """
     while True:
         await asyncio.sleep(_timeouts.timeouts.pacing.schedule_poll)
@@ -494,7 +496,6 @@ async def schedule_loop(service) -> None:
                 continue
             now = datetime.now().astimezone()
             states = await _load_task_states(client)
-            await _recycle_idle_workers(states)
 
             # Keep the turn prompt's failed/missed reminder current (it renders
             # only while open runs exist).
@@ -552,6 +553,13 @@ async def fire_task_now(service, name: str, due_at: str = "") -> str:
     the exact run via ``report_save(due_at=…)`` so ``pending`` →
     ``ran``.  Works for disabled tasks too (an explicit run is explicit).
 
+    **The task name is not a worker name.** The worker is whichever one the
+    pool hands out (an idle one reused, otherwise a new one), so the task name
+    goes only where the task's own identity belongs: the worker's instructions,
+    its ``report_save(name=…)``, and the run record.  A full pool is reported
+    by the pool and fails this run — the task shows up for backfill rather than
+    queueing behind a worker nobody chose.
+
     The dispatched task carries the main agent's current context
     (``service._tool_ctx.message_history``) like every other send, so a task
     with no stored description — or one that depends on what we discussed —
@@ -568,37 +576,46 @@ async def fire_task_now(service, name: str, due_at: str = "") -> str:
     if not task:
         return f"Scheduled task not found: {name}"
 
+    # The task's own name — the worker is whoever the pool gives us, and it
+    # never reaches the task's text or its records.
+    task_name = task["name"]
     due_iso = due_at.strip() or now_local_seconds()
     await _call(client, "__scheduled_record_run",
                 {"task_id": task["id"], "due_at": due_iso})
 
-    worker = task["name"]
+    async def _fail(reason: str) -> str:
+        # The run was recorded pending; a dispatch that never happened can
+        # never complete, so settle it here rather than at the next startup
+        # sweep.
+        await _call(client, "__scheduled_mark_run_failed",
+                    {"task_id": task["id"], "due_at": due_iso,
+                     "error": reason[:200]})
+        return f"Error: dispatch failed — {reason}"
+
     manager = get_manager()
     if manager is None:
-        return (
-            "Error: the subagent manager is not available yet — call this "
-            "after the agent service has started."
+        return await _fail(
+            "the subagent manager is not available yet — call this after the "
+            "agent service has started."
         )
     seed = _serialize_cloned_context(getattr(service, "_tool_ctx", None))
     try:
-        await manager.spawn(name=worker)
-        rpc_id = await manager.send_task_async(
-            worker,
-            build_worker_task(worker, task.get("description", ""),
+        worker, rpc_id, _reused = await manager.send_task_to_pool(
+            build_worker_task(task_name, task.get("description", ""),
                               due_at=due_iso),
             mode="auto",
             seed=seed,
         )
     except Exception as e:
         logger.warning("schedule_dispatch_failed task=%s err=%s", name, e)
-        await _call(client, "__scheduled_mark_run_failed",
-                    {"task_id": task["id"], "due_at": due_iso,
-                     "error": str(e)[:200]})
-        return f"Error: dispatch failed — {e}"
+        return await _fail(str(e))
 
-    _SCHEDULE_WORKERS.add(worker)
-    _pending_fires.pop(worker, None)
+    # Tracked before anything else can await: the completion is pushed by a
+    # task on the loop, so an await in between could let it run first and
+    # degrade this dispatch's notification to a plain subagent one.
+    track_scheduled_task(rpc_id, task_name, due_iso)
+    _pending_fires.pop(task_name, None)
     return (
-        f"Scheduled task '{name}' dispatched now to worker "
+        f"Scheduled task '{task_name}' dispatched now to worker "
         f"'{worker}' (task_id: {rpc_id})."
     )

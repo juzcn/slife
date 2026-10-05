@@ -188,6 +188,36 @@ def test_classify_grace_boundary():
 
 # ── fire_task_now ────────────────────────────────────────────────────
 
+#: The scheduled task every dispatch test fires.
+_TASK_JSON = ('{"id": 7, "name": "daily", "description": "d", '
+              '"schedule": "0 9 * * *", "timezone": "", '
+              '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
+
+
+def _scheduled_client(records: list | None = None):
+    """A memfiles client answering the dispatch's own calls."""
+    client = AsyncMock()
+
+    async def fake_call_tool(name, arguments=None):
+        if name == "__scheduled_task_by_name":
+            return _TASK_JSON
+        if name == "__scheduled_record_run":
+            if records is not None:
+                records.append(arguments or {})
+            return "{}"
+        return "null"
+
+    client.call_tool = fake_call_tool
+    return client
+
+
+def _pool(worker: str = "worker-2", task_id: str = "rpc-1", reused: bool = True):
+    """A manager whose pool hands out *worker* — the caller never names one."""
+    manager = MagicMock()
+    manager.send_task_to_pool = AsyncMock(return_value=(worker, task_id, reused))
+    return manager
+
+
 @pytest.mark.asyncio
 async def test_fire_task_now_no_client():
     service = MagicMock()
@@ -197,44 +227,57 @@ async def test_fire_task_now_no_client():
 
 
 @pytest.mark.asyncio
-async def test_fire_task_now_dispatches_directly(monkeypatch):
-    """Records a pending run and dispatches the task to a worker named after
-    the task — no inbox trigger, no next turn."""
-    S._SCHEDULE_WORKERS.clear()
-    client = AsyncMock()
-
-    async def fake_call_tool(name, arguments=None):
-        if name == "__scheduled_task_by_name":
-            return ('{"id": 7, "name": "daily", "description": "d", '
-                    '"schedule": "0 9 * * *", "timezone": "", '
-                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
-        if name == "__scheduled_record_run":
-            return "{}"
-        return "null"
-
-    client.call_tool = fake_call_tool
+async def test_fire_task_now_dispatches_to_the_pool(monkeypatch):
+    """Records a pending run and hands the task to the pool — no inbox
+    trigger, no next turn, and no worker named by us."""
+    S._SCHEDULE_TASKS.clear()
+    records: list[dict] = []
     ctx = MagicMock()
-    ctx.memfiles_client = client
+    ctx.memfiles_client = _scheduled_client(records)
     service = MagicMock()
     service._tool_ctx = ctx
     service.inbox = MagicMock()
     service.inbox.post = AsyncMock()
 
-    manager = MagicMock()
-    manager.spawn = AsyncMock(return_value="daily")
-    manager.send_task_async = AsyncMock(return_value="rpc-1")
+    manager = _pool()
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     result = await S.fire_task_now(service, "daily")
-    assert "dispatched now to worker 'daily'" in result
-    manager.spawn.assert_awaited_once_with(name="daily")
-    manager.send_task_async.assert_awaited_once()
-    agent_name, task = manager.send_task_async.call_args[0]
-    assert agent_name == "daily"
+    assert "dispatched now to worker 'worker-2'" in result
+    assert "rpc-1" in result
+    manager.send_task_to_pool.assert_awaited_once()
+    task = manager.send_task_to_pool.call_args.args[0]
     assert "report_save" in task
-    assert manager.send_task_async.call_args.kwargs["mode"] == "auto"
+    assert manager.send_task_to_pool.call_args.kwargs["mode"] == "auto"
     assert service.inbox.post.await_count == 0  # no inbox relay
-    assert "daily" in S._SCHEDULE_WORKERS  # tracked for reword + recycle
+    # The dispatch is tracked by task id, against the run it recorded.
+    assert records == [{"task_id": 7, "due_at": records[0]["due_at"]}]
+    assert S._SCHEDULE_TASKS == {"rpc-1": ("daily", records[0]["due_at"])}
+
+
+@pytest.mark.asyncio
+async def test_the_worker_is_the_pool_s_and_the_task_keeps_its_own_name(monkeypatch):
+    """The task name goes where the task's identity belongs and nowhere else.
+
+    The pool answers with a minted worker name that has nothing to do with the
+    task: the worker's instructions, the report it saves and the run it
+    confirms must all still be the TASK's, or the report binds no scheduled
+    task and the run never turns ``ran``.
+    """
+    S._SCHEDULE_TASKS.clear()
+    ctx = MagicMock()
+    ctx.memfiles_client = _scheduled_client()
+    service = MagicMock()
+    service._tool_ctx = ctx
+
+    manager = _pool(worker="worker-9", task_id="rpc-9")
+    monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
+
+    await S.fire_task_now(service, "daily")
+    task = manager.send_task_to_pool.call_args.args[0]
+    assert 'report_save(name="daily"' in task  # never "worker-9"
+    assert "worker-9" not in task
+    assert S._SCHEDULE_TASKS["rpc-9"][0] == "daily"
 
 
 @pytest.mark.asyncio
@@ -244,21 +287,9 @@ async def test_fire_task_now_sends_the_context_with_the_task(monkeypatch):
     The main agent's context at dispatch time, minus its system message and
     minus the turn being run (it carries no turn rowid yet).  A scheduled task
     is a send like any other, so it gets the same rule."""
-    S._SCHEDULE_WORKERS.clear()
-    client = AsyncMock()
-
-    async def fake_call_tool(name, arguments=None):
-        if name == "__scheduled_task_by_name":
-            return ('{"id": 7, "name": "daily", "description": "d", '
-                    '"schedule": "0 9 * * *", "timezone": "", '
-                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
-        if name == "__scheduled_record_run":
-            return "{}"
-        return "null"
-
-    client.call_tool = fake_call_tool
+    S._SCHEDULE_TASKS.clear()
     ctx = MagicMock()
-    ctx.memfiles_client = client
+    ctx.memfiles_client = _scheduled_client()
     ctx.message_history = MagicMock(
         messages=[{"role": "system", "content": "sys"},
                  {"role": "user", "content": "u1", "_turn_id": 4},
@@ -270,14 +301,11 @@ async def test_fire_task_now_sends_the_context_with_the_task(monkeypatch):
     service = MagicMock()
     service._tool_ctx = ctx
 
-    manager = MagicMock()
-    manager.spawn = AsyncMock(return_value="daily")
-    manager.send_task_async = AsyncMock(return_value="rpc-1")
+    manager = _pool()
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     await S.fire_task_now(service, "daily")
-    manager.spawn.assert_awaited_once_with(name="daily")
-    seed = manager.send_task_async.call_args.kwargs["seed"]
+    seed = manager.send_task_to_pool.call_args.kwargs["seed"]
     # Verbatim, ``_turn_id`` included: the worker's rebuild keys on it to
     # re-fetch a turn from the shared store.
     assert seed == [{"role": "user", "content": "u1", "_turn_id": 4},
@@ -288,42 +316,30 @@ async def test_fire_task_now_sends_the_context_with_the_task(monkeypatch):
 async def test_fire_task_now_without_a_reachable_context(monkeypatch):
     """No reachable history seeds nothing — the task still dispatches (a
     background task must not be refused because the context was not in hand)."""
-    S._SCHEDULE_WORKERS.clear()
-    client = AsyncMock()
-
-    async def fake_call_tool(name, arguments=None):
-        if name == "__scheduled_task_by_name":
-            return ('{"id": 7, "name": "daily", "description": "d", '
-                    '"schedule": "0 9 * * *", "timezone": "", '
-                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
-        if name == "__scheduled_record_run":
-            return "{}"
-        return "null"
-
-    client.call_tool = fake_call_tool
+    S._SCHEDULE_TASKS.clear()
     ctx = MagicMock()
-    ctx.memfiles_client = client
+    ctx.memfiles_client = _scheduled_client()
     ctx.message_history = None  # _serialize_cloned_context → None
     service = MagicMock()
     service._tool_ctx = ctx
 
-    manager = MagicMock()
-    manager.spawn = AsyncMock(return_value="daily")
-    manager.send_task_async = AsyncMock(return_value="rpc-1")
+    manager = _pool()
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     await S.fire_task_now(service, "daily")
-    manager.spawn.assert_awaited_once_with(name="daily")
-    assert manager.send_task_async.call_args.kwargs["seed"] is None
+    assert manager.send_task_to_pool.call_args.kwargs["seed"] is None
 
 
 @pytest.mark.asyncio
 async def test_fire_task_now_marks_run_failed_on_dispatch_error(monkeypatch):
+    """A full pool is an answer, not a fault — and the run it could not
+    dispatch is settled failed so the task shows up for backfill."""
+    S._SCHEDULE_TASKS.clear()
     calls: list[tuple[str, dict]] = []
     client = AsyncMock()
 
     async def fake_call_tool(name, arguments=None):
-        calls.append((name, arguments))
+        calls.append((name, arguments or {}))
         if name == "__scheduled_task_by_name":
             return ('{"id": 7, "name": "daily", "description": "d", '
                     '"schedule": "manual", "timezone": "", '
@@ -336,13 +352,49 @@ async def test_fire_task_now_marks_run_failed_on_dispatch_error(monkeypatch):
     service = MagicMock()
     service._tool_ctx = ctx
 
-    manager = AsyncMock()
-    manager.spawn = AsyncMock(side_effect=RuntimeError("max subagents reached"))
+    from slife.subagent.process import PoolFullError
+
+    manager = MagicMock()
+    manager.send_task_to_pool = AsyncMock(
+        side_effect=PoolFullError("no subagent is idle and the pool is at its "
+                                  "limit (2) — worker-1 (1 in flight)"),
+    )
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     result = await S.fire_task_now(service, "daily")
     assert "Error: dispatch failed" in result
-    assert any(name == "__scheduled_mark_run_failed" for name, _ in calls)
+    assert "pool is at its limit" in result
+    failed = [a for n, a in calls if n == "__scheduled_mark_run_failed"]
+    assert failed and failed[0]["task_id"] == 7
+    assert S._SCHEDULE_TASKS == {}  # nothing dispatched, nothing tracked
+
+
+@pytest.mark.asyncio
+async def test_fire_task_now_marks_run_failed_when_no_manager(monkeypatch):
+    """The run is recorded before the manager is even reached: an unavailable
+    manager must settle it rather than leave it pending for the next process's
+    startup sweep."""
+    calls: list[tuple[str, dict]] = []
+    client = AsyncMock()
+
+    async def fake_call_tool(name, arguments=None):
+        calls.append((name, arguments or {}))
+        if name == "__scheduled_task_by_name":
+            return ('{"id": 7, "name": "daily", "description": "d", '
+                    '"schedule": "manual", "timezone": "", '
+                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
+        return "{}"
+
+    client.call_tool = fake_call_tool
+    ctx = MagicMock()
+    ctx.memfiles_client = client
+    service = MagicMock()
+    service._tool_ctx = ctx
+    monkeypatch.setattr("slife.subagent.process.get_manager", lambda: None)
+
+    result = await S.fire_task_now(service, "daily")
+    assert "Error: dispatch failed" in result
+    assert any(n == "__scheduled_mark_run_failed" for n, _ in calls)
 
 
 @pytest.mark.asyncio
@@ -350,37 +402,23 @@ async def test_fire_task_now_backfill_transitions_given_due_at(monkeypatch):
     """A backfill passes the failed/missed run's due_at: that exact run is
     recorded pending (the ON-CONFLICT update, not a fresh now-run) and the
     worker task tells report_save to confirm it."""
-    S._SCHEDULE_WORKERS.clear()
+    S._SCHEDULE_TASKS.clear()
     records: list[dict] = []
-    client = AsyncMock()
-
-    async def fake_call_tool(name, arguments=None):
-        if name == "__scheduled_task_by_name":
-            return ('{"id": 7, "name": "daily", "description": "d", '
-                    '"schedule": "0 9 * * *", "timezone": "", '
-                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
-        if name == "__scheduled_record_run":
-            records.append(arguments or {})
-            return "{}"
-        return "null"
-
-    client.call_tool = fake_call_tool
     ctx = MagicMock()
-    ctx.memfiles_client = client
+    ctx.memfiles_client = _scheduled_client(records)
     service = MagicMock()
     service._tool_ctx = ctx
 
-    manager = MagicMock()
-    manager.spawn = AsyncMock(return_value="daily")
-    manager.send_task_async = AsyncMock(return_value="rpc-1")
+    manager = _pool()
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     due = "2026-08-27T10:55:00+08:00"
     result = await S.fire_task_now(service, "daily", due_at=due)
-    assert "dispatched now to worker 'daily'" in result
+    assert "dispatched now to worker 'worker-2'" in result
     assert records == [{"task_id": 7, "due_at": due}]  # the run, not a new now
-    _, task = manager.send_task_async.call_args[0]
+    task = manager.send_task_to_pool.call_args.args[0]
     assert f'due_at="{due}"' in task  # worker confirms the exact run
+    assert S._SCHEDULE_TASKS == {"rpc-1": ("daily", due)}  # tracked against it
 
 
 @pytest.mark.asyncio
@@ -405,8 +443,10 @@ async def test_fire_task_now_dispatch_error_fails_given_due_at(monkeypatch):
     service = MagicMock()
     service._tool_ctx = ctx
 
-    manager = AsyncMock()
-    manager.spawn = AsyncMock(side_effect=RuntimeError("max subagents reached"))
+    manager = MagicMock()
+    manager.send_task_to_pool = AsyncMock(
+        side_effect=RuntimeError("max subagents reached"),
+    )
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     due = "2026-08-27T10:55:00+08:00"
@@ -443,73 +483,18 @@ async def test_fire_marks_pending_guard_then_clears_on_dispatch(monkeypatch):
     await S._fire(service, {"name": "daily", "description": "d"})
     assert "daily" in S._pending_fires
 
-    client = AsyncMock()
-
-    async def fake_call_tool(name, arguments=None):
-        if name == "__scheduled_task_by_name":
-            return ('{"id": 7, "name": "daily", "description": "d", '
-                    '"schedule": "0 9 * * *", "timezone": "", '
-                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
-        return "{}"
-
-    client.call_tool = fake_call_tool
     ctx = MagicMock()
-    ctx.memfiles_client = client
+    ctx.memfiles_client = _scheduled_client()
     service._tool_ctx = ctx
 
-    manager = MagicMock()
-    manager.spawn = AsyncMock(return_value="daily")
-    manager.send_task_async = AsyncMock(return_value="rpc-1")
+    manager = _pool()
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
     await S.fire_task_now(service, "daily")
+    # Keyed by TASK name — the worker's name is not the task's, so a guard
+    # popped by worker would leave the task suppressed for a whole grace
+    # window.
     assert "daily" not in S._pending_fires  # cleared after dispatch
-
-
-# ── worker recycling ────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_recycle_idle_workers(monkeypatch):
-    S._SCHEDULE_WORKERS.clear()
-    S._SCHEDULE_WORKERS.add("daily")
-
-    idle_proc = MagicMock()
-    idle_proc.is_running = True
-    idle_proc.is_busy = False
-    idle_proc.pending_async_count = 0
-    busy_proc = MagicMock()
-    busy_proc.is_running = True
-    busy_proc.is_busy = True
-
-    manager = AsyncMock()
-    manager.get = MagicMock(side_effect=lambda name: {
-        "daily": idle_proc, "other": busy_proc,
-    }.get(name))
-    monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
-
-    states = [
-        {"name": "daily", "has_pending_run": False},   # settled + idle → recycle
-        {"name": "other", "has_pending_run": True},    # pending → keep
-    ]
-    await S._recycle_idle_workers(states)
-    manager.stop.assert_awaited_once_with("daily")
-
-
-@pytest.mark.asyncio
-async def test_recycle_skips_non_schedule_workers(monkeypatch):
-    S._SCHEDULE_WORKERS.clear()
-    S._SCHEDULE_WORKERS.add("daily")
-    proc = MagicMock()
-    proc.is_running = True
-    proc.is_busy = False
-    proc.pending_async_count = 0
-    manager = AsyncMock()
-    manager.get = MagicMock(return_value=proc)
-    monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
-
-    # "other" is not a schedule-dispatched worker → never recycled.
-    await S._recycle_idle_workers([{"name": "other", "has_pending_run": False}])
-    manager.stop.assert_not_awaited()
 
 
 # ── startup one-shot sweep: pending → failed, no message ─────────────
@@ -738,17 +723,22 @@ async def test_run_schedule_now_tool_passes_backfill_due_at():
 
 # ── completion reconciliation: run record, not worker narration ─────
 
-def _client_with_runs(latest_runs, pending_runs, mark_calls):
-    """Memfiles stub: newest run (status "") and the pending-run list."""
+def _client_with_run(status, mark_calls):
+    """Memfiles stub: one run's status, keyed by the ``due_at`` asked for.
+
+    *status* is a ``due_at`` → status mapping (or a plain status for every
+    run), so a test can give one run an answer and another a different one.
+    """
     client = AsyncMock()
 
     async def fake_call_tool(name, arguments=None):
         arguments = arguments or {}
         if name == "__scheduled_task_by_name":
             return '{"id": 7, "name": "daily"}'
-        if name == "__scheduled_runs_list":
-            runs = pending_runs if arguments.get("status") == "pending" else latest_runs
-            return json.dumps({"runs": runs})
+        if name == "__scheduled_run_status":
+            due = arguments.get("due_at")
+            answer = status.get(due) if isinstance(status, dict) else status
+            return json.dumps({"task_id": 7, "due_at": due, "status": answer})
         if name == "__scheduled_mark_run_failed":
             mark_calls.append(arguments)
             return "{}"
@@ -762,11 +752,9 @@ def _client_with_runs(latest_runs, pending_runs, mark_calls):
 async def test_completion_content_only_claims_saved_when_run_ran():
     due = "2026-08-25T09:00:00"
     mark_calls: list[dict] = []
-    latest = [{"status": "ran", "due_at": due}]
-    client = _client_with_runs(latest, [], mark_calls)
-    service = _make_service(client, [])
+    service = _make_service(_client_with_run("ran", mark_calls), [])
 
-    msg = await S._schedule_completion_content(service, "daily")
+    msg = await S._schedule_completion_content(service, "daily", due)
 
     assert "completed — report saved" in msg
     assert mark_calls == []  # confirmed run → nothing to settle
@@ -779,12 +767,9 @@ async def test_completion_content_settles_unconfirmed_run_and_says_so():
     settles to failed so it is backfillable instead of silent."""
     due = "2026-08-25T09:00:00"
     mark_calls: list[dict] = []
-    latest = [{"status": "pending", "due_at": due}]
-    pending = [{"status": "pending", "due_at": due}]
-    client = _client_with_runs(latest, pending, mark_calls)
-    service = _make_service(client, [])
+    service = _make_service(_client_with_run("pending", mark_calls), [])
 
-    msg = await S._schedule_completion_content(service, "daily")
+    msg = await S._schedule_completion_content(service, "daily", due)
 
     assert "report saved" not in msg
     assert "report was not saved" in msg
@@ -794,11 +779,45 @@ async def test_completion_content_settles_unconfirmed_run_and_says_so():
 
 
 @pytest.mark.asyncio
+async def test_completion_content_judges_its_own_run_not_the_newest_one():
+    """Overlapping runs of one task: the worker settled its OWN run.
+
+    Any idle worker can take a fire now, so run A can finish while a newer run
+    B is still in flight.  Judging A by "the newest run" would announce A as a
+    failure AND flip B — a live run — to failed.
+    """
+    due_a, due_b = "2026-08-25T09:00:00", "2026-08-25T10:00:00"
+    mark_calls: list[dict] = []
+    service = _make_service(
+        _client_with_run({due_a: "ran", due_b: "pending"}, mark_calls), [],
+    )
+
+    msg = await S._schedule_completion_content(service, "daily", due_a)
+
+    assert "completed — report saved" in msg
+    assert mark_calls == []  # run B is not this completion's to settle
+
+
+@pytest.mark.asyncio
+async def test_completion_content_reports_an_unknown_run_honestly():
+    """No row for the dispatch's due_at — say nothing was confirmed rather
+    than claiming a failure that was never recorded."""
+    due = "2026-08-25T09:00:00"
+    mark_calls: list[dict] = []
+    service = _make_service(_client_with_run(None, mark_calls), [])
+
+    msg = await S._schedule_completion_content(service, "daily", due)
+
+    assert "report saved" not in msg
+    assert "no run record matches" in msg
+
+
+@pytest.mark.asyncio
 async def test_completion_content_never_claims_saved_without_client():
     service = MagicMock()
     service._tool_ctx = None
 
-    msg = await S._schedule_completion_content(service, "daily")
+    msg = await S._schedule_completion_content(service, "daily", "2026-08-25T09:00:00")
 
     assert "daily" in msg
     assert "report saved" not in msg

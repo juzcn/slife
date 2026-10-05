@@ -162,9 +162,11 @@ class TestChannel:
         assert Channel.a2a("Jack").data == {"agent_name": "Jack"}
 
     def test_subagent_payload(self):
-        """Subagent channel carries name/task_id/scheduled."""
-        ch = Channel.subagent("w1", task_id="t9", scheduled=True)
-        assert ch.data == {"name": "w1", "task_id": "t9", "scheduled": True}
+        """Subagent channel carries name/task_id/scheduled_task."""
+        ch = Channel.subagent("w1", task_id="t9", scheduled_task="daily")
+        assert ch.data == {
+            "name": "w1", "task_id": "t9", "scheduled_task": "daily",
+        }
 
     def test_display_prefixes(self):
         """Prefixes match the settled display labels."""
@@ -178,6 +180,21 @@ class TestChannel:
         # System is filtered from the chat view.
         assert Channel.system().display_prefix() is None
 
+    def test_a_scheduled_completion_renders_as_the_task(self):
+        """The bubble names the scheduled task, never the worker the pool gave
+        it to — which worker ran it is not the task's identity."""
+        ch = Channel.subagent("worker-2", task_id="t9", scheduled_task="daily")
+        assert ch.display_prefix() == "📅 Scheduled(daily)> "
+
+    def test_an_old_scheduled_row_still_renders_its_worker_name(self):
+        """Rows persisted before the split carry ``scheduled: true`` and the
+        task name as the worker's (they were the same name then), so they
+        restore under the prefix they were written with."""
+        ch = Channel.from_db(
+            "subagent", {"name": "daily", "task_id": "t9", "scheduled": True},
+        )
+        assert ch.display_prefix() == "Subagent(daily)> "
+
     def test_to_db_a2a_keeps_peer_as_identity(self):
         """A2A identity stays the peer name (FTS-searchable), name in data."""
         assert Channel.a2a("Jack").to_db() == (
@@ -187,8 +204,11 @@ class TestChannel:
     def test_to_db_builtins(self):
         """Built-in kinds persist as kind + payload."""
         assert Channel.human().to_db() == ("human", {})
-        ch = Channel.subagent("w1", task_id="t9", scheduled=False)
-        assert ch.to_db() == ("subagent", {"name": "w1", "task_id": "t9", "scheduled": False})
+        ch = Channel.subagent("w1", task_id="t9", scheduled_task="")
+        assert ch.to_db() == (
+            "subagent",
+            {"name": "w1", "task_id": "t9", "scheduled_task": ""},
+        )
 
     def test_a2a_peer_named_reserved_kind_round_trips(self):
         """D8: an A2A peer whose name collides with a reserved kind string

@@ -30,9 +30,10 @@ from typing import ClassVar
 from slife.schedules import is_valid
 from slife.tools.base import Tool, _MemfilesClientMixin, make_params, require_params
 
-#: Task names double as the subagent worker name (``run_schedule_now`` spawns a
-#: worker named after the task), so they must satisfy the subagent safe-name
-#: rule — the same pattern as ``slife/subagent/process.py _SAFE_SUBAGENT_NAME``.
+#: A task name is the task's own identifier — the key its runs and its report
+#: are bound by, and the name in the ``[Schedule <name>]`` trigger the scheduler
+#: matches on — so it stays a short ASCII slug.  It is never a worker name: a
+#: dispatch takes its worker from the subagent pool.
 _SAFE_TASK_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
@@ -83,8 +84,9 @@ class ScheduledTaskSetTool(_ScheduleMixin, Tool):
         name={
             "type": "string",
             "description": (
-                "Unique task name — ASCII slug (letter/digit start, "
-                "A-Za-z0-9_.-, max 64); also the subagent worker name."
+                "Unique task name — an ASCII slug (letter/digit start, "
+                "A-Za-z0-9_.-, max 64): it identifies the task in its runs, "
+                "its report and the scheduler's trigger."
             ),
         },
         description={
@@ -120,10 +122,10 @@ class ScheduledTaskSetTool(_ScheduleMixin, Tool):
             return err
         if not _SAFE_TASK_NAME_RE.match(name):
             return (
-                f"Error: name {name!r} is not a valid task/worker name — it is "
-                "also the subagent worker name, so it must start with a letter "
-                "or digit and contain only A-Za-z0-9_.- (max 64 chars).  Use an "
-                'ASCII slug like "daily_report".'
+                f"Error: name {name!r} is not a valid task name — it must start "
+                "with a letter or digit and contain only A-Za-z0-9_.- "
+                "(max 64 chars).  Use an ASCII slug like "
+                '"daily_report".'
             )
         if schedule and schedule != "manual":
             # strict=True matches the consuming path (the scheduler's next_run

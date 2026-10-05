@@ -1042,12 +1042,21 @@ class SlifeApp(App):
 
         elif kind == "subagent_message":
             # Local worker completion — same `⚙️ subagent> ` bubble session
-            # restore shows, so live and restored turns read identically.
+            # restore shows, so live and restored turns read identically.  A
+            # scheduled run's completion is the task's: it names the task, not
+            # the worker the pool gave it to.
             content = kwargs.get("content", "").strip()
             if content:
+                scheduled_task = kwargs.get("scheduled_task") or ""
+                prefix = (
+                    t("scheduled_task_prefix", name=scheduled_task)
+                    if scheduled_task
+                    else t("subagent_prefix",
+                           name=kwargs.get("name") or "subagent")
+                )
                 chat_view.add_user_message(
                     content,
-                    prefix=t("subagent_prefix", name=kwargs.get("name") or "subagent"),
+                    prefix=prefix,
                     timestamp=datetime.now().astimezone(),
                 )
 

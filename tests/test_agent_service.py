@@ -2741,22 +2741,24 @@ class TestAgentServiceSubagent:
 
     @pytest.mark.asyncio
     async def test_subagent_done_rewords_schedule_workers(self, sample_config):
-        """A worker that ran a scheduled task is reported by its run record —
-        "report saved" only when the run was actually confirmed, otherwise the
-        run is settled failed and reported honestly (never a false success);
-        plain subagents keep the detail."""
-        from slife.agent.schedules import _SCHEDULE_WORKERS
+        """A worker that ran a scheduled task is reported as the TASK — by its
+        run record ("report saved" only when the run was actually confirmed,
+        otherwise the run is settled failed and reported honestly), and under
+        the task's name, never the worker's; plain subagents keep the detail."""
+        from slife.agent.schedules import track_scheduled_task
 
-        def make_client(latest, pending):
+        def make_client(status):
             marked: dict = {}
 
             async def fake_call_tool(name, arguments=None):
                 arguments = arguments or {}
                 if name == "__scheduled_task_by_name":
                     return '{"id": 1, "name": "daily_report"}'
-                if name == "__scheduled_runs_list":
-                    runs = pending if arguments.get("status") == "pending" else latest
-                    return _json.dumps({"runs": runs})
+                if name == "__scheduled_run_status":
+                    return _json.dumps(
+                        {"task_id": 1, "due_at": arguments.get("due_at"),
+                         "status": status}
+                    )
                 if name == "__scheduled_mark_run_failed":
                     marked.setdefault("calls", []).append(arguments)
                     return "{}"
@@ -2772,29 +2774,32 @@ class TestAgentServiceSubagent:
         assert cb is not None
         service.inbox.post = AsyncMock()
 
-        _SCHEDULE_WORKERS.add("daily_report")
+        # The dispatch is tracked by the WORKER's task id — the worker itself
+        # is whoever the pool handed the task to.
+        due = "2026-08-25T09:00:00"
+        track_scheduled_task("t-1", "daily_report", due)
         try:
             # Confirmed run → the completion is announced as saved.
-            due = "2026-08-25T09:00:00"
-            client, marked = make_client(
-                [{"status": "ran", "due_at": due}], [],
-            )
+            client, marked = make_client("ran")
             service._tool_ctx.memfiles_client = client
-            await cb("daily_report", "t-1", "result text")
-            content = service.inbox.post.call_args.args[0].content
+            await cb("worker-2", "t-1", "result text")
+            msg = service.inbox.post.call_args.args[0]
+            content = msg.content
             assert "Subagent" not in content
+            assert "worker-2" not in content
             assert "daily_report" in content
             assert "completed — report saved" in content
             assert marked == {}  # confirmed run → nothing settled
+            # The bubble is the task's: a minted worker name never reaches it.
+            assert msg.channel.data["scheduled_task"] == "daily_report"
+            assert msg.channel.display_prefix() == "📅 Scheduled(daily_report)> "
 
             # Unconfirmed run → never claim saved; settle the run failed so it
             # is backfillable and say so.
-            client2, marked2 = make_client(
-                [{"status": "pending", "due_at": due}],
-                [{"status": "pending", "due_at": due}],
-            )
+            track_scheduled_task("t-2", "daily_report", due)
+            client2, marked2 = make_client("pending")
             service._tool_ctx.memfiles_client = client2
-            await cb("daily_report", "t-2", "result text")
+            await cb("worker-2", "t-2", "result text")
             content = service.inbox.post.call_args.args[0].content
             assert "report saved" not in content
             assert "report was not saved" in content
@@ -2804,17 +2809,27 @@ class TestAgentServiceSubagent:
                  "error": "worker finished without confirming the run"},
             ]
 
+            # A task id announced once is not a scheduled completion again:
+            # the tracking is read-and-forget.
+            await cb("worker-2", "t-1", "result text")
+            content = service.inbox.post.call_args.args[0].content
+            assert content.startswith('[Subagent:{"subagent_name": "worker-2"')
+
             await cb("researcher", "t-3", "the result")
-            content2 = service.inbox.post.call_args.args[0].content
+            msg3 = service.inbox.post.call_args.args[0]
             # The auto-push carries the [Subagent:…] marker naming the worker
             # and task id, so the LLM can attribute the pushed result.
-            assert content2.startswith(
+            assert msg3.content.startswith(
                 '[Subagent:{"subagent_name": "researcher", "task_id": "t-3"}] '
             )
-            assert "Subagent **researcher**" in content2
-            assert "the result" in content2
+            assert "Subagent **researcher**" in msg3.content
+            assert "the result" in msg3.content
+            assert msg3.channel.data["scheduled_task"] == ""
+            assert msg3.channel.display_prefix() == "Subagent(researcher)> "
         finally:
-            _SCHEDULE_WORKERS.discard("daily_report")
+            from slife.agent.schedules import _SCHEDULE_TASKS
+
+            _SCHEDULE_TASKS.clear()
 
 
 # ── AgentService callbacks ─────────────────────────────────────────────────

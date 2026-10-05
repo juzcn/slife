@@ -58,11 +58,16 @@ class Channel:
 
     @classmethod
     def subagent(
-        cls, name: str, task_id: str | None = None, scheduled: bool = False,
+        cls, name: str, task_id: str | None = None, scheduled_task: str = "",
     ) -> "Channel":
-        """Local worker completion.  ``scheduled`` marks a schedule worker."""
+        """Local worker completion.
+
+        *name* is the worker.  *scheduled_task* is the scheduled task the
+        worker ran, when it ran one — the completion is then the task's, since
+        which worker the pool handed it to is not the task's identity.
+        """
         return cls("subagent", {
-            "name": name, "task_id": task_id, "scheduled": scheduled,
+            "name": name, "task_id": task_id, "scheduled_task": scheduled_task,
         })
 
     @classmethod
@@ -100,6 +105,11 @@ class Channel:
         if self.kind == "subagent":
             # The i18n-aware label — the one string live and restored bubbles
             # both render (see restore_prefix), so the two cannot diverge.
+            scheduled_task = self.data.get("scheduled_task") or ""
+            if scheduled_task:
+                # A scheduled run's completion belongs to the task, not to the
+                # worker the pool happened to hand it to.
+                return t("scheduled_task_prefix", name=scheduled_task)
             name = self.data.get("name") or "subagent"
             return t("subagent_prefix", name=name)
         peer = self.data.get("agent_name") or self.data.get("name") or "?"

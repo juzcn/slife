@@ -90,6 +90,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Subagent({name})> ",
         "zh": "子代理({name})> ",
     },
+    # A scheduled task's completion — the task's own name, never the worker's:
+    # which worker ran it is not something the task or the user owns.
+    "scheduled_task_prefix": {
+        "en": "📅 Scheduled({name})> ",
+        "zh": "📅 定时({name})> ",
+    },
     "interrupted": {
         "en": "⏹ Interrupted",
         "zh": "⏹ 已中断",

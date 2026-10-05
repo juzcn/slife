@@ -415,6 +415,10 @@ class SubagentRunTaskBackgroundTool(Tool):
     and when none is idle a new one is spawned and named by the pool.  The
     chosen name comes back with the result, because everything that follows —
     polling, cancelling, removing the worker — is addressed by it.
+
+    The chooser is ``SubagentManager.send_task_to_pool``, shared with the
+    scheduled-task dispatch (``slife/agent/schedules.py``): a scheduled task is
+    a delegation like this one, and neither caller names a worker.
     """
 
     name = "subagent_run_task_background"
@@ -448,38 +452,23 @@ class SubagentRunTaskBackgroundTool(Tool):
         if manager is None:
             return hint
 
-        # The pool decides the worker; the caller only decides the task.  A
-        # worker that stops between this read and the send surfaces as the
-        # family's own "not found" error, so there is nothing to guard here.
-        worker = manager.idle_worker()
-        reused = worker is not None
-        if worker is None:
-            if manager.count >= manager.max_subagents:
-                # Every worker busy and no room to add one.  Say so instead of
-                # queueing onto a worker the caller never chose: the wait would
-                # be invisible, and the cap is the pool's to state.
-                loads = ", ".join(
-                    f"{name} ({manager.queued_count(name)} in flight)"
-                    for name in sorted(manager.list())
-                )
-                return (
-                    f"Error: no subagent is idle and the pool is at its limit "
-                    f"({manager.max_subagents}) — {loads}."
-                )
-            try:
-                worker = await manager.spawn()
-            except Exception as e:
-                return f"Error spawning subagent: {e}"
-
         # Taken at send time — the context the task refers to (see
         # ``subagent_send_task``).
         seed = _serialize_cloned_context(getattr(self, "_ctx", None))
+        # The pool decides the worker; the caller only decides the task.  Which
+        # step failed is the pool's to say now that choosing and sending are one
+        # call: a full pool is the one answer worth telling apart, because it is
+        # the cap rather than a fault.
+        from slife.subagent.process import PoolFullError
+
         try:
-            rpc_id = await manager.send_task_async(
-                worker, task, mode=mode, seed=seed,
+            worker, rpc_id, reused = await manager.send_task_to_pool(
+                task, mode=mode, seed=seed,
             )
+        except PoolFullError as e:
+            return f"Error: {e}."
         except Exception as e:
-            return f"Error sending task to subagent '{worker}': {e}"
+            return f"Error delegating to the pool: {e}"
 
         chosen = (
             "reused an idle worker" if reused

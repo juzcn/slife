@@ -578,9 +578,9 @@ class TestSubagentRunTaskBackgroundTool:
         """The pool's answer is the worker — and the caller is told which one,
         because polling, cancelling and removing are all addressed by it."""
         mock_mgr = MagicMock()
-        mock_mgr.idle_worker = MagicMock(return_value="worker-2")
-        mock_mgr.spawn = AsyncMock()
-        mock_mgr.send_task_async = AsyncMock(return_value="rpc-7")
+        mock_mgr.send_task_to_pool = AsyncMock(
+            return_value=("worker-2", "rpc-7", True),
+        )
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             result = await SubagentRunTaskBackgroundTool().execute(task="do X")
@@ -590,47 +590,36 @@ class TestSubagentRunTaskBackgroundTool:
         assert "reused an idle worker" in result
         assert "subagent_get_task_result" in result
         assert "subagent_cancel_task" in result
-        mock_mgr.spawn.assert_not_awaited()
-        mock_mgr.send_task_async.assert_awaited_once_with(
-            "worker-2", "do X", mode="auto", seed=None,
+        mock_mgr.send_task_to_pool.assert_awaited_once_with(
+            "do X", mode="auto", seed=None,
         )
 
     @pytest.mark.asyncio
     async def test_spawns_when_no_worker_is_idle(self):
         mock_mgr = MagicMock()
-        mock_mgr.idle_worker = MagicMock(return_value=None)
-        mock_mgr.count = 1
-        mock_mgr.max_subagents = 5
-        mock_mgr.spawn = AsyncMock(return_value="worker-1")
-        mock_mgr.send_task_async = AsyncMock(return_value="rpc-1")
+        mock_mgr.send_task_to_pool = AsyncMock(
+            return_value=("worker-1", "rpc-1", False),
+        )
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             result = await SubagentRunTaskBackgroundTool().execute(task="do X")
 
-        mock_mgr.spawn.assert_awaited_once_with()
         assert "worker-1" in result
         assert "a new one was spawned" in result
-        mock_mgr.send_task_async.assert_awaited_once_with(
-            "worker-1", "do X", mode="auto", seed=None,
-        )
 
     @pytest.mark.asyncio
     async def test_a_full_pool_is_reported_not_queued(self):
-        """Every worker busy and no room to add one: say so, send nothing.
+        """Every worker busy and no room to add one: the pool says so, and the
+        tool relays its answer rather than a task that was never sent."""
+        from slife.subagent.process import PoolFullError
 
-        Queueing onto a worker the caller never chose would hide the wait, and
-        the cap is the pool's to state.
-        """
         mock_mgr = MagicMock()
-        mock_mgr.idle_worker = MagicMock(return_value=None)
-        mock_mgr.count = 2
-        mock_mgr.max_subagents = 2
-        mock_mgr.list = MagicMock(return_value=["worker-2", "worker-1"])
-        mock_mgr.queued_count = MagicMock(
-            side_effect=lambda n: {"worker-1": 3, "worker-2": 1}[n],
+        mock_mgr.send_task_to_pool = AsyncMock(
+            side_effect=PoolFullError(
+                "no subagent is idle and the pool is at its limit (2) — "
+                "worker-1 (3 in flight), worker-2 (1 in flight)"
+            ),
         )
-        mock_mgr.spawn = AsyncMock()
-        mock_mgr.send_task_async = AsyncMock()
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             result = await SubagentRunTaskBackgroundTool().execute(task="do X")
@@ -639,62 +628,59 @@ class TestSubagentRunTaskBackgroundTool:
         assert "pool is at its limit (2)" in result
         assert "worker-1 (3 in flight)" in result
         assert "worker-2 (1 in flight)" in result
-        mock_mgr.spawn.assert_not_awaited()
-        mock_mgr.send_task_async.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_spawn_failure_that_is_not_the_cap(self):
-        """Room in the pool, but the child would not start — not the cap."""
+    async def test_a_failure_that_is_not_the_cap(self):
+        """The pool could not start or reach a worker — not the cap, so not
+        reported as one."""
         mock_mgr = MagicMock()
-        mock_mgr.idle_worker = MagicMock(return_value=None)
-        mock_mgr.count = 0
-        mock_mgr.max_subagents = 5
-        mock_mgr.spawn = AsyncMock(side_effect=OSError("no interpreter"))
-        mock_mgr.send_task_async = AsyncMock()
+        mock_mgr.send_task_to_pool = AsyncMock(side_effect=OSError("no interpreter"))
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             result = await SubagentRunTaskBackgroundTool().execute(task="do X")
 
-        assert result.startswith("Error spawning subagent")
-        mock_mgr.send_task_async.assert_not_awaited()
+        assert result.startswith("Error delegating to the pool")
+        assert "no interpreter" in result
 
     @pytest.mark.asyncio
     async def test_poll_mode_disables_push(self):
         mock_mgr = MagicMock()
-        mock_mgr.idle_worker = MagicMock(return_value="worker-1")
-        mock_mgr.send_task_async = AsyncMock(return_value="rpc-2")
+        mock_mgr.send_task_to_pool = AsyncMock(
+            return_value=("worker-1", "rpc-2", True),
+        )
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             result = await SubagentRunTaskBackgroundTool().execute(
                 task="do X", mode="poll",
             )
         assert "Auto-push disabled" in result
-        mock_mgr.send_task_async.assert_awaited_once_with(
-            "worker-1", "do X", mode="poll", seed=None,
+        mock_mgr.send_task_to_pool.assert_awaited_once_with(
+            "do X", mode="poll", seed=None,
         )
 
     @pytest.mark.asyncio
     async def test_rejects_invalid_mode(self):
         mock_mgr = MagicMock()
-        mock_mgr.send_task_async = AsyncMock()
+        mock_mgr.send_task_to_pool = AsyncMock()
         with patch(MANAGER_PATH, return_value=mock_mgr):
             result = await SubagentRunTaskBackgroundTool().execute(
                 task="do X", mode="push-forever",
             )
         assert result.startswith("Error")
-        mock_mgr.send_task_async.assert_not_awaited()
+        mock_mgr.send_task_to_pool.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_the_task_carries_the_context_as_it_stands_at_send_time(self):
         mock_mgr = MagicMock()
-        mock_mgr.idle_worker = MagicMock(return_value="worker-1")
-        mock_mgr.send_task_async = AsyncMock(return_value="rpc-1")
+        mock_mgr.send_task_to_pool = AsyncMock(
+            return_value=("worker-1", "rpc-1", True),
+        )
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = _tool_with_parent_context(SubagentRunTaskBackgroundTool())
             await tool.execute(task="do X")
 
-        seed = mock_mgr.send_task_async.call_args.kwargs["seed"]
+        seed = mock_mgr.send_task_to_pool.call_args.kwargs["seed"]
         assert [m["role"] for m in seed] == ["user", "assistant"]
 
 

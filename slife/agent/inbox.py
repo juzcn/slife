@@ -499,14 +499,16 @@ class Inbox:
         # restore must agree on how a local worker completion reads.
         if msg.source == SUBAGENT and self._on_activity:
             try:
-                # Thread the worker name so the live bubble renders
-                # ``Subagent(<name>)> `` and agrees with restore.
+                # Thread the worker name — and, for a scheduled run, the task's
+                # name — so the live bubble renders what restore renders.
+                channel = msg.channel if msg.channel.kind == "subagent" else None
                 await self._on_activity(
                     "subagent_message",
                     content=msg.content,
-                    name=(msg.channel.data.get("name", "")
-                          if msg.channel and msg.channel.kind == "subagent"
-                          else ""),
+                    name=(channel.data.get("name", "") if channel else ""),
+                    scheduled_task=(
+                        channel.data.get("scheduled_task", "") if channel else ""
+                    ),
                 )
             except Exception:
                 pass

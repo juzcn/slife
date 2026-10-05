@@ -390,3 +390,21 @@ class TestRestoreTurnHeader:
 
         kwargs = chat_view.add_user_message.call_args.kwargs
         assert kwargs["prefix"] == t("subagent_prefix", name="researcher")
+
+    @pytest.mark.asyncio
+    async def test_a_scheduled_turn_restores_as_the_task(self):
+        """A scheduled run's completion restores under the TASK's name — the
+        worker the pool gave it to is not persisted into the bubble."""
+        from slife.ui.i18n import t
+
+        app, conv, config, chat_view = self._build()
+        turn = self._turn(
+            "done", channel="subagent",
+            channel_data=('{"name": "worker-2", "task_id": "t9", '
+                          '"scheduled_task": "daily"}'),
+        )
+        await self._restore(app, conv, config, [turn])
+
+        kwargs = chat_view.add_user_message.call_args.kwargs
+        assert kwargs["prefix"] == t("scheduled_task_prefix", name="daily")
+        assert "worker-2" not in kwargs["prefix"]

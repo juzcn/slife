@@ -896,6 +896,16 @@ class SubagentProcess:
         task.add_done_callback(_log_notify_failure)
 
 
+class PoolFullError(RuntimeError):
+    """Every worker is busy and the pool is at ``max_subagents``.
+
+    Raised by :meth:`SubagentManager.send_task_to_pool` — the pool reports
+    itself rather than queueing the task behind a worker the caller never
+    chose: that wait would be invisible.  It is the cap being reached, which is
+    a different answer from a spawn that failed.
+    """
+
+
 class SubagentManager:
     """Manages a collection of SubagentProcess instances.
 
@@ -1043,6 +1053,49 @@ class SubagentManager:
         if (proc := self._subagents.get(agent_name)) is None:
             raise ValueError(f"Subagent '{agent_name}' not found")
         return await proc.send_task_async(task, mode=mode, seed=seed)
+
+    def _pool_loads(self) -> str:
+        """What every running worker is carrying, for the pool-full message.
+
+        Read through :meth:`list`: the count this message explains excludes
+        workers that died on their own and have not been pruned, so naming one
+        here would be naming a worker that is not in the pool.
+        """
+        return ", ".join(
+            f"{name} ({self.queued_count(name)} in flight)"
+            for name in sorted(self.list())
+        )
+
+    async def send_task_to_pool(
+        self, task: str, *, mode: str = "auto",
+        seed: list[dict] | None = None,
+    ) -> tuple[str, str, bool]:
+        """Send *task* to a worker chosen from the pool.
+
+        An idle worker is reused; when none is idle, one is spawned and the
+        pool mints its name.  Returns ``(worker, task_id, reused)`` — the
+        worker is what polling, cancelling and removing are addressed by.
+
+        Raises :class:`PoolFullError` when every worker is busy and the pool is
+        at ``max_subagents``; a spawn or send failure propagates as it is.
+
+        The idle check cannot be atomic with the spawn: ``spawn`` takes the
+        registry lock itself, so a lock held here would deadlock.  Two callers
+        racing for the last slot may both read room and one then hits the cap
+        in ``spawn``; two callers racing for the same idle worker both send to
+        it, and the worker queues the second (the pool never refuses a send).
+        """
+        worker = self.idle_worker()
+        reused = worker is not None
+        if worker is None:
+            if self.count >= self._max:
+                raise PoolFullError(
+                    f"no subagent is idle and the pool is at its limit "
+                    f"({self._max}) — {self._pool_loads()}"
+                )
+            worker = await self.spawn()
+        task_id = await self.send_task_async(worker, task, mode=mode, seed=seed)
+        return worker, task_id, reused
 
     def get_task_result(self, agent_name: str, rpc_id: str) -> tuple[str, str | None]:
         """Return ``(state, result)`` for a task — see

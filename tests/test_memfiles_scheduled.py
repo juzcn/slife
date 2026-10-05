@@ -464,8 +464,9 @@ class TestScheduledServerTools:
 
     @pytest.mark.asyncio
     async def test_task_set_rejects_invalid_name(self):
-        """Task names double as the subagent worker name, so they must be safe
-        identifiers — Chinese/space/over-long names are rejected in-process."""
+        """A task name is the task's identifier — its runs, its report and the
+        scheduler's trigger all key on it — so it must be a slug:
+        Chinese/space/over-long names are rejected in-process."""
         from slife.tools.schedule import ScheduledTaskSetTool
 
         calls = []
@@ -483,7 +484,7 @@ class TestScheduledServerTools:
 
         for bad in ("每日日报", "Daily Report", "-lead", ".dot", "x" * 65):
             err = await tool.execute(name=bad, description="d", schedule="0 9 * * *")
-            assert "not a valid task/worker name" in err, bad
+            assert "not a valid task name" in err, bad
         assert calls == []
 
         ok = await tool.execute(name="daily_report", description="d", schedule="0 9 * * *")
@@ -562,6 +563,53 @@ class TestScheduledServerTools:
                 absent = await _sched_skip("daily", "2027-01-01T00:00:00")
                 assert "No run of" in absent
                 assert "marked skipped" not in absent
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_run_status_answers_for_one_exact_run(self, tmp_path):
+        """A completion asks about the run its worker was dispatched for.
+
+        Runs of one task overlap now, so "the newest run" is not an answer:
+        an older run's completion must be judged against its own ``due_at``.
+        """
+        run_status = getattr(plugin, "__scheduled_run_status")
+        store = await _real_store(tmp_path)
+        try:
+            with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+                await _sched_upsert(name="daily", schedule="0 0 * * *")
+                task = await store.get_scheduled_task("daily")
+                older, newer = "2026-08-25T00:00:00", "2026-08-25T01:00:00"
+                await store.record_scheduled_run(task["id"], older)
+                await store.record_scheduled_run(task["id"], newer)
+                # The older run is confirmed (a report bound to its due_at)
+                # while the newer one is still open.
+                await store.upsert_report(
+                    task["id"], "daily report", "body", due_at=older,
+                )
+
+                assert json.loads(await run_status(task["id"], older))["status"] == "ran"
+                assert json.loads(await run_status(task["id"], newer))["status"] == "pending"
+                unknown = json.loads(await run_status(task["id"], "2027-01-01T00:00:00"))
+                assert unknown["status"] is None
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_tasks_state_carries_the_anchor_only(self, tmp_path):
+        """The state feed answers one question — what the next fire is computed
+        from.  ``has_pending_run`` went with the worker reaper that read it."""
+        tasks_state = getattr(plugin, "__scheduled_tasks_state")
+        store = await _real_store(tmp_path)
+        try:
+            with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+                await _sched_upsert(name="daily", schedule="0 9 * * *")
+                task = await store.get_scheduled_task("daily")
+                await store.record_scheduled_run(task["id"], "2026-08-25T09:00:00")
+
+                state = json.loads(await tasks_state())
+                assert state[0]["last_run_due"] == "2026-08-25T09:00:00"
+                assert "has_pending_run" not in state[0]
         finally:
             await store.close()
 

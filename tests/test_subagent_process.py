@@ -12,6 +12,7 @@ import pytest
 from slife.subagent.process import (
     SubagentProcess,
     SubagentManager,
+    PoolFullError,
     TaskTimeout,
     get_manager,
     set_manager,
@@ -1047,3 +1048,84 @@ class TestIdleWorker:
         manager = SubagentManager(_mock_config())
         manager._subagents = {"w1": self._proc(ready=False)}
         assert manager.idle_worker() is None
+
+
+class TestSendTaskToPool:
+    """The chooser both delegations share: an idle worker is reused, otherwise
+    one is spawned.  The caller brings a task and nothing else."""
+
+    @staticmethod
+    def _proc(*, busy: bool = False, queued: int = 0, rpc: str = "rpc-1"):
+        proc = Mock(spec=SubagentProcess)
+        proc.is_running = True
+        proc.is_ready = True
+        proc.is_busy = busy
+        proc.queued = queued
+        proc.send_task_async = AsyncMock(return_value=rpc)
+        return proc
+
+    @pytest.mark.asyncio
+    async def test_reuses_an_idle_worker(self):
+        manager = SubagentManager(_mock_config())
+        idle = self._proc()
+        manager._subagents = {"worker-1": idle}
+
+        assert await manager.send_task_to_pool("do X") == (
+            "worker-1", "rpc-1", True,
+        )
+        idle.send_task_async.assert_awaited_once_with(
+            "do X", mode="auto", seed=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_spawns_when_no_worker_is_idle(self):
+        """The pool mints the name — the caller brought none."""
+        manager = SubagentManager(_mock_config())
+        manager._subagents = {"worker-1": self._proc(busy=True)}
+
+        with _mark_started(), patch.object(
+            SubagentProcess, "send_task_async", AsyncMock(return_value="rpc-9"),
+        ):
+            result = await manager.send_task_to_pool("do X")
+
+        assert result == ("worker-2", "rpc-9", False)
+        assert sorted(manager._subagents) == ["worker-1", "worker-2"]
+
+    @pytest.mark.asyncio
+    async def test_a_full_pool_is_reported_with_its_loads(self):
+        """Every worker busy and no room to add one: the pool says so rather
+        than queueing the task behind a worker the caller never chose."""
+        manager = SubagentManager(
+            _mock_config(subagent_config={"max_subagents": 1}),
+        )
+        manager._subagents = {"worker-1": self._proc(busy=True, queued=3)}
+
+        with pytest.raises(PoolFullError) as err:
+            await manager.send_task_to_pool("do X")
+
+        assert "no subagent is idle and the pool is at its limit (1)" in str(err.value)
+        assert "worker-1 (3 in flight)" in str(err.value)
+
+    @pytest.mark.asyncio
+    async def test_a_spawn_failure_is_not_reported_as_the_cap(self):
+        manager = SubagentManager(_mock_config())
+        manager._subagents = {"worker-1": self._proc(busy=True)}
+
+        with patch.object(
+            SubagentProcess, "start", AsyncMock(side_effect=OSError("no interpreter")),
+        ):
+            with pytest.raises(OSError):
+                await manager.send_task_to_pool("do X")
+
+    @pytest.mark.asyncio
+    async def test_the_mode_and_seed_reach_the_worker(self):
+        manager = SubagentManager(_mock_config())
+        idle = self._proc()
+        manager._subagents = {"worker-1": idle}
+        seed = [{"role": "user", "content": "u1", "_turn_id": 4}]
+
+        await manager.send_task_to_pool("do X", mode="poll", seed=seed)
+
+        idle.send_task_async.assert_awaited_once_with(
+            "do X", mode="poll", seed=seed,
+        )
