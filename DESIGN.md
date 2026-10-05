@@ -1747,6 +1747,24 @@ plugin registers the send-side tools in the worker so it can act as the parent, 
 queue stays with the parent — a worker that could push into its own parent's inbox would confuse its
 own history.
 
+**The config is a snapshot, not a share.** A worker is handed the parent's in-memory config as JSON
+when its process starts (`SubagentProcess.__init__` writes it to a 0600 temp file the child reads as
+`SLIFE_CONFIG_FILE`), and the yaml paths are deliberately not carried — a worker never re-reads
+`slife.yaml` or `tools.yaml`. So what lives in the shared files and servers tracks the parent live —
+the tool catalog (rows, schemas, enabled and loaded state), the plugin children and the gateway behind
+them, the turns DB — while what rides that snapshot is as old as the **process**: the model
+(`reload_active_model` rebuilds the parent's client and tells no worker), the system prompt rendered
+at boot, whose USER.md profile is therefore the parent's at spawn time (`profile_edit` refreshes only
+the parent), the loop's scalars, and the registry wiring a `tools.yaml` edit would change (a builtin
+switched on, a cli entry, an autoload list).
+
+The catalog is where the two meet, and the asymmetry is worth stating: switching a tool **off** does
+reach a running worker — the parent mirrors `status='disabled'` into the shared row and the load
+refusal reads the row — while switching one **on** does not: the row says enabled, but the instance
+was never in that process's registry. Reuse refreshes none of this: `spawn()` hands back a running
+worker rather than re-snapshotting, so **a worker's configuration changes only when its process is
+replaced** — `remove_subagent` before the next delegation, or a restart of the parent.
+
 **Recursion is allowed**: a subagent can spawn its own descendants. There is intentionally no
 subagent-specific gate — trust, not enforcement.
 

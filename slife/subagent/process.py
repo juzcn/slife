@@ -107,6 +107,13 @@ class SubagentProcess:
 
         self._name = name
         self._config = config
+        # The whole config this child will ever see: it reads this once at boot
+        # and never re-reads the yaml (``_``-prefixed paths stay behind).  What
+        # a worker shares with its parent — the tool catalog, the plugin
+        # children, the turns DB — is live; what rides this snapshot is as old
+        # as the process, and reuse never re-snapshots (DESIGN §6.5): a model
+        # switch, a profile edit or a tools.yaml change reaches a worker when
+        # its process is replaced, not before.
         self._config_json = _json.dumps(config.to_dict(), ensure_ascii=False)
         # Path of a 0600 temp file carrying _config_json to the child — the
         # config contains resolved plaintext api_keys, which must not ride the
