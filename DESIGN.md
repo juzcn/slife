@@ -284,7 +284,7 @@ plugins by inherited port (§6.5).
 | **Internal tool** | A `__`-prefixed plugin tool serving the main process, filtered out of the schema before registration. |
 | **Plugin** | A child process declared by one row in the central plugin spec, speaking MCP over Streamable HTTP. |
 | **Worker** | A subagent: a child process running the same loop with a declared, zeroed capability set. |
-| **Silence contract** | A bare `.` assistant reply is silence — never rendered, from any turn source. |
+| **Silence contract** | A bare `.` assistant reply is silence — never rendered, from any turn source. The turn is saved like any other and the reply stays in the model's context; only the display drops it. |
 
 The `_` prefix is what the model reads: it marks a tool the harness drives, and so one the model
 should not choose. `__` marks a tool the model never sees at all — internal to a plugin and filtered
