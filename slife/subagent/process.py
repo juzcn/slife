@@ -923,11 +923,36 @@ class SubagentManager:
     @property
     def count(self) -> int: return sum(1 for p in self._subagents.values() if p.is_running)
 
+    @property
+    def max_subagents(self) -> int:
+        """The pool's cap (``subagent.max_subagents``) — what :attr:`count` is
+        judged against.
+
+        Read by a caller that must answer "the pool is full" and "the spawn
+        failed" differently: both are one comparison away from ``count`` and
+        ``_max``, and neither is distinguishable from the other by the
+        ``RuntimeError`` alone.
+        """
+        return self._max
+
     def spawned_running(self, name: str) -> bool:
         """True if a worker with *name* is currently running (spawn() would
         reuse it rather than create a new one).  Lets tools report reuse."""
         proc = self._subagents.get(name)
         return proc is not None and proc.is_running
+
+    def _mint_worker_name(self) -> str:
+        """The first free ``worker-N`` — the pool's name for a nameless spawn.
+
+        Called under ``_registry_lock`` straight after :meth:`_prune_dead`, so
+        every remaining key is a running worker and a name absent from the
+        registry is a name no live worker holds (one the user gave a worker, or
+        one an earlier mint took, is skipped rather than reused).
+        """
+        n = 1
+        while f"worker-{n}" in self._subagents:
+            n += 1
+        return f"worker-{n}"
 
     def _prune_dead(self) -> list[str]:
         """Drop workers that exited on their own; return their names.
@@ -946,19 +971,29 @@ class SubagentManager:
         return dead
 
     async def spawn(self, name: str | None = None) -> str:
-        # The worker's name is its identity — never auto-generate an id.
-        if not name or not name.strip():
-            raise ValueError("subagent_name is required")
-        name = name.strip()
-        if not _SAFE_SUBAGENT_NAME.match(name):
-            # The name lands in the child's system prompt ("You are {name}")
-            # and its log filename — a bare `.strip()` let an injected parent
-            # forge the identity line or traverse out of the log dir ("..\..").
-            raise ValueError(
-                "subagent_name must be a safe identifier "
-                "(letters/digits/_/. with a letter/digit start, max 64 chars) — "
-                f"got {name!r}"
-            )
+        """Start a worker, or hand back the running one, and return its name.
+
+        *name* is the worker's identity.  **The caller names it, or the pool
+        does**: omitted (``None``), the manager mints the first free
+        ``worker-N`` for a caller that has no name to give — ``spawn_subagent``
+        still requires one, and an explicit blank is still refused, so a typo
+        cannot quietly become a minted worker.  A name that is already running
+        is reused rather than restarted.  Raises ``ValueError`` for an unsafe
+        explicit name and ``RuntimeError`` at the ``max_subagents`` cap.
+        """
+        if name is not None:
+            name = name.strip()
+            if not name:
+                raise ValueError("subagent_name is required")
+            if not _SAFE_SUBAGENT_NAME.match(name):
+                # The name lands in the child's system prompt ("You are {name}")
+                # and its log filename — a bare `.strip()` let an injected parent
+                # forge the identity line or traverse out of the log dir ("..\..").
+                raise ValueError(
+                    "subagent_name must be a safe identifier "
+                    "(letters/digits/_/. with a letter/digit start, max 64 chars) — "
+                    f"got {name!r}"
+                )
         # Everything from here to registration is atomic.  The model may emit
         # two spawn calls for one name in a single assistant message and the
         # loop runs tool calls concurrently (`asyncio.gather`), so without this
@@ -967,6 +1002,12 @@ class SubagentManager:
         # leaving a live worker that nothing can list, send to, or stop.
         async with self._registry_lock:
             self._prune_dead()
+            # Minted here, not at the door: the prune has just left every
+            # registry key a running worker, so "absent" means "free" — and two
+            # nameless spawns in one tool batch (the loop runs tool calls
+            # concurrently) each get their own name instead of overwriting.
+            if name is None:
+                name = self._mint_worker_name()
             # Reuse a running worker BEFORE the cap check — spawn() is
             # idempotent (the spawned_running() contract), so re-invoking a
             # name that is already running at the cap must hand back the
@@ -1083,6 +1124,36 @@ class SubagentManager:
         """True if *agent_name* has a task in flight (serially processed)."""
         proc = self._subagents.get(agent_name)
         return bool(proc and proc.is_busy)
+
+    def is_idle(self, agent_name: str) -> bool:
+        """True if *agent_name* can take a task now — the pool chooser's reading.
+
+        A running, ready worker with nothing in flight.  ``is_busy`` is
+        ``bool(_awaiting)`` and ``_awaiting`` holds *every* unresolved send
+        (sync, async and async-poll alike), so it already covers what the
+        schedule recycler's extra ``pending_async_count`` checks; that clause is
+        not repeated here.  False for a name that is unknown or dead.
+
+        The definition lives here rather than at each caller so the listing and
+        the chooser cannot drift: a worker the listing calls idle is one the
+        next pool-picking delegation would actually take.
+        """
+        proc = self._subagents.get(agent_name)
+        return bool(
+            proc and proc.is_running and proc.is_ready and not proc.is_busy
+        )
+
+    def idle_worker(self) -> str | None:
+        """Name of a worker that can take a task now, or ``None``.
+
+        The first idle worker in registry order — one is as good as another, so
+        there is no load balancing.  A dead entry is skipped, never pruned:
+        this is a read, and ``_prune_dead`` mutates under the spawn lock.
+        """
+        for name in self._subagents:
+            if self.is_idle(name):
+                return name
+        return None
 
     def queued_count(self, agent_name: str) -> int:
         """Return the number of in-flight/queued tasks for *agent_name*."""

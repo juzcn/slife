@@ -8,9 +8,12 @@ this agent (via the a2a plugin).
 
 This module is fully decoupled from A2A:
   * lifecycle — ``spawn_subagent`` / ``list_subagents`` / ``remove_subagent``
+    / ``subagent_list_tasks``
   * delegation — ``subagent_send_task`` (sync wait),
     ``subagent_send_task_async`` (async; mode=auto result auto-pushed to the
     parent, mode=poll not pushed),
+    ``subagent_run_task_background`` (the same, with the worker chosen from
+    the pool rather than named),
     ``subagent_get_task_result`` (poll an async result — works for both
     modes: an auto-pushed result stays retrievable)
 
@@ -89,8 +92,8 @@ class ListSubagentsTool(Tool):
     name = "list_subagents"
     category = "Subagent"
     description = (
-        "List local subagent workers and their state (PID, readiness, "
-        "context, busy/async counts)."
+        "List local subagent workers and their state (PID, readiness, idle or "
+        "busy with its in-flight count, pending async count)."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -115,10 +118,19 @@ class ListSubagentsTool(Tool):
             p = manager.get(aid)
             pid = f" [pid={p.pid}]" if p and p.pid else ""
             ready = " [ready]" if p and p.is_ready else " [starting]"
-            busy = f" [busy: {p.queued} in flight]" if p and p.is_busy else ""
+            # Idle or busy, decided by the manager's own predicate — the same
+            # one the pool chooser uses, so a worker marked idle here is one a
+            # background delegation would take.  A worker still booting is
+            # neither, and `[starting]` above already says so.
+            if manager.is_idle(aid):
+                state = " [idle]"
+            elif manager.is_busy(aid):
+                state = f" [busy: {manager.queued_count(aid)} in flight]"
+            else:
+                state = ""
             async_n = p.pending_async_count if p else 0
             async_info = f" [async: {async_n}]" if async_n else ""
-            lines.append(f"  - {aid}{pid}{ready}{busy}{async_info}")
+            lines.append(f"  - {aid}{pid}{ready}{state}{async_info}")
         return "\n".join(lines)
 
 
@@ -149,7 +161,9 @@ class SpawnSubagentTool(Tool):
         if manager is None:
             return hint
 
-        # The worker's name is its identity — never auto-generate an id.
+        # The worker's name is its identity — named by the caller here, or
+        # minted by the pool for ``subagent_run_task_background``; this tool
+        # never invents one.
         worker_name = subagent_name.strip()
         if err := require_params(
             subagent_name=worker_name,
@@ -392,6 +406,102 @@ class SubagentSendTaskAsyncTool(Tool):
             )
         except Exception as e:
             return f"Error sending task to subagent '{subagent_name}': {e}"
+
+
+class SubagentRunTaskBackgroundTool(Tool):
+    """Run a task in the background on a worker chosen from the pool.
+
+    ``subagent_send_task_async`` without the name: an idle worker is reused,
+    and when none is idle a new one is spawned and named by the pool.  The
+    chosen name comes back with the result, because everything that follows —
+    polling, cancelling, removing the worker — is addressed by it.
+    """
+
+    name = "subagent_run_task_background"
+    category = "Subagent"
+    description = (
+        "Run a task in the background on a local subagent worker chosen from "
+        "the pool — an idle worker is reused, otherwise a new one is spawned; "
+        "returns a task_id. mode 'auto' (default) auto-pushes the result and "
+        "stays pollable, mode 'poll' disables auto-push (retrieve with "
+        "subagent_get_task_result). The task is sent with a copy of your "
+        "settled context (the turns already completed), subject to the "
+        "worker's own context selection before it runs: a candidate context, "
+        "not a guarantee."
+    )
+    parameters: ClassVar[dict] = make_params(
+        task={"type": "string", "description": "Self-contained task for the worker."},
+        mode={
+            "type": "string",
+            "enum": ["auto", "poll"],
+            "default": "auto",
+            "description": "'auto' (default) auto-push the result (also pollable); 'poll' — no push, retrieve with subagent_get_task_result.",
+        },
+    )
+
+    async def execute(self, task: str = "", mode: str = "auto", **kwargs) -> str:
+        if err := require_params(task=task):
+            return err
+        if mode not in ("auto", "poll"):
+            return f"Error: mode must be 'auto' or 'poll', got {mode!r}."
+        manager, hint = _manager_or_hint()
+        if manager is None:
+            return hint
+
+        # The pool decides the worker; the caller only decides the task.  A
+        # worker that stops between this read and the send surfaces as the
+        # family's own "not found" error, so there is nothing to guard here.
+        worker = manager.idle_worker()
+        reused = worker is not None
+        if worker is None:
+            if manager.count >= manager.max_subagents:
+                # Every worker busy and no room to add one.  Say so instead of
+                # queueing onto a worker the caller never chose: the wait would
+                # be invisible, and the cap is the pool's to state.
+                loads = ", ".join(
+                    f"{name} ({manager.queued_count(name)} in flight)"
+                    for name in sorted(manager.list())
+                )
+                return (
+                    f"Error: no subagent is idle and the pool is at its limit "
+                    f"({manager.max_subagents}) — {loads}."
+                )
+            try:
+                worker = await manager.spawn()
+            except Exception as e:
+                return f"Error spawning subagent: {e}"
+
+        # Taken at send time — the context the task refers to (see
+        # ``subagent_send_task``).
+        seed = _serialize_cloned_context(getattr(self, "_ctx", None))
+        try:
+            rpc_id = await manager.send_task_async(
+                worker, task, mode=mode, seed=seed,
+            )
+        except Exception as e:
+            return f"Error sending task to subagent '{worker}': {e}"
+
+        chosen = (
+            "reused an idle worker" if reused
+            else "no worker was idle, so a new one was spawned"
+        )
+        if mode == "poll":
+            delivery = (
+                "Auto-push disabled (mode=poll) — retrieve the result with "
+                "subagent_get_task_result."
+            )
+        else:
+            delivery = (
+                "Auto-push enabled (mode=auto): the result will be delivered "
+                "automatically when complete — it can also be polled at any "
+                "time with subagent_get_task_result."
+            )
+        return (
+            f"Task running in the background on subagent '{worker}' "
+            f"({chosen}; task_id: {rpc_id}). {delivery}\n"
+            f"subagent_get_task_result and subagent_cancel_task both take "
+            f"subagent_name={worker}, task_id={rpc_id}."
+        )
 
 
 class SubagentGetTaskResultTool(Tool):

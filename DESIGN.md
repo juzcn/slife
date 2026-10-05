@@ -1588,7 +1588,7 @@ The wire is JSON-RPC 2.0, deliberately not the mesh protocol: the worker is *loc
 | Direction | Purpose |
 |---|---|
 | child → parent | startup readiness — the spawn await wakes on it, **or on child exit** |
-| parent → child | one task (one turn) **with the parent's context at send time**, correlated by request id, never by text |
+| parent → child | one task (one turn) **with the parent's settled turns at send time**, correlated by request id, never by text |
 | parent → child | cancel — drop if queued, preempt if running |
 | parent → child | a shared plugin moved to a new port — reconnect |
 | parent → child | graceful shutdown |
@@ -1612,11 +1612,13 @@ Four implementation details carry real weight:
 
 ### 6.2 One turn per task
 
-A spawn call starts a named worker — nothing more. **A worker's name is its identity** — explicit,
-never auto-generated, and validated, because the name lands in the child's system prompt *and* its
-log filename. Reuse is explicit and trivial: spawning a running name returns the live worker. There
-is no state for a spawn to keep or re-apply, because **the context is not the worker's — it is the
-task's**.
+A spawn call starts a named worker — nothing more. **A worker's name is its identity** — the caller
+names it, or the pool does, and it is validated either way, because the name lands in the child's
+system prompt *and* its log filename. A delegation that brings no name of its own — the pool picks the
+worker for it — is the one case the manager mints one: the first free `worker-N`, so a name a caller
+chose is never taken from it. Reuse is explicit and trivial: spawning a running name returns the live
+worker. There is no state for a spawn to keep or re-apply, because **the context is not the worker's —
+it is the task's**.
 
 **Context is decided when a task is sent, not when a worker is started.** Every send carries a clone
 of the parent's context — its **settled** turns, minus its system message (the worker renders its
@@ -1647,17 +1649,21 @@ own words: the framing is transport, so the parent's task record, its preview an
 the text the model wrote.
 
 Each task therefore runs on **its own**, freshly seeded context and never accumulates one across
-tasks, and a task queued behind a busy worker keeps the context of its own send. On top of that seed
-the task runs the *same* per-turn rebuild the main agent runs (§2.3): the discriminator sees the
-seeded context, the turns of it that are stored can be kept or dropped, and memory can be recalled
-over the shared turn log — read-only, since the persisted live-context list has one owner and it is
-not the worker.
+tasks, and a task queued behind a busy worker keeps the context of its own send. The seed is then put
+through the *same* per-turn rebuild the main agent runs (§2.3), in the same place — ahead of the agent
+loop, so the loop runs on what the discriminator selected from the seed rather than on the seed
+itself: every seeded turn is a stored turn, so a keep-list can name any of them, and memory can be
+recalled over the shared turn log — read-only, since the persisted live-context list has one owner and
+it is not the worker.
 
 A task is one turn by construction: one send becomes one inbox message, which becomes exactly one
 loop run. Inside that run the loop may make many LLM and tool calls, bounded by the iteration limit
 **and by the window ceiling** — a worker has no save point (§2.2's other trim site), so the loop
 enforces it at the request boundary. **The worker processes tasks serially**; extra sends to a busy
-worker are queued by the *parent*, never refused and never re-sent.
+worker are queued by the *parent*, never refused and never re-sent. A delegation that picks its own
+worker is the one that does not queue: it takes a free worker, mints another while the pool is under
+its cap, and — with every worker busy and the pool full — reports the pool rather than putting the
+task behind a worker the caller never chose.
 
 ### 6.3 Identity and result delivery
 

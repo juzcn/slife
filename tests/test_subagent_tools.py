@@ -17,6 +17,7 @@ from slife.tools.subagent import (
     SubagentCancelTaskTool,
     SubagentGetTaskResultTool,
     SubagentListTasksTool,
+    SubagentRunTaskBackgroundTool,
     SubagentSendTaskAsyncTool,
     SubagentSendTaskTool,
 )
@@ -35,6 +36,7 @@ TOOLS = [
     RemoveSubagentTool,
     SubagentSendTaskTool,
     SubagentSendTaskAsyncTool,
+    SubagentRunTaskBackgroundTool,
     SubagentGetTaskResultTool,
     SubagentListTasksTool,
     SubagentCancelTaskTool,
@@ -93,13 +95,14 @@ class TestListSubagentsTool:
         mock_proc.pid = 12345
         mock_proc.is_ready = True
         mock_proc.is_running = True
-        mock_proc.is_busy = True
-        mock_proc.queued = 2
         mock_proc.pending_async_count = 1
 
         mock_mgr = MagicMock()
         mock_mgr.list = MagicMock(return_value=["sub-1", "sub-2"])
         mock_mgr.get = MagicMock(return_value=mock_proc)
+        mock_mgr.is_idle = MagicMock(return_value=False)
+        mock_mgr.is_busy = MagicMock(return_value=True)
+        mock_mgr.queued_count = MagicMock(return_value=2)
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = ListSubagentsTool()
@@ -109,6 +112,29 @@ class TestListSubagentsTool:
             assert "pid=12345" in result
             assert "busy: 2 in flight" in result
             assert "async: 1" in result
+
+    @pytest.mark.asyncio
+    async def test_an_idle_worker_is_marked_idle(self):
+        """The label is the manager's own predicate — the same one the pool
+        chooser reads, so "idle" here means a background task would take it."""
+        mock_proc = MagicMock()
+        mock_proc.pid = 999
+        mock_proc.is_ready = True
+        mock_proc.pending_async_count = 0
+
+        mock_mgr = MagicMock()
+        mock_mgr.list = MagicMock(return_value=["worker-1"])
+        mock_mgr.get = MagicMock(return_value=mock_proc)
+        mock_mgr.is_idle = MagicMock(return_value=True)
+        mock_mgr.is_busy = MagicMock(return_value=False)
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            result = await ListSubagentsTool().execute()
+
+        assert "worker-1" in result
+        assert "[idle]" in result
+        assert "busy" not in result
+        assert "async" not in result
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -529,6 +555,147 @@ class TestSubagentSendTaskAsyncTool:
             )
         assert result.startswith("Error")
         mock_mgr.send_task_async.assert_not_awaited()
+
+
+class TestSubagentRunTaskBackgroundTool:
+    """The worker is the pool's choice; the caller only brings the task."""
+
+    @pytest.mark.asyncio
+    async def test_missing_task(self):
+        tool = SubagentRunTaskBackgroundTool()
+        result = await tool.execute(task="")
+        assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_no_manager(self):
+        with patch(MANAGER_PATH, return_value=None):
+            tool = SubagentRunTaskBackgroundTool()
+            result = await tool.execute(task="do X")
+        assert result == "Error: subagent manager is not running."
+
+    @pytest.mark.asyncio
+    async def test_reuses_an_idle_worker(self):
+        """The pool's answer is the worker — and the caller is told which one,
+        because polling, cancelling and removing are all addressed by it."""
+        mock_mgr = MagicMock()
+        mock_mgr.idle_worker = MagicMock(return_value="worker-2")
+        mock_mgr.spawn = AsyncMock()
+        mock_mgr.send_task_async = AsyncMock(return_value="rpc-7")
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            result = await SubagentRunTaskBackgroundTool().execute(task="do X")
+
+        assert "worker-2" in result
+        assert "rpc-7" in result
+        assert "reused an idle worker" in result
+        assert "subagent_get_task_result" in result
+        assert "subagent_cancel_task" in result
+        mock_mgr.spawn.assert_not_awaited()
+        mock_mgr.send_task_async.assert_awaited_once_with(
+            "worker-2", "do X", mode="auto", seed=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_spawns_when_no_worker_is_idle(self):
+        mock_mgr = MagicMock()
+        mock_mgr.idle_worker = MagicMock(return_value=None)
+        mock_mgr.count = 1
+        mock_mgr.max_subagents = 5
+        mock_mgr.spawn = AsyncMock(return_value="worker-1")
+        mock_mgr.send_task_async = AsyncMock(return_value="rpc-1")
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            result = await SubagentRunTaskBackgroundTool().execute(task="do X")
+
+        mock_mgr.spawn.assert_awaited_once_with()
+        assert "worker-1" in result
+        assert "a new one was spawned" in result
+        mock_mgr.send_task_async.assert_awaited_once_with(
+            "worker-1", "do X", mode="auto", seed=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_full_pool_is_reported_not_queued(self):
+        """Every worker busy and no room to add one: say so, send nothing.
+
+        Queueing onto a worker the caller never chose would hide the wait, and
+        the cap is the pool's to state.
+        """
+        mock_mgr = MagicMock()
+        mock_mgr.idle_worker = MagicMock(return_value=None)
+        mock_mgr.count = 2
+        mock_mgr.max_subagents = 2
+        mock_mgr.list = MagicMock(return_value=["worker-2", "worker-1"])
+        mock_mgr.queued_count = MagicMock(
+            side_effect=lambda n: {"worker-1": 3, "worker-2": 1}[n],
+        )
+        mock_mgr.spawn = AsyncMock()
+        mock_mgr.send_task_async = AsyncMock()
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            result = await SubagentRunTaskBackgroundTool().execute(task="do X")
+
+        assert result.startswith("Error")
+        assert "pool is at its limit (2)" in result
+        assert "worker-1 (3 in flight)" in result
+        assert "worker-2 (1 in flight)" in result
+        mock_mgr.spawn.assert_not_awaited()
+        mock_mgr.send_task_async.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_spawn_failure_that_is_not_the_cap(self):
+        """Room in the pool, but the child would not start — not the cap."""
+        mock_mgr = MagicMock()
+        mock_mgr.idle_worker = MagicMock(return_value=None)
+        mock_mgr.count = 0
+        mock_mgr.max_subagents = 5
+        mock_mgr.spawn = AsyncMock(side_effect=OSError("no interpreter"))
+        mock_mgr.send_task_async = AsyncMock()
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            result = await SubagentRunTaskBackgroundTool().execute(task="do X")
+
+        assert result.startswith("Error spawning subagent")
+        mock_mgr.send_task_async.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_poll_mode_disables_push(self):
+        mock_mgr = MagicMock()
+        mock_mgr.idle_worker = MagicMock(return_value="worker-1")
+        mock_mgr.send_task_async = AsyncMock(return_value="rpc-2")
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            result = await SubagentRunTaskBackgroundTool().execute(
+                task="do X", mode="poll",
+            )
+        assert "Auto-push disabled" in result
+        mock_mgr.send_task_async.assert_awaited_once_with(
+            "worker-1", "do X", mode="poll", seed=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_mode(self):
+        mock_mgr = MagicMock()
+        mock_mgr.send_task_async = AsyncMock()
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            result = await SubagentRunTaskBackgroundTool().execute(
+                task="do X", mode="push-forever",
+            )
+        assert result.startswith("Error")
+        mock_mgr.send_task_async.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_task_carries_the_context_as_it_stands_at_send_time(self):
+        mock_mgr = MagicMock()
+        mock_mgr.idle_worker = MagicMock(return_value="worker-1")
+        mock_mgr.send_task_async = AsyncMock(return_value="rpc-1")
+
+        with patch(MANAGER_PATH, return_value=mock_mgr):
+            tool = _tool_with_parent_context(SubagentRunTaskBackgroundTool())
+            await tool.execute(task="do X")
+
+        seed = mock_mgr.send_task_async.call_args.kwargs["seed"]
+        assert [m["role"] for m in seed] == ["user", "assistant"]
 
 
 class TestSubagentGetTaskResultTool:

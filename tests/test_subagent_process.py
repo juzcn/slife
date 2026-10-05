@@ -425,6 +425,12 @@ class TestSubagentManagerInit:
         assert manager._max == 3
         assert not hasattr(manager, "_timeout")
 
+    def test_max_subagents_is_the_public_cap(self):
+        """Read by a caller that must tell "the pool is full" from "the spawn
+        failed" — ``count`` alone cannot say which."""
+        cfg = _mock_config(subagent_config={"max_subagents": 3})
+        assert SubagentManager(cfg).max_subagents == 3
+
     def test_defaults_from_config(self):
         cfg = _mock_config()
         manager = SubagentManager(cfg)
@@ -920,3 +926,124 @@ class TestSpawnRegistry:
             await manager.spawn("fresh")
 
         assert list(manager._subagents) == ["fresh"]
+
+
+def _mark_started():
+    """Patch ``SubagentProcess.start`` so a spawned worker looks alive.
+
+    The real start boots an interpreter; the registry logic under test only
+    needs the state it leaves behind — which is what the spawn tests above
+    fabricate by hand.
+    """
+    async def fake_start(self):
+        self._running = True
+        self._process = Mock()
+        self._process.returncode = None
+        self._ready.set()
+
+    return patch.object(SubagentProcess, "start", fake_start)
+
+
+class TestSpawnAutoName:
+    """A spawn that names no worker is named by the pool.
+
+    The caller names it, or the pool does: ``spawn_subagent`` still has to
+    bring a name, and only *no* name is the pool's — never a blank one.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_first_free_name_is_minted(self):
+        manager = SubagentManager(_mock_config())
+        with _mark_started():
+            first = await manager.spawn()
+            second = await manager.spawn()
+        assert (first, second) == ("worker-1", "worker-2")
+        assert sorted(manager._subagents) == ["worker-1", "worker-2"]
+
+    @pytest.mark.asyncio
+    async def test_a_live_worker_the_user_named_is_skipped(self):
+        """``worker-1`` is a name a caller may have used first."""
+        manager = SubagentManager(_mock_config())
+        taken = Mock(spec=SubagentProcess)
+        taken.is_running = True
+        manager._subagents = {"worker-1": taken}
+
+        with _mark_started():
+            assert await manager.spawn() == "worker-2"
+
+    @pytest.mark.asyncio
+    async def test_a_dead_entry_does_not_hold_its_name(self):
+        """The prune runs before the mint, so the name a dead worker had is free."""
+        manager = SubagentManager(_mock_config())
+        dead = Mock(spec=SubagentProcess)
+        dead.is_running = False
+        manager._subagents = {"worker-1": dead}
+
+        with _mark_started():
+            assert await manager.spawn() == "worker-1"
+        assert list(manager._subagents) == ["worker-1"]
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_blank_is_still_refused(self):
+        """Only *no* name is the pool's — a typo must not quietly become one."""
+        manager = SubagentManager(_mock_config())
+        with pytest.raises(ValueError):
+            await manager.spawn("   ")
+        assert manager._subagents == {}
+
+    @pytest.mark.asyncio
+    async def test_the_cap_still_applies_to_a_minted_name(self):
+        manager = SubagentManager(
+            _mock_config(subagent_config={"max_subagents": 1}),
+        )
+        with _mark_started():
+            await manager.spawn()
+            with pytest.raises(RuntimeError):
+                await manager.spawn()
+        assert list(manager._subagents) == ["worker-1"]
+
+
+class TestIdleWorker:
+    """The pool chooser's one question: may a task start on this worker now?"""
+
+    @staticmethod
+    def _proc(*, running: bool = True, ready: bool = True, busy: bool = False):
+        proc = Mock(spec=SubagentProcess)
+        proc.is_running = running
+        proc.is_ready = ready
+        proc.is_busy = busy
+        return proc
+
+    def test_no_workers_is_none(self):
+        assert SubagentManager(_mock_config()).idle_worker() is None
+
+    def test_is_idle_is_false_for_an_unknown_name(self):
+        """The listing asks per name; an unknown one is not idle by default."""
+        assert SubagentManager(_mock_config()).is_idle("ghost") is False
+
+    def test_returns_a_running_idle_worker(self):
+        manager = SubagentManager(_mock_config())
+        manager._subagents = {"w1": self._proc()}
+        assert manager.idle_worker() == "w1"
+
+    def test_skips_a_busy_worker(self):
+        manager = SubagentManager(_mock_config())
+        manager._subagents = {"w1": self._proc(busy=True), "w2": self._proc()}
+        assert manager.idle_worker() == "w2"
+
+    def test_all_busy_is_none(self):
+        manager = SubagentManager(_mock_config())
+        manager._subagents = {
+            "w1": self._proc(busy=True), "w2": self._proc(busy=True),
+        }
+        assert manager.idle_worker() is None
+
+    def test_a_dead_entry_is_not_idle(self):
+        manager = SubagentManager(_mock_config())
+        manager._subagents = {"dead": self._proc(running=False)}
+        assert manager.idle_worker() is None
+
+    def test_a_worker_still_booting_is_not_idle(self):
+        manager = SubagentManager(_mock_config())
+        manager._subagents = {"w1": self._proc(ready=False)}
+        assert manager.idle_worker() is None
