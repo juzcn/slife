@@ -24,12 +24,7 @@ from jinja2 import Environment, FileSystemLoader
 
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.paths import (
-    get_config_path,
     get_data_dir,
-    get_db_path,
-    get_jobs_dir,
-    get_logs_dir,
-    get_memfiles_dir,
     get_skills_dir,
 )
 
@@ -165,16 +160,14 @@ def _render_context(config: Config) -> dict:
         "python_cmd": sys.executable,
         "python_version": sys.version.split()[0],
         "package_manager": "uv",
+        "data_dir": str(get_data_dir().resolve()),
+        # Absolute, not ``data_dir``-relative: the model hands this to a shell
+        # to run a skill's scripts, and the working directory is not the data
+        # dir.  The skill tools print the same resolved root for the same
+        # reason (``slife/tools/skill.py``).
+        "skills_directory": str(get_skills_dir().resolve()),
         # ── 图像与多模态 ──
         "has_vision": model.supports_vision,
-        # ── 工具与技能 ──
-        "skills_directory": str(get_skills_dir().resolve()),
-        "data_dir": str(get_data_dir().resolve()),
-        "config_path": str(get_config_path().resolve()),
-        "logs_dir": str(get_logs_dir().resolve()),
-        "db_path": str(get_db_path(config.agent_name).resolve()),
-        "jobs_directory": str(get_jobs_dir().resolve()),
-        "memfiles_dir": str(get_memfiles_dir(config.agent_name).resolve()),
         # ── 多代理通信 (A2A) ──
         "a2a_configured": a2a is not None and a2a.enabled,
         "a2a_transport": (a2a.transport if a2a else "mqtt"),

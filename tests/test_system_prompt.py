@@ -50,8 +50,8 @@ class TestBuild:
         assert "1. Message & Turn" in result
         assert "2. LLM Context" in result
         assert "3. Memory — the persistent layer, two stores" in result
-        assert "Turns DB (memdb)" in result
-        assert "File Cabinet (memfiles)" in result
+        assert "Turns DB (" in result
+        assert "File Cabinet (" in result
         assert "4. Annotations" in result
         assert "1. Images & multimodal" in result
         assert "2. Credentials" in result
@@ -80,16 +80,15 @@ class TestBuild:
         assert "every 1800 seconds" not in build(cfg)
 
     def test_heartbeat_off_is_not_advertised(self, cfg):
-        """`heartbeat_interval: 0` — no heartbeat to describe, and the rest of
-        the Autonomy block stays, renumbered."""
+        """`heartbeat_interval: 0` — no heartbeat bullet, and the rest of the
+        Autonomy block stays."""
         from slife.agent.system_prompt import build
         cfg.heartbeat_interval = 0
         result = build(cfg)
-        assert "human-like heartbeat" not in result
-        assert "[Heartbeat] click arrives" not in result
+        assert "heartbeat turn arrives" not in result
         assert "every 0 seconds" not in result
-        assert "1. Timer" in result
-        assert "2. Silence output" in result
+        assert "`wait_minutes` ends this turn" in result
+        assert "a reply of exactly `.` is silence" in result
 
     def test_vision_disabled(self, cfg):
         from slife.agent.system_prompt import build
@@ -137,11 +136,7 @@ class TestBuild:
         from slife.agent.system_prompt import build
         result = build(cfg)
         assert "Data root:" in result
-        assert "Config file:" in result
-        assert "Logs:" in result
-        assert "Turns DB:" in result
         assert "Skills:" in result
-        assert "File Cabinet:" in result
 
     def test_no_personality_language(self, cfg):
         """No 'helpful assistant' or tone instructions.  (The opening 'You
