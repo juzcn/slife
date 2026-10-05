@@ -764,9 +764,8 @@ class SessionStore(VecStoreLifecycleMixin):
     # the trim drops the turns it evicted, the clear empties it.
     #
     # The list order must always equal history order (oldest first): restore
-    # pairs position with the rebuilt message order, and the turn prompt's
-    # "Context covers" reads the first entry as the oldest.  A future scheme
-    # may pick a non-contiguous *set*, but not reorder it.
+    # pairs position with the rebuilt message order.  A future scheme may pick
+    # a non-contiguous *set*, but not reorder it.
 
     _CONTEXT_TURNS_KEY = "context_turns"
 

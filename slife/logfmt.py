@@ -186,8 +186,8 @@ class SessionFormatter(logging.Formatter):
 
 
 def format_turn_ts(dt: datetime | None = None) -> str:
-    """One wall-clock timestamp format for 'Context covers since …' lines,
-    turn dates and log/restore display: ``YYYY-MM-DD HH:MM:SS`` local.
+    """One wall-clock timestamp format for turn dates and log/restore
+    display: ``YYYY-MM-DD HH:MM:SS`` local.
 
     Duplicated as a bare ``strftime`` in loop / system_prompt / restore /
     message_history before this helper — one format, one place.

@@ -18,7 +18,7 @@ from slife.logfmt import sanitize_secrets
 from slife.agent.message_history import MessageHistory
 from slife.platform import detect_current_shell
 from slife.tools.registry import ToolRegistry
-from slife.logfmt import format_turn_ts, request_scope, elapsed
+from slife.logfmt import request_scope, elapsed
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 if TYPE_CHECKING:
@@ -75,11 +75,9 @@ class AgentCancelled(Exception):
 #: Attempts / base delay are developer-owned (registry timeouts.stream.*).
 
 #: Caps on the per-session caches.  Heartbeat / A2A one-shot histories add
-#: a usage entry keyed by ``id(history)`` every turn and the context-date
-#: list grows per turn until a trim consumes it — without these bounds a long
-#: session (or a huge context window that never trims) grows them forever.
+#: a usage entry keyed by ``id(history)`` every turn — without this bound a
+#: long session grows the cache forever.
 _MAX_USAGE_CACHE = 1000
-_MAX_CONTEXT_DATES = 5000
 
 #: Inactivity watchdog on LLM streaming: a stream that produces no chunk
 #: for this many seconds is declared "stalled" — the provider accepted the
@@ -443,10 +441,6 @@ class AgentLoop:
         self._last_cwd: str = ""
         self._last_shell: str = ""
         self._last_model_name: str = ""
-        self._context_time_start: str = ""  # earliest turn date in context; set by restore, advanced by trim
-        self._last_context_time_start: str = ""  # change-detection in the turn prompt
-        self._context_turn_dates: list[str] = []  # dates of restored turns, oldest-first; consumed by trim
-        self._current_turn_start: str = ""  # start date of the running turn (seeds the trim-exhausted turn-prompt anchor)
         #: ``id(history)`` whose restore must not be immediately
         #: shredded by the ceiling trim.  Restore primes the history
         #: up to the ceiling; the first replacement turn would otherwise
@@ -479,18 +473,14 @@ class AgentLoop:
         """Clear the cancel signal for the next run."""
         self._cancel_event.clear()
 
-    def reset_context_time(self) -> None:
-        """Clear the tracked context time range and the measured occupancy.
+    def reset_context_usage(self) -> None:
+        """Forget the measured occupancy of the context.
 
-        The next turn re-seeds ``_context_time_start`` from its own start, so
-        "Context covers" reflects the fresh context; forgetting the measured
-        size keeps ``_turn_prompt`` / the status bar from reporting a context
-        that no longer exists.  Called by the rebuild's empty selection — the
-        one remaining path that empties the context outright.
+        Called by the rebuild's empty selection — the one remaining path that
+        empties the context outright.  Without this, ``_turn_prompt`` and the
+        status bar would report the pre-clear occupancy of a context that no
+        longer exists.
         """
-        self._context_time_start = ""
-        self._context_turn_dates = []
-        self._last_context_time_start = ""
         self._usage_by_history.clear()
         self._last_usage = TokenUsage()
 
@@ -997,13 +987,6 @@ class AgentLoop:
         # one turn behind and bounded by the same budget — a far better read
         # than nothing.  The trim is a consumer too: its ceiling applies in
         # this mode as well (see `_trim_context`).
-        # "Context covers" comes from the rebuilt set now, not from an
-        # incremental date list.
-        stamps = [t.get("created_at") or "" for t in turns]
-        stamps = [s for s in stamps if s]
-        self._context_time_start = stamps[0] if stamps else ""
-        self._context_turn_dates = list(stamps[1:])
-        self._last_context_time_start = ""
 
         if not turns:
             # An empty context is persisted by *clearing* — the restore
@@ -1018,7 +1001,7 @@ class AgentLoop:
             # the previous round's number is one turn behind and a far better
             # read than nothing).  Without this, `_turn_prompt` and the status
             # bar would report the pre-clear occupancy.
-            self.reset_context_time()
+            self.reset_context_usage()
         elif self.set_context_turns is not None:
             written = await self.set_context_turns([t["rowid"] for t in turns])
             if not written:
@@ -1146,27 +1129,10 @@ class AgentLoop:
                     "context_turns_drop_failed count=%d", len(evicted),
                 )
 
-        # Advance the tracked "Context covers" time range by the same
-        # number of removed turns (each complete turn has one user msg).
         removed = len(turns)
-        for _ in range(removed):
-            if self._context_turn_dates:
-                self._context_time_start = self._context_turn_dates.pop(0)
-        if removed and not self._context_turn_dates:
-            # The trim removed every tracked turn (list exhausted — e.g. a
-            # fresh session whose only tracked turn was in
-            # _context_time_start, or all later dates got popped).  The
-            # context now starts at the current turn (the one this save
-            # just finished, which extract_oldest_turns always keeps);
-            # don't leave a stale "covers since …" that points at a turn
-            # that is no longer in context.  Seed from the current turn's
-            # actual start (recorded at run() time), not from wall-clock
-            # now — the turn prompt's "covers since HH:MM" must track the turn.
-            self._context_time_start = getattr(
-                self, "_current_turn_start", "") or format_turn_ts()
         logger.info(
-            "context_trimmed turns=%d ids=%d tokens_freed=%d time_start=%s",
-            removed, len(evicted), tokens_freed, self._context_time_start,
+            "context_trimmed turns=%d ids=%d tokens_freed=%d",
+            removed, len(evicted), tokens_freed,
         )
 
         # Tell the LLM how much of its context was just cut.  Runtime-only
@@ -1214,12 +1180,6 @@ class AgentLoop:
         if shell_now != self._last_shell:
             kwargs["shell"] = shell_now
             self._last_shell = shell_now
-        # Context start is reported on the first turn and then only when it
-        # changes (restore sets it, trim advances it) — same change-detection
-        # as model/CWD/shell.
-        if self._context_time_start != self._last_context_time_start:
-            kwargs["context_time_start"] = self._context_time_start
-            self._last_context_time_start = self._context_time_start
         # presence_events are NOT drained here — _auto_invoke reads them only
         # when the prompt is actually recorded, so a cancelled turn doesn't lose
         # them.
@@ -2011,26 +1971,6 @@ class AgentLoop:
 
         with request_scope():
             try:
-                # Track the context time range.  "Context covers" is shown on
-                # the first turn, then only when restore or a trim advances it.
-                # Invariant: _context_time_start holds the OLDEST turn's date;
-                # _context_turn_dates holds the rest (restore seeds dates[1:]).
-                # Same 'YYYY-MM-DD HH:MM:SS' wall-clock format restore seeds
-                # (_context_time_start), so "Context covers" never flips format.
-                turn_start = format_turn_ts()
-                # Remember the current turn's start for the trim-exhausted
-                # branch (seed _context_time_start from it, not from now).
-                self._current_turn_start = turn_start
-                if not self._context_time_start:
-                    self._context_time_start = turn_start
-                else:
-                    self._context_turn_dates.append(turn_start)
-                    if len(self._context_turn_dates) > _MAX_CONTEXT_DATES:
-                        # Keep the OLDEST dates (what a trim consumes) — a
-                        # huge window that never trims must not grow the list
-                        # without bound.
-                        del self._context_turn_dates[_MAX_CONTEXT_DATES:]
-
                 # Threshold eviction BEFORE the first request: the
                 # oldest-by-LRU loaded tools over the budget leave the tool
                 # list for this turn.  Eviction stays a turn-boundary

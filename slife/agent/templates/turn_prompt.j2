@@ -3,9 +3,6 @@ Per-turn context (harness-injected):
 {%- if restarted %}
    - System restarted
 {%- endif %}
-{%- if context_time_start %}
-   - Context covers: {{ context_time_start }} ~ now
-{%- endif %}
 {%- if model_name %}
    - Switched model: {{ model_name }} (context: {{ context_window }} tokens, inputs: {{ input_modalities }})
 {%- endif %}

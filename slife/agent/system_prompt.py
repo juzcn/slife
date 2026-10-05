@@ -195,7 +195,6 @@ def build_turn_prompt(
     input_modalities: str = "",
     cwd: str = "",
     shell: str = "",
-    context_time_start: str = "",
     presence_events: list[tuple[float, str]] | None = None,
     schedule_status: list[dict] | None = None,
     a2a_stale_tasks: list[dict] | None = None,
@@ -205,9 +204,6 @@ def build_turn_prompt(
 
     Time and token are always shown.  Model, CWD, shell are only
     passed (and rendered) when they changed since the last turn.
-    *context_time_start* is passed every turn — it shows what time
-    window the current context covers, and is updated after restore
-    and after each trim.
 
     *presence_events* is a list of ``(epoch_seconds, text)`` pairs for
     peer agents that came online / went offline / timed out since the
@@ -269,7 +265,6 @@ def build_turn_prompt(
         input_modalities=input_modalities,
         cwd=cwd,
         shell=shell,
-        context_time_start=context_time_start,
         presence_events=rendered_presence,
         schedule_status=rendered_schedule,
         a2a_stale_tasks=rendered_a2a_stale,

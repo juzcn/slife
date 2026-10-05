@@ -334,18 +334,6 @@ def restore_context(
     if turns:
         service.agent_loop._just_restored_history = id(history)
 
-    # Prime the context time range so _turn_prompt shows the LLM
-    # what time window its current context covers.  The start date is
-    # advanced by the agent loop after each trim.
-    if turns:
-        dates = [
-            t.get("created_at", "")[:19].replace("T", " ")
-            for t in turns if t.get("created_at")
-        ]
-        if dates:
-            service.agent_loop._context_time_start = dates[0]
-            service.agent_loop._context_turn_dates = dates[1:]  # reserve for trim
-
     # Reset session token counter — session starts fresh
     service.session_usage.total_tokens = 0
 

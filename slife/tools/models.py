@@ -765,9 +765,6 @@ _TURN_PROMPT_PARAMS = make_params(
          "description": "Working directory; omitted while it is unchanged."},
     shell={"type": "string", "default": "",
            "description": "Active shell; omitted while it is unchanged."},
-    context_time_start={"type": "string", "default": "",
-                        "description": "Timestamp the context's covered time "
-                                       "window starts at."},
     presence_events={"type": "array", "default": [],
                      "items": {"type": "array"},
                      "description": "Peer online/offline/timeout events since "
