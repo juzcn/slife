@@ -66,6 +66,40 @@ async def _create_turn_table(conn) -> None:
         )""")
 
 
+async def _create_semantic_stub(conn) -> None:
+    """The ``turn_semantic`` table the unembedded queries exclude against.
+
+    Its real DDL is a vec0 VIRTUAL table, which only the sqlite-vec extension
+    can create — and that extension does not load on every platform (a Linux
+    or macOS Python built without ``enable_load_extension`` is the case CI
+    hits).  Both unembedded queries read one column of this table and nothing
+    else, so a plain table with that column is the same table to them,
+    wherever the tests run.
+    """
+    await conn.execute(
+        "CREATE TABLE IF NOT EXISTS turn_semantic (turn_rowid INTEGER)")
+
+
+async def _unembedded_store(db_path: Path) -> SessionStore:
+    """A store on a real DB whose unembedded queries answer on any platform.
+
+    ``turn`` is the real schema and the store carries a live embedding
+    dimension, but it is never brought up through ``setup()``: where sqlite-vec
+    cannot load, ``setup()`` degrades to ``vec_dim=0`` and BOTH queries
+    short-circuit to "nothing unembedded" — the predicate under test was never
+    asked anything, and the test failed on a fact about the platform instead of
+    a fact about the code.  The vec0 extension is not what either query is
+    about, so it is not part of the fixture.
+    """
+    conn = await aiosqlite.connect(str(db_path))
+    conn.row_factory = aiosqlite.Row
+    await _create_turn_table(conn)
+    await _create_semantic_stub(conn)
+    store = SessionStore(db_path)
+    store._conn = conn
+    return store
+
+
 class TestNow:
     """Tests for _now()."""
 
@@ -1106,8 +1140,7 @@ class TestSessionStoreCountTurns:
         While it did, the count never reached 0, the semantic gate never
         opened, and the drainer parked in "stalled" blaming the embedder.
         """
-        store = SessionStore(tmp_path / "mem.db")
-        await store.setup()
+        store = await _unembedded_store(tmp_path / "mem.db")
         try:
             await store.save_turn(
                 user_message="",
@@ -1134,8 +1167,7 @@ class TestSessionStoreCountTurns:
         The column is on the embedding path; a raise there froze the pending
         count instead of reporting one unreadable row.
         """
-        store = SessionStore(tmp_path / "mem.db")
-        await store.setup()
+        store = await _unembedded_store(tmp_path / "mem.db")
         try:
             await store.save_turn(user_message="a real question")
             # A legacy/hand-edited row: the column is TEXT, so it can hold
