@@ -16,10 +16,13 @@ from local_embed import logging as le_logging
 
 
 class TestResolveLogDir:
-    def test_slife_log_dir_env_wins(self, monkeypatch):
+    def test_slife_log_dir_env_wins(self, monkeypatch, tmp_path):
         """When slife spawns us, logs land in slife's log directory."""
-        monkeypatch.setenv("SLIFE_LOG_DIR", "C:\\slife\\logs")
-        assert le_logging.resolve_log_dir().as_posix() == "C:/slife/logs"
+        # Build the path with the host's separators: a literal "C:\\slife\\logs"
+        # is one component on POSIX, where a backslash is not a separator.
+        log_dir = tmp_path / "slife" / "logs"
+        monkeypatch.setenv("SLIFE_LOG_DIR", str(log_dir))
+        assert le_logging.resolve_log_dir() == log_dir
 
     def test_standalone_default_under_home(self, monkeypatch):
         """No SLIFE_LOG_DIR → ~/.local-embed/logs (standalone)."""
