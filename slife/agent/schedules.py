@@ -39,9 +39,9 @@ import logging
 import time as _time
 from datetime import datetime
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.agent.system_prompt import render_template
 from slife.timeutil import now_local_seconds
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +70,8 @@ def is_autonomous_trigger(text: str) -> bool:
     from slife.agent.heartbeat import HEARTBEAT_MARK
     from slife.agent.timer import TIMER_MARK
 
-    return (
-        text.startswith(HEARTBEAT_MARK)
-        or text.startswith(SCHEDULE_MARK)
-        or text.startswith(TIMER_MARK)
-    )
+    return text.startswith((HEARTBEAT_MARK, SCHEDULE_MARK, TIMER_MARK))
+
 
 #: Loop cadence and the missed-fire grace window are registry cadences —
 #: ``pacing.schedule_poll`` (cron's smallest unit is a minute, so a 30 s poll
@@ -190,7 +187,7 @@ async def _call(client, tool: str, arguments: dict | None = None):
     try:
         raw = await client.call_tool(tool, arguments)
         return json.loads(raw) if raw else None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort tool call: any failure yields None
         logger.debug("schedule_tool_error tool=%s err=%s", tool, e)
         return None
 
@@ -202,7 +199,10 @@ async def _load_task_states(client) -> list[dict]:
 
 
 def _latest_fire_at_or_before(
-    schedule: str, anchor: datetime, now: datetime, tz: str | None,
+    schedule: str,
+    anchor: datetime,
+    now: datetime,
+    tz: str | None,
 ) -> datetime | None:
     """Return the newest fire time in ``(anchor, now]``, or None.
 
@@ -285,13 +285,15 @@ async def _fire(service, task: dict) -> None:
     if inbox is None:
         logger.warning("schedule_fire_no_inbox task=%s", name)
         return
-    await inbox.post(AgentMessage(
-        source=SYSTEM,
-        content=trigger_text(name, task.get("description", "")),
-        handler=_SilentHandler(),
-        on_reply=_surface_reply(service),
-        channel=Channel.system(),
-    ))
+    await inbox.post(
+        AgentMessage(
+            source=SYSTEM,
+            content=trigger_text(name, task.get("description", "")),
+            handler=_SilentHandler(),
+            on_reply=_surface_reply(service),
+            channel=Channel.system(),
+        )
+    )
     logger.info("schedule_fired task=%s", name)
 
 
@@ -301,14 +303,18 @@ def _surface_reply(service):
     *cancelled* / *stop_reason* complete the ``on_reply`` contract; a
     cancelled turn's reply is empty and suppressed, so neither is read.
     """
+
     async def _reply(
-        text: str, cancelled: bool = False, stop_reason: str = "",
+        text: str,
+        cancelled: bool = False,
+        stop_reason: str = "",
     ) -> None:
         # The silence rule is the service's, shared with the heartbeat and
         # timer turns — never a second copy of it here.
         t = service.autonomous_reply_text(text)
         if t is not None:
             await service.surface_schedule(t)
+
     return _reply
 
 
@@ -345,11 +351,13 @@ async def _pending_schedule_runs(client) -> list[dict]:
             if key in seen:
                 continue  # never render the same run twice
             seen.add(key)
-            runs.append({
-                "name": names.get(r.get("task_id"), ""),
-                "due_at": r.get("due_at", ""),
-                "status": r.get("status", status),
-            })
+            runs.append(
+                {
+                    "name": names.get(r.get("task_id"), ""),
+                    "due_at": r.get("due_at", ""),
+                    "status": r.get("status", status),
+                }
+            )
 
     runs.sort(key=lambda r: r["due_at"], reverse=True)
     return runs[:_TURN_PROMPT_MAX_RUNS]
@@ -386,8 +394,9 @@ async def _schedule_completion_content(service, name: str, due_at: str) -> str:
             f"Scheduled task **{name}** finished — but no scheduled-task "
             f"record exists, so no run could be confirmed."
         )
-    status = await _call(client, "__scheduled_run_status",
-                         {"task_id": task["id"], "due_at": due_at})
+    status = await _call(
+        client, "__scheduled_run_status", {"task_id": task["id"], "due_at": due_at}
+    )
     if not isinstance(status, dict):
         # The record could not be read — no verdict is available, and a guess
         # either way would be a fact the user cannot check.
@@ -404,9 +413,15 @@ async def _schedule_completion_content(service, name: str, due_at: str) -> str:
         )
     # This run was not confirmed, and it can never complete now (this worker is
     # done) — close it so it shows up for backfill, then report honestly.
-    await _call(client, "__scheduled_mark_run_failed",
-                {"task_id": task["id"], "due_at": due_at,
-                 "error": "worker finished without confirming the run"})
+    await _call(
+        client,
+        "__scheduled_mark_run_failed",
+        {
+            "task_id": task["id"],
+            "due_at": due_at,
+            "error": "worker finished without confirming the run",
+        },
+    )
     return (
         f"Scheduled task **{name}** finished, but its report was not saved — "
         f"the run is recorded as **failed**. Ask me to backfill it or run it "
@@ -466,10 +481,12 @@ async def schedule_startup_sweep(service) -> None:
             continue
         _, due_dt = decision
         due_iso = due_dt.astimezone().isoformat(timespec="seconds")
-        await _call(client, "__scheduled_mark_missed",
-                    {"task_id": task["id"], "due_at": due_iso})
-        logger.info("schedule_missed task=%s due_at=%s",
-                    task.get("name"), due_iso)
+        await _call(
+            client,
+            "__scheduled_mark_missed",
+            {"task_id": task["id"], "due_at": due_iso},
+        )
+        logger.info("schedule_missed task=%s due_at=%s", task.get("name"), due_iso)
 
     # Feed the turn prompt's backfill reminder with what we just settled.
     await _refresh_schedule_status(service, client)
@@ -506,15 +523,17 @@ async def schedule_loop(service) -> None:
             # long turn.  Age alone is not proof of "never dispatched": a
             # trigger queued past the grace window but not yet processed must
             # not re-fire (a second trigger → a second worker → double run).
-            stale = [n for n, t in _pending_fires.items()
-                     if _time.monotonic() - t > _timeouts.timeouts.pacing.miss_grace]
+            stale = [
+                n
+                for n, t in _pending_fires.items()
+                if _time.monotonic() - t > _timeouts.timeouts.pacing.miss_grace
+            ]
             inbox = getattr(service, "inbox", None)
             for n in stale:
                 still_queued = bool(
-                    inbox is not None and inbox.has_queued(
-                        lambda m, name=n: m.content.startswith(
-                            f"[Schedule {name}"
-                        )
+                    inbox is not None
+                    and inbox.has_queued(
+                        lambda m, name=n: m.content.startswith(f"[Schedule {name}")
                     )
                 )
                 if still_queued:
@@ -535,7 +554,7 @@ async def schedule_loop(service) -> None:
                     await _fire(service, task)
         except asyncio.CancelledError:
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — the schedule loop must survive a bad tick
             logger.debug("schedule_loop_error err=%s", e)
 
 
@@ -566,8 +585,8 @@ async def fire_task_now(service, name: str, due_at: str = "") -> str:
     still has real substance to act on.  It degrades to an unseeded history
     when no context is reachable.
     """
-    from slife.tools.subagent import _serialize_cloned_context
     from slife.subagent.process import get_manager
+    from slife.tools.subagent import _serialize_cloned_context
 
     client = _memfiles_client(service)
     if client is None:
@@ -580,16 +599,19 @@ async def fire_task_now(service, name: str, due_at: str = "") -> str:
     # never reaches the task's text or its records.
     task_name = task["name"]
     due_iso = due_at.strip() or now_local_seconds()
-    await _call(client, "__scheduled_record_run",
-                {"task_id": task["id"], "due_at": due_iso})
+    await _call(
+        client, "__scheduled_record_run", {"task_id": task["id"], "due_at": due_iso}
+    )
 
     async def _fail(reason: str) -> str:
         # The run was recorded pending; a dispatch that never happened can
         # never complete, so settle it here rather than at the next startup
         # sweep.
-        await _call(client, "__scheduled_mark_run_failed",
-                    {"task_id": task["id"], "due_at": due_iso,
-                     "error": reason[:200]})
+        await _call(
+            client,
+            "__scheduled_mark_run_failed",
+            {"task_id": task["id"], "due_at": due_iso, "error": reason[:200]},
+        )
         return f"Error: dispatch failed — {reason}"
 
     manager = get_manager()
@@ -601,12 +623,11 @@ async def fire_task_now(service, name: str, due_at: str = "") -> str:
     seed = _serialize_cloned_context(getattr(service, "_tool_ctx", None))
     try:
         worker, rpc_id, _reused = await manager.send_task_to_pool(
-            build_worker_task(task_name, task.get("description", ""),
-                              due_at=due_iso),
+            build_worker_task(task_name, task.get("description", ""), due_at=due_iso),
             mode="auto",
             seed=seed,
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — a dispatch failure (pool full, spawn/send error) becomes a friendly message
         logger.warning("schedule_dispatch_failed task=%s err=%s", name, e)
         return await _fail(str(e))
 

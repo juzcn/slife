@@ -23,9 +23,9 @@ from typing import TYPE_CHECKING
 
 from cachetools import FIFOCache
 
-from slife.platform import terminate_process
-from slife.fifoset import FifoSet
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.fifoset import FifoSet
+from slife.platform import terminate_process
 
 # A subagent_name is rendered into the child's system prompt identity line and
 # into its log filename — restrict it to a safe identifier so an injected
@@ -79,15 +79,15 @@ class TaskTimeout(TimeoutError):
 # ── Module-level current-manager reference ───────────────────────────
 # Set by AgentService.start_subagent() / stop_subagent() so that builtin
 # tools (Slife.tools.subagent) can look up the live SubagentManager.
-_current_manager: "SubagentManager | None" = None
+_current_manager: SubagentManager | None = None
 
 
-def get_manager() -> "SubagentManager | None":
+def get_manager() -> SubagentManager | None:
     """Return the live SubagentManager, or None if subagents are not active."""
     return _current_manager
 
 
-def set_manager(manager: "SubagentManager") -> None:
+def set_manager(manager: SubagentManager) -> None:
     """Set the current SubagentManager (called by AgentService.start_subagent)."""
     global _current_manager
     _current_manager = manager
@@ -102,7 +102,7 @@ def clear_manager() -> None:
 class SubagentProcess:
     """Single subagent child process with JSON-RPC 2.0 IPC."""
 
-    def __init__(self, name: str, config: "Config"):
+    def __init__(self, name: str, config: Config):
         import json as _json
 
         self._name = name
@@ -153,31 +153,47 @@ class SubagentProcess:
         self._late_results: FifoSet = FifoSet()
 
     @property
-    def name(self) -> str: return self._name
+    def name(self) -> str:
+        return self._name
+
     @property
-    def pid(self) -> int | None: return self._process.pid if self._process else None
+    def pid(self) -> int | None:
+        return self._process.pid if self._process else None
+
     @property
-    def is_running(self) -> bool: return self._running and self._process is not None and self._process.returncode is None
+    def is_running(self) -> bool:
+        return (
+            self._running
+            and self._process is not None
+            and self._process.returncode is None
+        )
+
     @property
-    def is_ready(self) -> bool: return self._ready.is_set()
+    def is_ready(self) -> bool:
+        return self._ready.is_set()
+
     @property
     def is_busy(self) -> bool:
         """True while a task is in flight (the child processes tasks serially)."""
         return bool(self._awaiting)
+
     @property
     def queued(self) -> int:
         """Number of tasks sent but not yet resolved (in-flight + queued)."""
         return len(self._awaiting)
+
     @property
     def pending_async_count(self) -> int:
         """Number of async tasks sent but not yet completed."""
         return sum(
-            1 for r in self._task_records.values()
+            1
+            for r in self._task_records.values()
             if r.get("mode") == "async" and r.get("status") == "pending"
         )
 
     async def start(self) -> None:
-        if self._running: return
+        if self._running:
+            return
         cmd = [sys.executable, "-m", "slife.subagent.worker"]
         logger.info("spawn name=%s", self._name)
         env = dict(os.environ)
@@ -190,7 +206,8 @@ class SubagentProcess:
         # visible via /proc/<pid>/environ.
         if self._config_json:
             fd, path = tempfile.mkstemp(
-                prefix="slife_subagent_", suffix=".json",
+                prefix="slife_subagent_",
+                suffix=".json",
             )
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -211,8 +228,12 @@ class SubagentProcess:
         # (MCP / memdb / wechat) via inherited ports — no isolation.
         try:
             self._process = await asyncio.create_subprocess_exec(
-                *cmd, stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
             self._running = True
             # Start the stdout/stderr readers BEFORE anything writes to stdin:
             # the child boots with stderr at DEBUG and only then reads its first
@@ -237,7 +258,7 @@ class SubagentProcess:
         ready_spawn = _timeouts.timeouts.ready.spawn  # call-time lookup
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=ready_spawn)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await self._stop_process()
             raise RuntimeError(
                 f"Subagent '{self._name}' not ready within {ready_spawn:g}s"
@@ -260,30 +281,39 @@ class SubagentProcess:
         await self._stop_process()
 
     async def _stop_process(self) -> None:
-        if not self._process or not self._running: return
+        if not self._process or not self._running:
+            return
         logger.info("stop name=%s pid=%s", self._name, self._process.pid)
         for f in self._pending.values():
-            if not f.done(): f.set_exception(RuntimeError(f"Subagent '{self._name}' stopped"))
+            if not f.done():
+                f.set_exception(RuntimeError(f"Subagent '{self._name}' stopped"))
         self._pending.clear()
         self._async_results.clear()
         self._abandon_pending("worker stopped")
         stdout_task = self._stdout_task
         stderr_task = self._stderr_task
         for t in (stdout_task, stderr_task):
-            if t and not t.done(): t.cancel()
+            if t and not t.done():
+                t.cancel()
         # Send JSON-RPC shutdown before terminating
         if self._process.stdin and self._process.returncode is None:
             try:
-                shutdown = json.dumps({"jsonrpc":"2.0","method":"shutdown","id":None}) + "\n"
-                self._process.stdin.write(shutdown.encode()); await self._process.stdin.drain()
+                shutdown = (
+                    json.dumps({"jsonrpc": "2.0", "method": "shutdown", "id": None})
+                    + "\n"
+                )
+                self._process.stdin.write(shutdown.encode())
+                await self._process.stdin.drain()
             except Exception:
                 logger.debug("shutdown_send_failed name=%s", self._name, exc_info=True)
         await terminate_process(self._process, label=f"subagent:{self._name}")
-        self._running = False; self._process = None
+        self._running = False
+        self._process = None
         # Await both reader tasks
         for t in (stdout_task, stderr_task):
             if t and not t.done():
-                try: await t
+                try:
+                    await t
                 except asyncio.CancelledError:
                     # We cancelled these two a few lines up, so their own
                     # cancellation is expected here and swallowed.  An OUTER
@@ -316,7 +346,8 @@ class SubagentProcess:
         does nothing.
         """
         abandoned = [
-            rpc_id for rpc_id, rec in self._task_records.items()
+            rpc_id
+            for rpc_id, rec in self._task_records.items()
             if rec.get("status") == "pending"
         ]
         for rpc_id in abandoned:
@@ -333,12 +364,15 @@ class SubagentProcess:
                 self._notify_manager_task_done(rpc_id, text)
         self._awaiting.clear()
         for t in self._watchdogs.values():
-            if not t.done(): t.cancel()
+            if not t.done():
+                t.cancel()
         self._watchdogs.clear()
         if abandoned:
             logger.info(
                 "subagent_tasks_abandoned name=%s count=%d reason=%s",
-                self._name, len(abandoned), reason,
+                self._name,
+                len(abandoned),
+                reason,
             )
 
     def _cleanup_config_file(self) -> None:
@@ -355,18 +389,27 @@ class SubagentProcess:
         running (worker/cancel is a notification — no response expected)."""
         try:
             if self._process is not None and self._process.stdin is not None:
-                req = json.dumps(
-                    {"jsonrpc": "2.0", "method": "worker/cancel",
-                     "params": {"task_id": task_id}, "id": None},
-                ) + "\n"
+                req = (
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "worker/cancel",
+                            "params": {"task_id": task_id},
+                            "id": None,
+                        },
+                    )
+                    + "\n"
+                )
                 async with self._stdin_lock:
                     self._process.stdin.write(req.encode())
                     await self._process.stdin.drain()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort cancel: a dead or not-yet-ready worker is skipped silently
             pass
 
     async def send_notification(
-        self, method: str, params: dict | None = None,
+        self,
+        method: str,
+        params: dict | None = None,
     ) -> None:
         """Send a JSON-RPC notification to the worker (no response expected).
 
@@ -387,11 +430,16 @@ class SubagentProcess:
         except Exception:
             logger.debug(
                 "subagent_notify_send_failed name=%s method=%s",
-                self._name, method, exc_info=True,
+                self._name,
+                method,
+                exc_info=True,
             )
 
     async def _send_request(
-        self, task: str, mode: str, seed: list[dict] | None = None,
+        self,
+        task: str,
+        mode: str,
+        seed: list[dict] | None = None,
     ) -> tuple[str, asyncio.Future[str] | None]:
         """Record one task, write ``worker/send``, and return ``(rpc_id, future)``.
 
@@ -425,8 +473,7 @@ class SubagentProcess:
         if seed:
             params["seed"] = seed
         req = json.dumps(
-            {"jsonrpc": "2.0", "method": "worker/send",
-             "params": params, "id": rpc_id},
+            {"jsonrpc": "2.0", "method": "worker/send", "params": params, "id": rpc_id},
             ensure_ascii=False,
         )
         try:
@@ -444,7 +491,9 @@ class SubagentProcess:
         return rpc_id, future
 
     async def send_task(
-        self, task: str, timeout: float | None = None,
+        self,
+        task: str,
+        timeout: float | None = None,
         seed: list[dict] | None = None,
     ) -> str:
         """Send a task and wait for its result, up to *timeout*.
@@ -463,7 +512,7 @@ class SubagentProcess:
         assert future is not None
         try:
             return await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(rpc_id, None)
             # Release the await-slot — otherwise a worker whose task never
             # resolves stays busy forever, every later send auto-queues async,
@@ -477,7 +526,8 @@ class SubagentProcess:
             self._record_update(rpc_id, "failed", "Error: timed out")
             await self._send_child_cancel(rpc_id)
             raise TaskTimeout(
-                f"Task to '{self._name}' timed out after {timeout}s", rpc_id,
+                f"Task to '{self._name}' timed out after {timeout}s",
+                rpc_id,
             ) from None
         except asyncio.CancelledError:
             self._pending.pop(rpc_id, None)
@@ -492,7 +542,10 @@ class SubagentProcess:
             raise
 
     async def send_task_async(
-        self, task: str, mode: str = "auto", seed: list[dict] | None = None,
+        self,
+        task: str,
+        mode: str = "auto",
+        seed: list[dict] | None = None,
     ) -> str:
         """Send a task without waiting for the result — returns *rpc_id*.
 
@@ -510,7 +563,9 @@ class SubagentProcess:
         ``work.task_lifetime``): honest work is never meant to reach it.
         """
         rpc_id, _ = await self._send_request(
-            task, "async-poll" if mode == "poll" else "async", seed=seed,
+            task,
+            "async-poll" if mode == "poll" else "async",
+            seed=seed,
         )
         self._watchdogs[rpc_id] = asyncio.create_task(self._expire(rpc_id))
         logger.debug("subagent_async_send name=%s rpc_id=%s", self._name, rpc_id)
@@ -527,10 +582,10 @@ class SubagentProcess:
         forever on an auto-push that will not come.
         """
         lifetime = _timeouts.timeouts.work.task_lifetime  # call-time lookup
+        # A cancellation (resolved or stopped — the task answered after all)
+        # propagates on its own; only the bookkeeping must run either way.
         try:
             await asyncio.sleep(lifetime)
-        except asyncio.CancelledError:
-            raise  # resolved (or stopped) — the task answered after all
         finally:
             # This watchdog is finished either way; when the task answered
             # first, the resolver had already forgotten it.
@@ -554,7 +609,9 @@ class SubagentProcess:
         await self._send_child_cancel(rpc_id)
         logger.warning(
             "subagent_async_task_expired name=%s task=%s lifetime=%g",
-            self._name, rpc_id, lifetime,
+            self._name,
+            rpc_id,
+            lifetime,
         )
 
     def _resolve_watchdog(self, rpc_id: str) -> None:
@@ -673,8 +730,10 @@ class SubagentProcess:
             rec["result"] = result[:2000]
 
     async def _read_stdout(self) -> None:
-        if not self._process or not self._process.stdout: return
+        if not self._process or not self._process.stdout:
+            return
         from slife.logfmt import PROTOCOL_LINE_LIMIT, read_line_bounded
+
         reader = self._process.stdout
         # One stdout line can legitimately be a many-MB worker result — raise
         # the StreamReader cap accordingly.  A line beyond even that is
@@ -686,7 +745,8 @@ class SubagentProcess:
             # via getattr (avoids the read-side attribute warning) and raise
             # it on the write.
             reader._limit = max(  # type: ignore[attr-defined]
-                int(getattr(reader, "_limit", 0)), PROTOCOL_LINE_LIMIT,
+                int(getattr(reader, "_limit", 0)),
+                PROTOCOL_LINE_LIMIT,
             )
         except (AttributeError, TypeError, ValueError):
             pass
@@ -697,11 +757,13 @@ class SubagentProcess:
                 line, dropped = await read_line_bounded(reader)
                 if dropped or line is None:
                     logger.warning(
-                        "subagent_stdout_line_overlong_discarded "
-                        "name=%s min_bytes=%d", self._name, dropped,
+                        "subagent_stdout_line_overlong_discarded name=%s min_bytes=%d",
+                        self._name,
+                        dropped,
                     )
                     continue
-                if not line: break
+                if not line:
+                    break
                 try:
                     msg = json.loads(line.decode("utf-8", errors="replace"))
                 except json.JSONDecodeError:
@@ -714,13 +776,17 @@ class SubagentProcess:
                     # send_task's own timeout. Log and move on.
                     logger.warning(
                         "subagent_msg_error name=%s line=%.200s",
-                        self._name, line, exc_info=True,
+                        self._name,
+                        line,
+                        exc_info=True,
                     )
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.warning(
-                "subagent_stdout_read_error name=%s", self._name, exc_info=True,
+                "subagent_stdout_read_error name=%s",
+                self._name,
+                exc_info=True,
             )
         finally:
             # The reader is done (stop / EOF / error) — resolve any leftover
@@ -731,10 +797,12 @@ class SubagentProcess:
             # keep).
             for rpc_id, f in list(self._pending.items()):
                 if not f.done():
-                    f.set_exception(RuntimeError(
-                        f"Subagent '{self._name}' closed before task "
-                        f"'{rpc_id}' was resolved"
-                    ))
+                    f.set_exception(
+                        RuntimeError(
+                            f"Subagent '{self._name}' closed before task "
+                            f"'{rpc_id}' was resolved"
+                        )
+                    )
             self._pending.clear()
             self._abandon_pending("worker exited before replying")
             # The reader ends when the child's stdout closes — i.e. the child is
@@ -781,7 +849,8 @@ class SubagentProcess:
                 self._store_async_result(rpc_id, result_text)
                 self._record_update(rpc_id, "completed", result_text)
             logger.debug(
-                "subagent_late_result_stored task=%s", rpc_id,
+                "subagent_late_result_stored task=%s",
+                rpc_id,
             )
             return
         # Late response for a cancelled task — discard it (the local waiter
@@ -790,14 +859,16 @@ class SubagentProcess:
             self._cancelled.discard(rpc_id)
             self._resolve_watchdog(rpc_id)
             logger.debug(
-                "subagent_cancelled_result_discarded task=%s", rpc_id,
+                "subagent_cancelled_result_discarded task=%s",
+                rpc_id,
             )
             return
         if rpc_id and rpc_id in self._pending:
             # Sync waiter — resolve the pending future
             f = self._pending.pop(rpc_id, None)
             self._awaiting.discard(rpc_id)
-            if not f or f.done(): return
+            if not f or f.done():
+                return
             if "error" in msg:
                 err = msg["error"].get("message", "Unknown")
                 f.set_exception(RuntimeError(err))
@@ -821,7 +892,9 @@ class SubagentProcess:
                 logger.warning(
                     "subagent_unknown_or_stale_response task=%s status=%s "
                     "name=%s — ignored",
-                    rpc_id, (rec or {}).get("status", "unknown"), self._name,
+                    rpc_id,
+                    (rec or {}).get("status", "unknown"),
+                    self._name,
                 )
                 return
             if "error" in msg:
@@ -846,8 +919,7 @@ class SubagentProcess:
             elif "method" in msg:
                 method = msg["method"]
                 params = (
-                    msg.get("params", {})
-                    if isinstance(msg.get("params"), dict) else {}
+                    msg.get("params", {}) if isinstance(msg.get("params"), dict) else {}
                 )
                 task_id = params.get("task_id", "")
                 if method == "worker/complete":
@@ -857,19 +929,24 @@ class SubagentProcess:
                     # task_id — no result — so nothing further to record.
                     logger.debug(
                         "subagent_complete name=%s task=%s",
-                        self._name, task_id,
+                        self._name,
+                        task_id,
                     )
                 elif method == "worker/progress":
                     logger.debug(
                         "subagent_progress name=%s task=%s pct=%s",
-                        self._name, task_id,
+                        self._name,
+                        task_id,
                         params.get("pct", "?"),
                     )
 
     async def _read_stderr(self) -> None:
         from slife.logfmt import drain_stderr
+
         await drain_stderr(
-            self._process, f"subagent:{self._name}", logger,
+            self._process,
+            f"subagent:{self._name}",
+            logger,
             running_check=lambda: self._running,
         )
 
@@ -891,12 +968,12 @@ class SubagentProcess:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             logger.debug(
-                "subagent_notify_no_loop name=%s task=%s", self._name, task_id,
+                "subagent_notify_no_loop name=%s task=%s",
+                self._name,
+                task_id,
             )
             return
-        task = loop.create_task(
-            mgr.on_task_complete(self._name, task_id, result_text)
-        )
+        task = loop.create_task(mgr.on_task_complete(self._name, task_id, result_text))
         # A notice nobody sent is worse than a noise line: the manager's push
         # is the only way an async task is ever heard from, so its failure is
         # logged rather than left to asyncio's "never retrieved" silence.
@@ -923,7 +1000,7 @@ class SubagentManager:
     one name, one of them unreachable.
     """
 
-    def __init__(self, config: "Config"):
+    def __init__(self, config: Config):
         self._subagents: dict[str, SubagentProcess] = {}
         self._config = config
         sc = config.subagent_config or {}
@@ -935,10 +1012,11 @@ class SubagentManager:
         self._registry_lock = asyncio.Lock()
         # Callback invoked when a subagent task completes:
         #   async def cb(agent_name: str, task_id: str, result: str) -> None
-        self.on_task_complete: "Callable | None" = None
+        self.on_task_complete: Callable | None = None
 
     @property
-    def count(self) -> int: return sum(1 for p in self._subagents.values() if p.is_running)
+    def count(self) -> int:
+        return sum(1 for p in self._subagents.values() if p.is_running)
 
     @property
     def max_subagents(self) -> int:
@@ -1040,7 +1118,10 @@ class SubagentManager:
             return name
 
     async def send_task(
-        self, agent_name: str, task: str, timeout: float | None = None,
+        self,
+        agent_name: str,
+        task: str,
+        timeout: float | None = None,
         seed: list[dict] | None = None,
     ) -> str:
         if (proc := self._subagents.get(agent_name)) is None:
@@ -1048,7 +1129,10 @@ class SubagentManager:
         return await proc.send_task(task, timeout, seed=seed)
 
     async def send_task_async(
-        self, agent_name: str, task: str, mode: str = "auto",
+        self,
+        agent_name: str,
+        task: str,
+        mode: str = "auto",
         seed: list[dict] | None = None,
     ) -> str:
         """Send a task without waiting — returns *rpc_id* immediately.
@@ -1074,7 +1158,10 @@ class SubagentManager:
         )
 
     async def send_task_to_pool(
-        self, task: str, *, mode: str = "auto",
+        self,
+        task: str,
+        *,
+        mode: str = "auto",
         seed: list[dict] | None = None,
     ) -> tuple[str, str, bool]:
         """Send *task* to a worker chosen from the pool.
@@ -1116,7 +1203,9 @@ class SubagentManager:
         return proc.get_task_result(rpc_id)
 
     def list_tasks(
-        self, agent_name: str | None = None, status: str | None = None,
+        self,
+        agent_name: str | None = None,
+        status: str | None = None,
         limit: int = 50,
     ) -> tuple[list[dict], int]:
         """List worker task records across all subagents (local store).
@@ -1157,12 +1246,12 @@ class SubagentManager:
         """
         if not self._subagents:
             return
-        await asyncio.gather(
-            *(self.stop(name) for name in list(self._subagents))
-        )
+        await asyncio.gather(*(self.stop(name) for name in list(self._subagents)))
 
     async def broadcast(
-        self, method: str, params: dict | None = None,
+        self,
+        method: str,
+        params: dict | None = None,
     ) -> None:
         """Send a notification to every live subagent worker (best-effort)."""
         if not self._subagents:
@@ -1199,9 +1288,7 @@ class SubagentManager:
         next pool-picking delegation would actually take.
         """
         proc = self._subagents.get(agent_name)
-        return bool(
-            proc and proc.is_running and proc.is_ready and not proc.is_busy
-        )
+        return bool(proc and proc.is_running and proc.is_ready and not proc.is_busy)
 
     def idle_worker(self) -> str | None:
         """Name of a worker that can take a task now, or ``None``.

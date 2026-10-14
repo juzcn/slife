@@ -1,25 +1,19 @@
 name: Publish to PyPI
 
-# Per-package release: each package in this repo publishes independently
-# when its own tag is pushed.
+# slife publishes on its own tag.  credstore / cc-switch / local-embed used to
+# live in this repo and publish from here too; they now have their own
+# repositories and their own tag rules, so only slife's remain.
 #
 #   v0.9.6            -> slife      (legacy tag convention, kept for back-compat)
 #   slife-v0.9.6      -> slife
-#   credstore-v0.9.6  -> credstore
-#   cc-switch-v0.9.6  -> cc-switch
-#   local-embed-v0.1.0 -> local-embed
 #
-# Only the package whose tag prefix matches is built and uploaded.  The
-# version in that package's pyproject.toml must equal the tag version.
+# The version in pyproject.toml must equal the tag version.
 
 on:
   push:
     tags:
       - 'v*'            # slife (legacy)
       - 'slife-v*'      # slife
-      - 'credstore-v*'
-      - 'cc-switch-v*'
-      - 'local-embed-v*'
 
 jobs:
   build-and-publish:
@@ -32,52 +26,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve package from tag
-        id: resolve
+      - name: Verify tag matches package version
         run: |
           TAG="${{ github.ref_name }}"
           if [[ "$TAG" == v* ]]; then
-            PKG="slife"
             VERSION="${TAG#v}"
           elif [[ "$TAG" == slife-v* ]]; then
-            PKG="slife"
             VERSION="${TAG#slife-v}"
-          elif [[ "$TAG" == credstore-v* ]]; then
-            PKG="credstore"
-            VERSION="${TAG#credstore-v}"
-          elif [[ "$TAG" == cc-switch-v* ]]; then
-            PKG="cc-switch"
-            VERSION="${TAG#cc-switch-v}"
-          elif [[ "$TAG" == local-embed-v* ]]; then
-            PKG="local-embed"
-            VERSION="${TAG#local-embed-v}"
           else
             echo "ERROR: unrecognized tag $TAG"
             exit 1
           fi
-          echo "pkg=$PKG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Resolved tag $TAG -> package $PKG, version $VERSION"
 
-      - name: Verify tag matches package version
-        run: |
-          PKG="${{ steps.resolve.outputs.pkg }}"
-          VERSION="${{ steps.resolve.outputs.version }}"
-
-          # Map package to its pyproject.toml
-          case "$PKG" in
-            slife)      PYPROJECT="pyproject.toml" ;;
-            credstore)  PYPROJECT="credstore/pyproject.toml" ;;
-            cc-switch)  PYPROJECT="cc-switch/pyproject.toml" ;;
-            local-embed) PYPROJECT="local-embed/pyproject.toml" ;;
-          esac
-
-          PKG_VERSION=$(python -c "import tomllib; print(tomllib.load(open('$PYPROJECT','rb'))['project']['version'])")
+          PKG_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           if [ "$VERSION" != "$PKG_VERSION" ]; then
-            echo "ERROR: tag $PKG-v$VERSION != $PKG version $PKG_VERSION"
+            echo "ERROR: tag $TAG != slife version $PKG_VERSION"
             exit 1
           fi
-          echo "$PKG $PKG_VERSION — OK"
+          echo "slife $PKG_VERSION — OK"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -89,21 +55,14 @@ jobs:
         # range bounded.  The lower bound is what matters for metadata: twine
         # < 7 rejects Metadata-Version 2.5 ("'2.5' is not a valid metadata
         # version", verified 2026-09), so 6.x in this range only works because
-        # every pyproject.toml pins hatchling below 1.27 (-> metadata 2.3).
+        # pyproject.toml pins hatchling below 1.27 (-> metadata 2.3).
         # Lifting that pin requires raising this floor to >=7 in the same
         # change.  (Not a pkginfo cap — twine >= 6.2 no longer depends on
         # pkginfo.)
         run: pip install 'build' 'twine>=6,<8'
 
       - name: Build package
-        run: |
-          PKG="${{ steps.resolve.outputs.pkg }}"
-          case "$PKG" in
-            slife)     python -m build ;;
-            credstore) (cd credstore && python -m build) ;;
-            cc-switch) (cd cc-switch && python -m build) ;;
-            local-embed) (cd local-embed && python -m build) ;;
-          esac
+        run: python -m build
 
       - name: Publish package to PyPI
         uses: nick-fields/retry@v4
@@ -112,11 +71,4 @@ jobs:
           max_attempts: 3
           retry_on: error
           retry_wait_seconds: 15
-          command: |
-            PKG="${{ steps.resolve.outputs.pkg }}"
-            case "$PKG" in
-              slife)     twine upload --verbose dist/* ;;
-              credstore) twine upload --verbose credstore/dist/* ;;
-              cc-switch) twine upload --verbose cc-switch/dist/* ;;
-              local-embed) twine upload --verbose local-embed/dist/* ;;
-            esac
+          command: twine upload --verbose dist/*

@@ -13,25 +13,24 @@ The server is in-process: the fastmcp ``Client`` connects to the FastMCP
 instance directly (in-memory transport), no socket needed.
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
 import asyncio
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from fastmcp import FastMCP
 from fastmcp.tools.function_tool import FunctionTool
 
 import slife.timeouts as _timeouts
-from slife.tools.registry import ToolRegistry
 from slife.mcp.host_server import (
     _host_catalog_facts,
     build_registry_mcp,
     is_exposed,
     start_host_server,
 )
+from slife.tools.registry import ToolRegistry
 
+pytestmark = pytest.mark.unit
 
 # ── Test tools (stand-ins for auto-discovered slife.tools.* natives) ──────
 
@@ -39,7 +38,7 @@ from slife.mcp.host_server import (
 class EchoTool:
     name = "echo"
     description = "Echoes back the input."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {"m": {"type": "string"}},
         "required": ["m"],
@@ -52,7 +51,7 @@ class EchoTool:
 class ConfigTool:  # an excluded harness/context-control
     name = "set_max_iterations"
     description = "Changes the host loop's iteration cap (harness control)."
-    parameters = {"type": "object", "properties": {}}
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}}
 
     async def execute(self, **kwargs) -> str:
         return "cleared"
@@ -61,7 +60,7 @@ class ConfigTool:  # an excluded harness/context-control
 class TurnPromptTool:
     name = "_turn_prompt"
     description = "Harness marker (must be excluded from outward face)."
-    parameters = {"type": "object", "properties": {}}
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}}
 
     async def execute(self, **kwargs) -> str:
         return "note"
@@ -70,7 +69,7 @@ class TurnPromptTool:
 class CheckInputTool:
     name = "_check_new_input"
     description = "Mid-turn input injector (must be excluded from outward face)."
-    parameters = {"type": "object", "properties": {}}
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}}
 
     async def execute(self, **kwargs) -> str:
         return "injected"
@@ -87,7 +86,8 @@ def _registry() -> ToolRegistry:
 
 def _registered_names(mcp: FastMCP) -> set[str]:
     return {
-        c.name for c in mcp.local_provider._components.values()
+        c.name
+        for c in mcp.local_provider._components.values()
         if isinstance(c, FunctionTool)
     }
 
@@ -100,7 +100,7 @@ class TestIsExposed:
         assert is_exposed(EchoTool()) is True
 
     def test_harness_context_control_excluded(self):
-        assert is_exposed(ConfigTool()) is False      # set_max_iterations
+        assert is_exposed(ConfigTool()) is False  # set_max_iterations
         assert is_exposed(TurnPromptTool()) is False  # _turn_prompt
         assert is_exposed(CheckInputTool()) is False  # _check_new_input
 
@@ -108,8 +108,11 @@ class TestIsExposed:
         class _Internal:
             name = "__check"
             description = "i"
-            parameters = {}
-            async def execute(self, **kw): return ""
+            parameters: ClassVar[dict] = {}
+
+            async def execute(self, **kw):
+                return ""
+
         assert is_exposed(_Internal()) is False
 
 
@@ -121,17 +124,20 @@ class TestBuildRegistryMcp:
         reg = _registry()
         mcp = build_registry_mcp(reg)
         names = _registered_names(mcp)
-        assert "echo" in names                # native tool, bare name
-        assert "__check" in names             # internal harness probe
+        assert "echo" in names  # native tool, bare name
+        assert "__check" in names  # internal harness probe
         assert "set_max_iterations" not in names  # harness control excluded
-        assert "_turn_prompt" not in names    # harness marker excluded
+        assert "_turn_prompt" not in names  # harness marker excluded
         assert "_check_new_input" not in names  # input injector excluded
 
     def test_wrapped_tool_carries_slife_schema(self):
         reg = _registry()
         mcp = build_registry_mcp(reg)
-        comp = next(c for c in mcp.local_provider._components.values()
-                    if isinstance(c, FunctionTool) and c.name == "echo")
+        comp = next(
+            c
+            for c in mcp.local_provider._components.values()
+            if isinstance(c, FunctionTool) and c.name == "echo"
+        )
         assert comp.parameters == EchoTool.parameters
         assert comp.description == EchoTool.description
         # ctx is injected by FastMCP — not part of the exposed schema.
@@ -141,16 +147,22 @@ class TestBuildRegistryMcp:
     async def test_execution_routes_through_registry_execute(self):
         reg = _registry()
         mcp = build_registry_mcp(reg)
-        comp = next(c for c in mcp.local_provider._components.values()
-                    if isinstance(c, FunctionTool) and c.name == "echo")
+        comp = next(
+            c
+            for c in mcp.local_provider._components.values()
+            if isinstance(c, FunctionTool) and c.name == "echo"
+        )
         result = await comp.fn(m="hi")
         assert result == "Echo: hi"
 
     def test_check_reports_exposed_count(self):
         reg = _registry()
         mcp = build_registry_mcp(reg)
-        comp = next(c for c in mcp.local_provider._components.values()
-                    if isinstance(c, FunctionTool) and c.name == "__check")
+        comp = next(
+            c
+            for c in mcp.local_provider._components.values()
+            if isinstance(c, FunctionTool) and c.name == "__check"
+        )
         assert comp is not None
 
     @pytest.mark.asyncio
@@ -167,7 +179,11 @@ class TestBuildRegistryMcp:
         class _Shell(Tool):
             name = "execute_shell"
             description = "run a shell command"
-            parameters = {"type": "object", "properties": {}, "required": []}
+            parameters: ClassVar[dict] = {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            }
 
             async def execute(self, **kwargs) -> str:
                 return "ok"
@@ -179,14 +195,17 @@ class TestBuildRegistryMcp:
 
         reg = _registry()
         mcp = build_registry_mcp(reg, catalog=svc)
-        comp = next(c for c in mcp.local_provider._components.values()
-                    if isinstance(c, FunctionTool) and c.name == "__check")
+        comp = next(
+            c
+            for c in mcp.local_provider._components.values()
+            if isinstance(c, FunctionTool) and c.name == "__check"
+        )
         payload = _json.loads(await comp.fn())
         assert payload["catalog"]["tools"] == 1
         # Seeding registers a row but does NOT load it — only the whitelist is
         # born loaded — so the fact reads 0 until something loads it.
         assert payload["catalog"]["loaded"] == 0
-        assert payload["catalog"]["servers"] == 0     # no external rows yet
+        assert payload["catalog"]["servers"] == 0  # no external rows yet
         await svc.load_tool("execute_shell")
         payload = _json.loads(await comp.fn())
         assert payload["catalog"]["loaded"] == 1
@@ -201,8 +220,11 @@ class TestBuildRegistryMcp:
 
         # without a catalog, __check keeps the registry-only shape
         mcp2 = build_registry_mcp(reg)
-        comp2 = next(c for c in mcp2.local_provider._components.values()
-                     if isinstance(c, FunctionTool) and c.name == "__check")
+        comp2 = next(
+            c
+            for c in mcp2.local_provider._components.values()
+            if isinstance(c, FunctionTool) and c.name == "__check"
+        )
         p2 = _json.loads(await comp2.fn())
         assert "exposed_count" in p2 and "catalog" not in p2
 
@@ -225,7 +247,11 @@ class TestBuildRegistryMcp:
         class _Shell(Tool):
             name = "execute_shell"
             description = "run a shell command"
-            parameters = {"type": "object", "properties": {}, "required": []}
+            parameters: ClassVar[dict] = {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            }
 
             async def execute(self, **kwargs) -> str:
                 return "ok"
@@ -235,16 +261,28 @@ class TestBuildRegistryMcp:
         try:
             svc = ToolCatalogService(store, write_owner=True)
             await svc.sync_system_tools([_Shell()])
-            await store.set_meta(SEMANTIC_STATE_KEY, _json.dumps({
-                "configured": True, "available": True, "semantic_ready": False,
-                "state": "stalled", "reason": "embedder gave up this round",
-                "model": "BAAI/bge-m3", "dimension": 1024,
-            }))
+            await store.set_meta(
+                SEMANTIC_STATE_KEY,
+                _json.dumps(
+                    {
+                        "configured": True,
+                        "available": True,
+                        "semantic_ready": False,
+                        "state": "stalled",
+                        "reason": "embedder gave up this round",
+                        "model": "BAAI/bge-m3",
+                        "dimension": 1024,
+                    }
+                ),
+            )
 
             reg = _registry()
             mcp = build_registry_mcp(reg, catalog=svc)
-            comp = next(c for c in mcp.local_provider._components.values()
-                        if isinstance(c, FunctionTool) and c.name == "__check")
+            comp = next(
+                c
+                for c in mcp.local_provider._components.values()
+                if isinstance(c, FunctionTool) and c.name == "__check"
+            )
             sem = _json.loads(await comp.fn())["catalog"]["semantic"]
 
             assert sem["state"] == "stalled"
@@ -270,14 +308,16 @@ class TestBuildRegistryMcp:
             calls["n"] += 1
             if calls["n"] == 1:
                 raise RuntimeError("boom")
-            return None  # second run completes cleanly → loop returns
+            # second run completes cleanly → loop returns
 
-        with patch("slife.mcp.host_server._serve_host", _flaky), \
-             patch(
-                 "slife.mcp.host_server.bind_free_port",
-                 return_value=(object(), 9876),
-             ), \
-             patch.object(_timeouts.timeouts.ready, "watchdog_backoff_initial", 0.0):
+        with (
+            patch("slife.mcp.host_server._serve_host", _flaky),
+            patch(
+                "slife.mcp.host_server.bind_free_port",
+                return_value=(object(), 9876),
+            ),
+            patch.object(_timeouts.timeouts.ready, "watchdog_backoff_initial", 0.0),
+        ):
             _, task, _stop, port = start_host_server(reg)
             await asyncio.wait_for(task, timeout=5)  # noqa-timeout
             assert calls["n"] == 2
@@ -292,12 +332,14 @@ class TestBuildRegistryMcp:
         async def _never_returns(server, host, sockets, port):
             await asyncio.Event().wait()  # serve until told to stop
 
-        with patch("slife.mcp.host_server._serve_host", _never_returns), \
-             patch(
-                 "slife.mcp.host_server.bind_free_port",
-                 return_value=(object(), 9877),
-             ):
-            _, task, _stop, port = start_host_server(reg)
+        with (
+            patch("slife.mcp.host_server._serve_host", _never_returns),
+            patch(
+                "slife.mcp.host_server.bind_free_port",
+                return_value=(object(), 9877),
+            ),
+        ):
+            _, task, _stop, _port = start_host_server(reg)
             await asyncio.sleep(0)  # let the task reach serve
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -331,7 +373,8 @@ class TestMultiToolRouting:
         mcp = build_registry_mcp(reg)
 
         comps = {
-            c.name: c for c in mcp.local_provider._components.values()
+            c.name: c
+            for c in mcp.local_provider._components.values()
             if isinstance(c, FunctionTool) and c.name.startswith("tool_")
         }
         assert set(comps) == {"tool_a", "tool_b", "tool_c"}
@@ -345,13 +388,17 @@ class TestMultiToolRouting:
         """Adding a later tool must not rewire the earlier tools' target."""
         reg = _registry()  # registers echo/set_max_iterations/_turn_prompt
         mcp = build_registry_mcp(reg)
-        echo = next(c for c in mcp.local_provider._components.values()
-                    if isinstance(c, FunctionTool) and c.name == "echo")
+        echo = next(
+            c
+            for c in mcp.local_provider._components.values()
+            if isinstance(c, FunctionTool) and c.name == "echo"
+        )
 
         class OtherTool:
             name = "other"
             description = "Other."
-            parameters = {"type": "object", "properties": {}}
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
+
             async def execute(self, **kwargs) -> str:
                 return "other-result"
 
@@ -374,16 +421,18 @@ class TestLiveSync:
         applies, and its session broadcast notifies connected consumers).
         """
         reg = _registry()
-        server, task, stop, _port = start_host_server(reg)
+        server, _task, stop, _port = start_host_server(reg)
         try:
+
             class NewTool:
                 name = "count_letters"
                 description = "Count letters."
-                parameters = {
+                parameters: ClassVar[dict] = {
                     "type": "object",
                     "properties": {"s": {"type": "string"}},
                     "required": ["s"],
                 }
+
                 async def execute(self, **kw):
                     return str(len(kw.get("s", "")))
 
@@ -401,13 +450,14 @@ class TestLiveSync:
     async def test_change_listener_added_by_start(self):
         """start_host_server subscribes to the registry's change listeners."""
         reg = _registry()
-        server, task, stop, _port = start_host_server(reg)
+        _server, _task, stop, _port = start_host_server(reg)
         try:
             assert len(reg._on_change) >= 1
             # Registry alone (no host) has none.
             assert ToolRegistry()._on_change == []
         finally:
             await stop()
+
 
 class TestCatalogFacts:
     """The catalog's server count is ONE number, over the sources that own rows.

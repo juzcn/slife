@@ -91,9 +91,7 @@ class _MemfilesClientMixin:
     """
 
     #: Returned when the plugin's client is not yet connected.
-    offline_message: ClassVar[str] = (
-        "Error: memfiles plugin not connected."
-    )
+    offline_message: ClassVar[str] = "Error: memfiles plugin not connected."
 
     def _client(self):
         ctx = getattr(self, "_ctx", None)
@@ -108,7 +106,7 @@ class _MemfilesClientMixin:
             return self.offline_message
         try:
             return await client.call_tool(tool, arguments)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — tool-error contract: every slife tool returns an error string, never raises; the MCP client can fail in several ways
             logger.debug("memfiles_tool_error tool=%s err=%s", tool, e)
             return f"Error: {tool} failed — {e}"
 
@@ -156,7 +154,8 @@ def make_params(**fields: dict) -> dict:
 
 
 def require_params(
-    _hints: dict[str, str] | None = None, **params: object,
+    _hints: dict[str, str] | None = None,
+    **params: object,
 ) -> str | None:
     """Validate that all named parameters are non-empty.
 
@@ -291,8 +290,7 @@ class Tool(ABC):
         for attr in ("name", "description", "parameters"):
             if not hasattr(cls, attr) or getattr(cls, attr) in (None, ""):
                 raise TypeError(
-                    f"{cls.__name__} must define a non-empty '{attr}' "
-                    f"class attribute."
+                    f"{cls.__name__} must define a non-empty '{attr}' class attribute."
                 )
         # A harness-authored schema is CLOSED: a parameter the tool does not
         # declare is a mistake, not something for the tool's ``**kwargs`` to
@@ -323,7 +321,9 @@ class Tool(ABC):
         ...
 
     @classmethod
-    def from_config(cls, cfg: dict, config: "Config | None", ctx: "ToolContext | None" = None) -> Self:
+    def from_config(
+        cls, cfg: dict, config: Config | None, ctx: ToolContext | None = None
+    ) -> Self:
         """Create tool instance from config override dict.
 
         The default implementation calls cls() with no arguments.

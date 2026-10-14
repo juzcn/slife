@@ -35,8 +35,8 @@ from pathlib import Path
 
 from fastmcp.server.context import Context
 
-from slife.plugins.job_coding import registry, runner
 from slife.paths import get_jobs_dir
+from slife.plugins.job_coding import registry, runner
 from slife.server_utils import (
     ToolsChangedNotifier,
     create_plugin_server,
@@ -46,9 +46,15 @@ from slife.server_utils import (
 )
 
 #: Tool names this plugin owns — a job may never take one of them.
-_RESERVED_NAMES = frozenset({
-    "job-write", "job-remove", "job-list", "job-run", "__check",
-})
+_RESERVED_NAMES = frozenset(
+    {
+        "job-write",
+        "job-remove",
+        "job-list",
+        "job-run",
+        "__check",
+    }
+)
 
 _NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
@@ -61,14 +67,17 @@ def _is_reserved(job_name: str) -> bool:
     tested too.  ``job-write`` itself stays rejected as well: it would be
     exposed as ``job-job-write``, which helps nobody.
     """
-    return job_name in _RESERVED_NAMES or registry.tool_name(job_name) in _RESERVED_NAMES
+    return (
+        job_name in _RESERVED_NAMES or registry.tool_name(job_name) in _RESERVED_NAMES
+    )
+
 
 # ── Plugin state ──────────────────────────────────────────────────────
 
 _jobs_dir: Path = get_jobs_dir()
 _registry: dict[str, registry.Job] = {}
-_llm_client = None            # LLMClient for job llm.chat (lazy)
-_llm_model_ref = "?"          # diagnostic: model ref resolved at boot
+_llm_client = None  # LLMClient for job llm.chat (lazy)
+_llm_model_ref = "?"  # diagnostic: model ref resolved at boot
 #: Fan-out of ``tools/list_changed`` to this server's listen subscribers
 #: (:class:`slife.server_utils.ToolsChangedNotifier`) — a job write/delete
 #: changes the exposed tool set, and the modern era delivers that to the
@@ -100,11 +109,13 @@ def _get_llm_client():
         return None
     _llm_model_ref = getattr(model, "ref", "?")
     from slife.agent.llm_client import LLMClient
+
     _llm_client = LLMClient(model)
     return _llm_client
 
 
 # ── Job registry <-> FastMCP tool table ───────────────────────────────
+
 
 def _register_tool(job: registry.Job) -> None:
     """Register one job as a live MCP tool.
@@ -127,7 +138,7 @@ def _register_tool(job: registry.Job) -> None:
         # tool without touching its schema.
         wrapped.__name__ = registry.tool_name(job.name)
         mcp.add_tool(wrapped)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — one bad job must not abort tool registration
         logger.warning("job_tool_register_failed name=%s err=%s", job.name, e)
         return
     _registry[job.name] = job
@@ -153,7 +164,10 @@ def _load_file(path: Path) -> str:
     """Import one job file and register its jobs.  Returns '' or an error."""
     try:
         module = registry.load_module(path)
-        setattr(module, "_job_file_path", str(path.resolve()))
+        # setattr, not `module._job_file_path = …`: the latter is a pyright
+        # error (no such attribute on types.ModuleType).  B010's usual advice
+        # does not apply to a module object.
+        setattr(module, "_job_file_path", str(path.resolve()))  # noqa: B010
     except registry.JobLoadError as e:
         return f"Error: {e}"
     jobs = registry.collect_jobs(module)
@@ -200,8 +214,7 @@ def _reload_all() -> str:
     # define many jobs (job.name != file stem), so a vanished file is
     # detected against ``_registry[name].path``, never a ``{name}.py`` glob.
     live_files = {
-        str(p.resolve()) for p in _jobs_dir.glob("*.py")
-        if not p.name.startswith("_")
+        str(p.resolve()) for p in _jobs_dir.glob("*.py") if not p.name.startswith("_")
     }
     for name in list(_registry):
         if str(_registry[name].path.resolve()) not in live_files:
@@ -210,9 +223,7 @@ def _reload_all() -> str:
     # _load_file — the reload must agree, so a restart and a live edit never
     # diverge for the same file.
     jobs = registry.scan_jobs_dir(_jobs_dir)
-    reserved_files = {
-        str(j.path.resolve()) for j in jobs if _is_reserved(j.name)
-    }
+    reserved_files = {str(j.path.resolve()) for j in jobs if _is_reserved(j.name)}
     for job in jobs:
         if str(job.path.resolve()) in reserved_files or job.name in _registry:
             continue  # whole-file skip / already live
@@ -244,7 +255,9 @@ async def _job_lifespan(_app):
     _reload_all()
     logger.info(
         "job_coding_ready jobs_dir=%s jobs=%d llm_model=%s",
-        _jobs_dir, len(_registry), _llm_model_ref,
+        _jobs_dir,
+        len(_registry),
+        _llm_model_ref,
     )
     try:
         yield
@@ -272,21 +285,26 @@ _notifier.bind(tools_changed_bus(mcp))
 
 # ── Execution ─────────────────────────────────────────────────────────
 
+
 async def _execute(job: registry.Job, kwargs: dict) -> str:
     """Run one job deterministically; returns the normalized result."""
     # Lazy client ref — job-run must not cold-import the provider SDK.
     return await runner.wrap(
-        job.fn, runner._LLMClientRef(_get_llm_client),
+        job.fn,
+        runner._LLMClientRef(_get_llm_client),
     )(**kwargs)
 
 
 def _job_status() -> list[dict]:
-    return [{
-        "name": j.name,
-        "tool": registry.tool_name(j.name),
-        "description": j.description,
-        "file": j.path.name,
-    } for j in sorted(_registry.values(), key=lambda j: j.name)]
+    return [
+        {
+            "name": j.name,
+            "tool": registry.tool_name(j.name),
+            "description": j.description,
+            "file": j.path.name,
+        }
+        for j in sorted(_registry.values(), key=lambda j: j.name)
+    ]
 
 
 def _validate_name(name: str) -> str | None:
@@ -322,23 +340,20 @@ def _write_job_file(path: Path, code: str) -> None:
 
 @mcp.tool(
     name="job-list",
-    description=(
-        "List registered jobs (name, description, source file)."
-    ),
+    description=("List registered jobs (name, description, source file)."),
 )
 async def job_list(ctx: Context | None = None) -> str:
     """List all currently-registered jobs."""
     return json.dumps(
         {"jobs": _job_status(), "count": len(_registry)},
-        ensure_ascii=False, indent=2,
+        ensure_ascii=False,
+        indent=2,
     )
 
 
 @mcp.tool(
     name="job-run",
-    description=(
-        "Run a registered job by name with a JSON object of its arguments."
-    ),
+    description=("Run a registered job by name with a JSON object of its arguments."),
 )
 async def job_run(name: str, params: str = "{}", ctx: Context | None = None) -> str:
     """Execute a job deterministically with the given JSON arguments.
@@ -441,9 +456,7 @@ async def job_write(name: str, code: str, ctx: Context | None = None) -> str:
 
 @mcp.tool(
     name="job-remove",
-    description=(
-        "Remove a job: delete its source file and unregister its tool."
-    ),
+    description=("Remove a job: delete its source file and unregister its tool."),
 )
 async def job_remove(name: str, ctx: Context | None = None) -> str:
     """Delete a job file and unregister its tool.
@@ -523,7 +536,7 @@ async def __check() -> str:
             "port": runner.mcp.port,
             "source": runner.mcp.port_source,
         }
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — health probe reports facts, never raises
         result["mcp_gateway"] = {"error": str(e)}
     return json.dumps(result, ensure_ascii=False, indent=2)
 

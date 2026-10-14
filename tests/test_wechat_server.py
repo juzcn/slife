@@ -9,13 +9,13 @@ are still deduped.
 
 import json
 import time
-
-import pytest; pytestmark = pytest.mark.unit
-
-
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from slife.plugins.wechat import server as ws
+
+pytestmark = pytest.mark.unit
 
 
 def _msg(from_id: str, ctx: str, text: str) -> dict:
@@ -74,10 +74,14 @@ class TestPollLoopDedup:
     async def test_same_conversation_different_texts_both_queued(self):
         """Two real text messages in one conversation both get through —
         previously the second was dropped (same sender+context_token key)."""
-        queued = await self._run([[
-            _msg("u1", "ctx1", "first"),
-            _msg("u1", "ctx1", "second"),
-        ]])
+        queued = await self._run(
+            [
+                [
+                    _msg("u1", "ctx1", "first"),
+                    _msg("u1", "ctx1", "second"),
+                ]
+            ]
+        )
         assert [q["text"] for q in queued] == ["first", "second"]
         assert len(ws._seen_keys) == 2
 
@@ -86,10 +90,14 @@ class TestPollLoopDedup:
         """An image/sticker (empty text) must not record the key — the next
         real text in the conversation must NOT be dropped."""
         non_text = dict(_msg("u1", "ctx1", ""))  # empty text
-        queued = await self._run([[
-            non_text,
-            _msg("u1", "ctx1", "hello"),
-        ]])
+        queued = await self._run(
+            [
+                [
+                    non_text,
+                    _msg("u1", "ctx1", "hello"),
+                ]
+            ]
+        )
         assert [q["text"] for q in queued] == ["hello"]
         # Only the text message recorded its key (the map value is a timestamp).
         assert set(ws._seen_keys) == {"u1::ctx1::hello"}
@@ -98,10 +106,12 @@ class TestPollLoopDedup:
     async def test_cross_poll_redelivery_still_deduped(self):
         """A true re-delivery ACROSS polls (same sender + conversation + text)
         is still dropped — the key is only deduped per poll (REVIEW §1-9)."""
-        queued = await self._run([
-            [_msg("u1", "ctx1", "hello")],
-            [_msg("u1", "ctx1", "hello")],  # same message returned again
-        ])
+        queued = await self._run(
+            [
+                [_msg("u1", "ctx1", "hello")],
+                [_msg("u1", "ctx1", "hello")],  # same message returned again
+            ]
+        )
         assert [q["text"] for q in queued] == ["hello"]
         assert len(ws._seen_keys) == 1
 
@@ -109,10 +119,14 @@ class TestPollLoopDedup:
     async def test_same_text_twice_in_one_poll_both_queued(self):
         """Two genuine same-text messages in ONE poll both get through — a user
         sending 'ok' twice in a row must not have the second dropped."""
-        queued = await self._run([[
-            _msg("u1", "ctx1", "hello"),
-            _msg("u1", "ctx1", "hello"),
-        ]])
+        queued = await self._run(
+            [
+                [
+                    _msg("u1", "ctx1", "hello"),
+                    _msg("u1", "ctx1", "hello"),
+                ]
+            ]
+        )
         assert [q["text"] for q in queued] == ["hello", "hello"]
         assert len(ws._seen_keys) == 1  # one distinct key for both
 
@@ -240,11 +254,18 @@ class TestCheckStatusLastContactShape:
         original = ws._client
         ws._client = client
         try:
-            with patch.object(ws, "load_wechat_config", return_value={
-                "bot_token": "tok",
-                "ilink_user_id": "u1",
-                "saved_at": time.time(),
-            }), patch.object(ws, "clear_wechat_config", return_value=True):
+            with (
+                patch.object(
+                    ws,
+                    "load_wechat_config",
+                    return_value={
+                        "bot_token": "tok",
+                        "ilink_user_id": "u1",
+                        "saved_at": time.time(),
+                    },
+                ),
+                patch.object(ws, "clear_wechat_config", return_value=True),
+            ):
                 resp = json.loads(await ws.wechat_check_status())
         finally:
             ws._client = original
@@ -266,13 +287,19 @@ class TestCheckStatusLastContactShape:
         original = ws._client
         ws._client = client
         try:
-            with patch.object(ws, "load_wechat_config", return_value={
-                "bot_token": "tok",
-                "ilink_user_id": "u1",
-                "saved_at": time.time(),
-            }):
-                with patch.object(ws, "_start_polling", lambda: None):
-                    resp = json.loads(await ws.wechat_check_status())
+            with (
+                patch.object(
+                    ws,
+                    "load_wechat_config",
+                    return_value={
+                        "bot_token": "tok",
+                        "ilink_user_id": "u1",
+                        "saved_at": time.time(),
+                    },
+                ),
+                patch.object(ws, "_start_polling", lambda: None),
+            ):
+                resp = json.loads(await ws.wechat_check_status())
         finally:
             ws._client = original
         assert resp["status"] == "restored"
@@ -293,11 +320,15 @@ class TestCheckStatusLastContactShape:
         original = ws._client
         ws._client = client
         try:
-            with patch.object(ws, "load_wechat_config", return_value={
-                "bot_token": "tok",
-                "ilink_user_id": "u1",
-                "saved_at": time.time(),
-            }):
+            with patch.object(
+                ws,
+                "load_wechat_config",
+                return_value={
+                    "bot_token": "tok",
+                    "ilink_user_id": "u1",
+                    "saved_at": time.time(),
+                },
+            ):
                 resp = json.loads(await ws.wechat_check_status())
         finally:
             ws._client = original
@@ -328,7 +359,9 @@ class TestWechatSendMessage:
         try:
             resp = json.loads(
                 await ws.wechat_send_message(
-                    peer_wechat_id="u1", context_token="", text="hi",
+                    peer_wechat_id="u1",
+                    context_token="",
+                    text="hi",
                 ),
             )
         finally:
@@ -346,7 +379,9 @@ class TestWechatSendMessage:
         try:
             resp = json.loads(
                 await ws.wechat_send_message(
-                    peer_wechat_id="u1", context_token="", text="hi",
+                    peer_wechat_id="u1",
+                    context_token="",
+                    text="hi",
                 ),
             )
         finally:

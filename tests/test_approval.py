@@ -5,17 +5,16 @@ is gone).  The LLM decides per-call by passing `_approve: true` in the
 tool arguments; the loop then asks the user via `on_tool_approval`.
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
-
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from slife.tools.base import Tool
+from slife.agent.loop import AgentEventHandler, AgentLoop, ToolCallInfo
 from slife.mcp.tool_adapter import MCPProxyTool, create_proxy_tools
-from slife.agent.loop import AgentLoop, AgentEventHandler, ToolCallInfo
+from slife.tools.base import Tool
 
+pytestmark = pytest.mark.unit
 
 # ── Tool ABC no longer carries approval metadata ──────────────────────
 
@@ -79,7 +78,7 @@ class _TrackingTool(Tool):
 
     name = "approval_test_tool"
     description = "A test tool"
-    parameters = {"type": "object", "properties": {}, "required": []}
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
 
     def __init__(self):
         self.executed = False
@@ -113,7 +112,9 @@ class TestAgentLoopApproval:
         handler.on_tool_result = AsyncMock()
         history = MagicMock()
 
-        tc = ToolCallInfo(id="call_1", name="approval_test_tool", arguments={"_approve": True})
+        tc = ToolCallInfo(
+            id="call_1", name="approval_test_tool", arguments={"_approve": True}
+        )
         await loop._execute_tools([tc], history, handler, iteration=1)
 
         assert tool.executed is False
@@ -133,6 +134,7 @@ class TestAgentLoopApproval:
 
         async def _exec(name, **kwargs):
             return await tool.execute(**kwargs)
+
         registry.execute = _exec
 
         loop = _make_loop(registry)
@@ -142,7 +144,9 @@ class TestAgentLoopApproval:
         handler.on_tool_result = AsyncMock()
         history = MagicMock()
 
-        tc = ToolCallInfo(id="call_2", name="approval_test_tool", arguments={"_approve": True})
+        tc = ToolCallInfo(
+            id="call_2", name="approval_test_tool", arguments={"_approve": True}
+        )
         await loop._execute_tools([tc], history, handler, iteration=1)
 
         assert tool.executed is True
@@ -159,6 +163,7 @@ class TestAgentLoopApproval:
 
         async def _exec(name, **kwargs):
             return await tool.execute(**kwargs)
+
         registry.execute = _exec
 
         loop = _make_loop(registry)
@@ -182,11 +187,14 @@ class TestAgentLoopApproval:
 
         async def _exec(name, **kwargs):
             return await tool.execute(**kwargs)
+
         registry.execute = _exec
 
         loop = _make_loop(registry)
         history = MagicMock()
-        tc = ToolCallInfo(id="call_4", name="approval_test_tool", arguments={"_approve": True})
+        tc = ToolCallInfo(
+            id="call_4", name="approval_test_tool", arguments={"_approve": True}
+        )
         await loop._execute_tools([tc], history, None, iteration=1)
 
         assert tool.executed is True
@@ -202,10 +210,12 @@ class TestAgentLoopApproval:
 
         def _get(name):
             return tools[name]
+
         registry.get = _get
 
         async def _exec(name, **kwargs):
             return await tools[name].execute(**kwargs)
+
         registry.execute = _exec
 
         loop = _make_loop(registry)
@@ -213,6 +223,7 @@ class TestAgentLoopApproval:
 
         async def _approve(tc):
             return tc.id != "deny_me"
+
         handler.on_tool_approval = _approve
         handler.on_tool_call = AsyncMock()
         handler.on_tool_result = AsyncMock()
@@ -225,9 +236,9 @@ class TestAgentLoopApproval:
         ]
         await loop._execute_tools(tcs, history, handler, iteration=1)
 
-        assert tools["tool_a"].executed is True   # granted
+        assert tools["tool_a"].executed is True  # granted
         assert tools["tool_b"].executed is False  # denied
-        assert tools["tool_c"].executed is True   # no flag → no gate
+        assert tools["tool_c"].executed is True  # no flag → no gate
 
 
 # ── ApprovalPrompt — inline row, Y/N/Esc decide (priority, REVIEW C7) ──
@@ -306,7 +317,7 @@ class TestApprovalPrompt:
         from slife.ui.approval_prompt import ApprovalPrompt
 
         def _resolve_priority_pass(
-            bindings_by_node: list[tuple[str, list]]
+            bindings_by_node: list[tuple[str, list]],
         ) -> list[tuple[str, str, str]]:
             resolved: list[tuple[str, str, str]] = []
             for ns, bindings in reversed(bindings_by_node):  # App → ... → prompt

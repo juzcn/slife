@@ -1,17 +1,17 @@
 """Tests for Slife.ui.tool_display — ToolCallWidget and helper logic."""
 
-import pytest; pytestmark = pytest.mark.unit
-
 
 # pyright: reportAttributeAccessIssue=false
 
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from textual.app import App, ComposeResult
 
 from slife.ui.app import HistoryInput
 from slife.ui.chat import ChatView
+
+pytestmark = pytest.mark.unit
 
 
 def _make_widget(**kwargs):
@@ -22,6 +22,7 @@ def _make_widget(**kwargs):
     """
     with patch("slife.ui.tool_display.Static.__init__", return_value=None):
         from slife.ui.tool_display import ToolCallWidget
+
         w = ToolCallWidget.__new__(ToolCallWidget)
         w.tool_name = kwargs.get("tool_name", "web_search")
         w.tool_args = kwargs.get("tool_args", {"query": "cats"})
@@ -381,7 +382,7 @@ class TestKeyFallThrough:
             await pilot.pause()
             await pilot.wait_for_animation()
             view_before = view.scroll_offset.y
-            await pilot.press("pagedown")          # the panel goes down one page
+            await pilot.press("pagedown")  # the panel goes down one page
             assert await _settled(pilot, lambda: row.scroll_offset.y > 0)
             assert view.scroll_offset.y == view_before
 
@@ -391,25 +392,30 @@ class TestHelperFunctions:
 
     def test_friendly_label_from_tool_name(self):
         from slife.ui.tool_display import _friendly_label
+
         assert _friendly_label("run_command") == "Run command"
         assert _friendly_label("web_search") == "Web search"
 
     def test_friendly_label_unknown_tool(self):
         from slife.ui.tool_display import _friendly_label
+
         label = _friendly_label("my_custom_tool")
         assert "My custom tool" in label
 
     def test_primary_arg_value_returns_first_string(self):
         from slife.ui.tool_display import _primary_arg_value
+
         val = _primary_arg_value({"query": "cats", "num": 5})
         assert val == "cats"
 
     def test_primary_arg_value_fallback_to_first_string(self):
         from slife.ui.tool_display import _primary_arg_value
+
         val = _primary_arg_value({"x": 1, "y": "hello"})
         assert val == "hello"
 
     def test_primary_arg_value_no_string_returns_none(self):
         from slife.ui.tool_display import _primary_arg_value
+
         val = _primary_arg_value({"x": 1, "y": 2})
         assert val is None

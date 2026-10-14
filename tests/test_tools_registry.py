@@ -1,12 +1,13 @@
 """Tests for Slife.tools.registry — ToolRegistry."""
 
-import pytest; pytestmark = pytest.mark.unit
-
+from typing import ClassVar
 
 import pytest
 
-from slife.tools.registry import ToolRegistry
 from slife.tools.base import Tool, make_params
+from slife.tools.registry import ToolRegistry
+
+pytestmark = pytest.mark.unit
 
 
 class TestToolRegistry:
@@ -68,8 +69,10 @@ class TestToolRegistry:
         class NewEcho(Tool):
             name = "echo"
             description = "New echo"
-            parameters = {"type": "object", "properties": {}}
-            async def execute(self, **kwargs): return "New!"
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
+
+            async def execute(self, **kwargs):
+                return "New!"
 
         registry.register(NewEcho())
         assert len(registry.list_tools()) == 1
@@ -85,7 +88,8 @@ class TestToolRegistry:
         class Native(Tool):
             name = "mcp_set"  # no .server — a slife native tool
             description = "native mcp_set"
-            parameters = {"type": "object", "properties": {}}
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
+
             async def execute(self, **kwargs):
                 return "native"
 
@@ -93,7 +97,8 @@ class TestToolRegistry:
             name = "mcp_set"
             server = "job-coding"
             description = "a job named mcp_set"
-            parameters = {"type": "object", "properties": {}}
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
+
             async def execute(self, **kwargs):
                 return "job"
 
@@ -114,7 +119,8 @@ class TestToolRegistry:
             name = "my_job"
             server = "job-coding"
             description = "v1"
-            parameters = {"type": "object", "properties": {}}
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
+
             async def execute(self, **kwargs):
                 return "1"
 
@@ -122,7 +128,8 @@ class TestToolRegistry:
             name = "my_job"
             server = "job-coding"
             description = "v2"
-            parameters = {"type": "object", "properties": {}}
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
+
             async def execute(self, **kwargs):
                 return "2"
 
@@ -159,20 +166,26 @@ class TestToolRegistry:
         class ToolA(Tool):
             name = "mcp__tool_a"
             description = "A"
-            parameters = {"type": "object", "properties": {}}
-            async def execute(self, **kwargs): return "a"
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
+
+            async def execute(self, **kwargs):
+                return "a"
 
         class ToolB(Tool):
             name = "mcp__tool_b"
             description = "B"
-            parameters = {"type": "object", "properties": {}}
-            async def execute(self, **kwargs): return "b"
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
+
+            async def execute(self, **kwargs):
+                return "b"
 
         class ToolC(Tool):
             name = "other_tool"
             description = "C"
-            parameters = {"type": "object", "properties": {}}
-            async def execute(self, **kwargs): return "c"
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
+
+            async def execute(self, **kwargs):
+                return "c"
 
         registry.register(ToolA())
         registry.register(ToolB())
@@ -207,6 +220,7 @@ class TestExecuteValidatesArgs:
     @pytest.fixture
     def strict_registry(self):
         """A registry whose tool declares a closed schema via make_params."""
+
         class _StrictTool(Tool):
             name = "strict"
             description = "Echoes the args it received."
@@ -217,7 +231,10 @@ class TestExecuteValidatesArgs:
             )
 
             async def execute(
-                self, name: str = "", description: str = "", schedule: str = "",
+                self,
+                name: str = "",
+                description: str = "",
+                schedule: str = "",
                 **kwargs,
             ) -> str:
                 return f"ran:{name}:{description}:{schedule}"
@@ -230,7 +247,10 @@ class TestExecuteValidatesArgs:
     async def test_unknown_parameter_is_refused_and_named(self, strict_registry):
         """A guessed name is refused, and the error names the real ones."""
         result = await strict_registry.execute(
-            "strict", name="t", prompt="do a thing", schedule="0 4 * * *",
+            "strict",
+            name="t",
+            prompt="do a thing",
+            schedule="0 4 * * *",
         )
         assert result.startswith("Error:")
         assert "'prompt'" in result
@@ -245,7 +265,10 @@ class TestExecuteValidatesArgs:
     @pytest.mark.asyncio
     async def test_valid_call_reaches_the_tool(self, strict_registry):
         result = await strict_registry.execute(
-            "strict", name="t", description="d", schedule="0 4 * * *",
+            "strict",
+            name="t",
+            description="d",
+            schedule="0 4 * * *",
         )
         assert result == "ran:t:d:0 4 * * *"
 
@@ -258,10 +281,11 @@ class TestExecuteValidatesArgs:
         one, so a guessed name cannot vanish into `**kwargs` just because the
         tool was written the other way.
         """
+
         class _LiteralTool(Tool):
             name = "literal"
             description = "Hand-written schema literal."
-            parameters = {
+            parameters: ClassVar[dict] = {
                 "type": "object",
                 "properties": {"a": {"type": "string"}},
                 "required": ["a"],
@@ -281,10 +305,11 @@ class TestExecuteValidatesArgs:
     async def test_explicitly_open_schema_is_left_alone(self):
         """A schema that states its own answer keeps it — the escape hatch,
         and the contract MCPProxyTool relies on for remote schemas."""
+
         class _OpenTool(Tool):
             name = "open"
             description = "Explicitly permissive."
-            parameters = {
+            parameters: ClassVar[dict] = {
                 "type": "object",
                 "properties": {"a": {"type": "string"}},
                 "additionalProperties": True,

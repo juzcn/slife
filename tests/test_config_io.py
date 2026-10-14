@@ -1,23 +1,23 @@
 """Tests for Slife.tools._config_io — shared config file read/write helpers."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 from pathlib import Path
 from unittest.mock import patch
 
-from slife.paths import get_config_path
-from tests.conftest import load_config_text
-from slife.tools._config_io import (
-    now_iso,
-    with_fetched_at,
-    read_config,
-    write_config,
-    format_source_info,
-    _ConfigPathMixin,
-    ConfigParseError,
-)
+import pytest
 
+from slife.paths import get_config_path
+from slife.tools._config_io import (
+    ConfigParseError,
+    _ConfigPathMixin,
+    format_source_info,
+    now_iso,
+    read_config,
+    with_fetched_at,
+    write_config,
+)
+from tests.conftest import load_config_text
+
+pytestmark = pytest.mark.unit
 
 # ── now_iso ─────────────────────────────────────────────────────────────────
 
@@ -32,6 +32,7 @@ class TestNowIso:
 
     def test_returns_different_values_on_subsequent_calls(self):
         import time
+
         result1 = now_iso()
         time.sleep(0.001)
         result2 = now_iso()
@@ -113,9 +114,11 @@ class TestReadConfig:
         """An OSError (e.g. permission denied) must raise — same wipe hazard."""
         path = tmp_path / "unreadable.yaml"
         path.write_text("key: value\n", encoding="utf-8")
-        with patch("pathlib.Path.read_text", side_effect=OSError("Permission denied")):
-            with pytest.raises(ConfigParseError):
-                read_config(path)
+        with (
+            patch("pathlib.Path.read_text", side_effect=OSError("Permission denied")),
+            pytest.raises(ConfigParseError),
+        ):
+            read_config(path)
 
     @pytest.mark.asyncio
     async def test_mutating_tool_does_not_wipe_broken_config(self, tmp_path):
@@ -159,7 +162,9 @@ class TestFormatSourceInfo:
 
     def test_url_only(self):
         """Only url field returns just the url."""
-        assert format_source_info({"url": "https://example.com"}) == "https://example.com"
+        assert (
+            format_source_info({"url": "https://example.com"}) == "https://example.com"
+        )
 
     def test_version_only(self):
         """Only version field returns 'v{version}'."""
@@ -167,20 +172,24 @@ class TestFormatSourceInfo:
 
     def test_all_fields(self):
         """All fields join with em-dash separator."""
-        result = format_source_info({
-            "type": "github",
-            "url": "https://github.com/foo/bar",
-            "version": "2.3.1",
-        })
+        result = format_source_info(
+            {
+                "type": "github",
+                "url": "https://github.com/foo/bar",
+                "version": "2.3.1",
+            }
+        )
         assert result == "github — https://github.com/foo/bar — v2.3.1"
 
     def test_fields_with_falsy_values_skipped(self):
         """Empty-string values are skipped like missing keys."""
-        result = format_source_info({
-            "type": "pip",
-            "url": "",
-            "version": None,
-        })
+        result = format_source_info(
+            {
+                "type": "pip",
+                "url": "",
+                "version": None,
+            }
+        )
         assert result == "pip"
 
 

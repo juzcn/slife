@@ -1,20 +1,18 @@
 """Tests for slife/plugins/memdb/embedding_config.py."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from tests.conftest import dump_config
 from slife.plugins.memdb.embedding_config import (
-    read_embedding_config,
     get_active_endpoint,
     make_check_report,
+    read_embedding_config,
 )
+from tests.conftest import dump_config
 
+pytestmark = pytest.mark.unit
 
 # ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -39,7 +37,7 @@ class _ConfigFile:
 @pytest.fixture
 def mock_config_file(tmp_path):
     """Redirect embedding_config to a throwaway config file."""
-    import slife.plugins.memdb.embedding_config as embedding_config
+    from slife.plugins.memdb import embedding_config
 
     cfg_file = tmp_path / "slife.yaml"
     cfg_file.write_text("{}", encoding="utf-8")
@@ -119,8 +117,9 @@ class TestActiveEndpoint:
 
     def test_provider_model_resolved(self, mock_config_file):
         cfg = _emb_config(
-            providers={"p1": {"base_url": "http://x/v1", "api_key": "k",
-                              "model": "m1"}},
+            providers={
+                "p1": {"base_url": "http://x/v1", "api_key": "k", "model": "m1"}
+            },
             active="p1",
         )
         mock_config_file["content"] = dump_config({"embeddings": cfg})
@@ -130,7 +129,10 @@ class TestActiveEndpoint:
 
     def test_active_provider_missing_falls_back_first(self, mock_config_file):
         cfg = _emb_config(
-            providers={"p1": {"base_url": "http://x/v1"}, "p2": {"base_url": "http://y/v1"}},
+            providers={
+                "p1": {"base_url": "http://x/v1"},
+                "p2": {"base_url": "http://y/v1"},
+            },
             active="nonexistent",
         )
         mock_config_file["content"] = dump_config({"embeddings": cfg})
@@ -139,7 +141,10 @@ class TestActiveEndpoint:
 
     def test_no_active_uses_first_provider(self, mock_config_file):
         cfg = _emb_config(
-            providers={"p1": {"base_url": "http://x/v1"}, "p2": {"base_url": "http://y/v1"}},
+            providers={
+                "p1": {"base_url": "http://x/v1"},
+                "p2": {"base_url": "http://y/v1"},
+            },
         )
         mock_config_file["content"] = dump_config({"embeddings": cfg})
         ep = get_active_endpoint()
@@ -167,13 +172,13 @@ class TestMakeCheckReport:
 
     def test_configured_available(self, mock_config_file):
         cfg = _emb_config(
-            providers={"p1": {"base_url": "http://127.0.0.1:8000/v1", "api_key": "local"}},
+            providers={
+                "p1": {"base_url": "http://127.0.0.1:8000/v1", "api_key": "local"}
+            },
             active="p1",
         )
         mock_config_file["content"] = dump_config({"embeddings": cfg})
-        with patch(
-            "slife.plugins.memdb.embeddings.EmbeddingClient"
-        ) as MockClient:
+        with patch("slife.plugins.memdb.embeddings.EmbeddingClient") as MockClient:
             mock_client = MockClient.from_config.return_value
             mock_client.available = True
             mock_client.dimension = 1024

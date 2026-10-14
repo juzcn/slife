@@ -24,26 +24,61 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Build wheels
-        run: |
-          uv build --out-dir dist
-          uv build --out-dir dist --package credstore
-          uv build --out-dir dist --package cc-switch
-          uv build --out-dir dist --package local-embed
+      - name: Check the lock is current
+        # credstore / local-embed / cc-switch are ordinary PyPI dependencies
+        # now; a stale lock still naming them as workspace editables aborts
+        # every `uv run` below.  This fails loudly instead.
+        run: uv lock --check
+
+      - name: Build wheel
+        run: uv build --out-dir dist
 
       - name: Install
         run: |
-          uv pip install dist/slife-*.whl dist/credstore-*.whl dist/cc_switch-*.whl dist/local_embed-*.whl
+          uv pip install dist/slife-*.whl
           uv pip install pytest pytest-asyncio
 
       - name: Run tests
-        run: |
-          # Each package's own [tool.pytest.ini_options] / testpaths apply
-          # when pytest runs from that package's directory.  Use
-          # `uv run --directory` (NOT `cd ... &&`), because on the Windows
-          # runner PowerShell keeps the working-directory change from `cd`
-          # across command separators, breaking the later packages.
-          uv run pytest -v --tb=short --no-header --maxfail=5
-          uv run --directory credstore pytest -v --tb=short --no-header --maxfail=5
-          uv run --directory cc-switch pytest -v --tb=short --no-header --maxfail=5
-          uv run --directory local-embed pytest -v --tb=short --no-header --maxfail=5
+        run: uv run pytest -v --tb=short --no-header --maxfail=5
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Ruff lint
+        run: uv run --frozen ruff check --output-format github
+
+      - name: Ruff format
+        run: uv run --frozen ruff format --check
+
+  typecheck:
+    name: Type-check
+    # Windows, not ubuntu: pyright is pinned to pythonPlatform = "Windows"
+    # (see [tool.pyright] in pyproject.toml) because slife reaches
+    # ctypes.windll, which does not resolve under Linux stdlib semantics.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Pyright
+        run: uv run --frozen pyright

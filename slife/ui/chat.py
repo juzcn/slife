@@ -2,22 +2,23 @@
 
 import re
 from datetime import datetime
+from typing import ClassVar
 
 from rich.style import Style as RichStyle
 from rich.text import Text as RichText
+from textual.binding import BindingType
 from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.events import Key
 from textual.widgets import Static
 
+from slife.agent.llm_client import TokenUsage
 from slife.agent.message_history import (
     info_footnote_span,
     trim_note,
     unwrap_info_envelope,
 )
-from slife.agent.llm_client import TokenUsage
 from slife.ui.i18n import t
-
 
 # ── Printable-key redirection ─────────────────────────────────────────
 
@@ -46,9 +47,7 @@ async def _redirect_printable_to_input(widget, event: Key) -> bool:
 # actually clickable in the TUI (Content.from_text does NOT auto-link).
 
 # Standard URI schemes: https://, http://, file:///, ws://, wss://
-_URI_RE = re.compile(
-    r"(?<!\w)((?:https?|file|ws|wss)://[^\s<>\[\]{}|\\^`\"']+)"
-)
+_URI_RE = re.compile(r"(?<!\w)((?:https?|file|ws|wss)://[^\s<>\[\]{}|\\^`\"']+)")
 
 # Windows absolute paths ending in a common image / document extension.
 # Link target becomes file:/// with forward slashes.
@@ -313,7 +312,8 @@ class UserMessage(Static):
         time_str = f"[{ts}] " if ts else ""
         prefix_len = len(prefix)
         content = Content.from_text(
-            f"{time_str}{prefix}{display}", markup=False,
+            f"{time_str}{prefix}{display}",
+            markup=False,
         )
         if ts:
             content = content.stylize("dim #6e7681", start=0, end=len(time_str))
@@ -359,7 +359,7 @@ class AssistantMessage(Static):
 
     can_focus = True
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         ("enter", "toggle_thinking", "Toggle thinking"),
         ("space", "toggle_thinking", "Toggle thinking"),
     ]
@@ -518,7 +518,8 @@ class AssistantMessage(Static):
             ts = _format_timestamp(getattr(self, "_timestamp", None))
             if ts:
                 content = content + Content.from_text(
-                    f"[{ts}] ", markup=False,
+                    f"[{ts}] ",
+                    markup=False,
                 ).stylize("dim #6e7681")
             content = content + self._build_response_text()
         elif not self._has_thinking:
@@ -529,7 +530,8 @@ class AssistantMessage(Static):
         # machine-facing; the human sees the payload alone.
         if self._trim_marker:
             content = content + Content.from_text(
-                f" {unwrap_info_envelope(self._trim_marker)}", markup=False,
+                f" {unwrap_info_envelope(self._trim_marker)}",
+                markup=False,
             ).stylize("dim italic")
 
         # Token usage footer

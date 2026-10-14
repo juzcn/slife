@@ -8,10 +8,12 @@ nothing on stdout.
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest; pytestmark = pytest.mark.unit
+import pytest
 
 from slife.agent.plugins import PluginStartStatus
 from slife.agent.service import MemoryDatabaseError
+
+pytestmark = pytest.mark.unit
 
 _A2A = SimpleNamespace(enabled=True, broker_host="localhost", broker_port=1883)
 
@@ -69,7 +71,8 @@ class TestBoot:
         service.start_subagent.assert_awaited_once()
         service.wait_startup_settled.assert_awaited_once()
         service.start_plugin_server.assert_awaited_once_with(
-            "a2a", "slife.plugins.a2a.server",
+            "a2a",
+            "slife.plugins.a2a.server",
         )
 
     async def test_restores_the_exit_time_context(self):
@@ -130,7 +133,9 @@ class TestFatalPaths:
     async def test_required_plugin_that_never_became_ready_is_fatal(self):
         service = _service(status=PluginStartStatus.FAILED)
         fatal = await _boot(
-            service, _config(required=["memdb"]), plugins=_PLUGINS + _MEMDB,
+            service,
+            _config(required=["memdb"]),
+            plugins=_PLUGINS + _MEMDB,
         )
         assert "memdb" in fatal
         assert "never became ready" in fatal
@@ -138,7 +143,9 @@ class TestFatalPaths:
     async def test_required_plugin_that_raises_is_fatal(self):
         service = _service(raises=TimeoutError())
         fatal = await _boot(
-            service, _config(required=["memdb"]), plugins=_PLUGINS + _MEMDB,
+            service,
+            _config(required=["memdb"]),
+            plugins=_PLUGINS + _MEMDB,
         )
         assert "memdb" in fatal
         # The empty TimeoutError carries no reason — the hang-guard budget is
@@ -183,9 +190,11 @@ class TestRunHeadless:
         """Ctrl+C is the lifecycle — it must not read as a startup failure."""
         from slife.headless import run_headless
 
-        with patch("slife.headless.AgentService"), \
-             patch("slife.headless._boot", AsyncMock(side_effect=KeyboardInterrupt)), \
-             patch("slife.headless.shutdown_session", AsyncMock()):
+        with (
+            patch("slife.headless.AgentService"),
+            patch("slife.headless._boot", AsyncMock(side_effect=KeyboardInterrupt)),
+            patch("slife.headless.shutdown_session", AsyncMock()),
+        ):
             _svc, fatal = run_headless(_config())
         assert fatal == ""
 
@@ -197,9 +206,11 @@ class TestRunHeadless:
         service = _service()
         shutdown = AsyncMock()
 
-        with patch("slife.headless.AgentService", return_value=service), \
-             patch("slife.headless._boot", AsyncMock(side_effect=KeyboardInterrupt)), \
-             patch("slife.headless.shutdown_session", shutdown):
+        with (
+            patch("slife.headless.AgentService", return_value=service),
+            patch("slife.headless._boot", AsyncMock(side_effect=KeyboardInterrupt)),
+            patch("slife.headless.shutdown_session", shutdown),
+        ):
             svc, fatal = run_headless(_config())
 
         assert fatal == ""
@@ -225,8 +236,10 @@ class TestRunHeadless:
             seen["headless"] = os.environ.get("SLIFE_HEADLESS")
             raise KeyboardInterrupt
 
-        with patch("slife.headless.AgentService", side_effect=_fake_service), \
-             patch("slife.headless.shutdown_session", AsyncMock()):
+        with (
+            patch("slife.headless.AgentService", side_effect=_fake_service),
+            patch("slife.headless.shutdown_session", AsyncMock()),
+        ):
             _svc, fatal = run_headless(_config())
         assert fatal == ""
         assert seen["headless"] == "1"
@@ -239,9 +252,11 @@ class TestRunHeadless:
         service = _service()
         service.on_memory_broken = lambda cb: cb("disk on fire")
 
-        with patch("slife.headless.AgentService", return_value=service), \
-             patch("slife.headless._boot", AsyncMock(return_value="")), \
-             patch("slife.headless.shutdown_session", AsyncMock()):
+        with (
+            patch("slife.headless.AgentService", return_value=service),
+            patch("slife.headless._boot", AsyncMock(return_value="")),
+            patch("slife.headless.shutdown_session", AsyncMock()),
+        ):
             _svc, fatal = run_headless(_config())
 
         assert "disk on fire" in fatal

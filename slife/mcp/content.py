@@ -75,5 +75,5 @@ def _unknown_block(block: Any) -> str:
     """A block type this walk does not know — keep its structure, not its repr."""
     try:
         return block.model_dump_json()
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return str(block)

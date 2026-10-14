@@ -8,29 +8,34 @@ bridge, the requester retry profile, and broadcast events.
 
 import asyncio
 import json
-import pytest; pytestmark = pytest.mark.unit
-
-
 from types import SimpleNamespace
+from typing import Self
 from unittest.mock import AsyncMock, patch
 
 import aiomqtt
+import pytest
 from a2a_over_mqtt import A2ARequest, make_artifact_event, make_status_event
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.properties import Properties
 
-from slife.a2a.config import A2AConfig
-from slife.a2a.mesh import A2AMesh, _OutboundSend, _backoff_delay
-from slife.a2a.identity import AgentName
-from slife.a2a.task_store import get_store
-import slife.a2a.task_store as task_store
 import slife.timeouts as _timeouts
+from slife.a2a import task_store
+from slife.a2a.config import A2AConfig
+from slife.a2a.identity import AgentName
+from slife.a2a.mesh import A2AMesh, _backoff_delay, _OutboundSend
+from slife.a2a.task_store import get_store
+
+pytestmark = pytest.mark.unit
 
 
 def _config(agent: str = "self-1") -> A2AConfig:
     return A2AConfig(
-        enabled=True, agent_name=agent, broker_host="localhost",
-        broker_port=1883, org="default", unit="default",
+        enabled=True,
+        agent_name=agent,
+        broker_host="localhost",
+        broker_port=1883,
+        org="default",
+        unit="default",
     )
 
 
@@ -51,8 +56,13 @@ def _fresh_store():
     _reset_task_store()
 
 
-def _msg(topic: str, payload: bytes | str, *, corr: str | None = None,
-         status: str | None = None) -> SimpleNamespace:
+def _msg(
+    topic: str,
+    payload: bytes | str,
+    *,
+    corr: str | None = None,
+    status: str | None = None,
+) -> SimpleNamespace:
     props = None
     if corr is not None or status is not None:
         props = Properties(PacketTypes.PUBLISH)
@@ -79,11 +89,13 @@ def _own_card(mesh: A2AMesh) -> str:
 def _foreign_card(instance: str | None = "b" * 32, name: str = "self-1") -> str:
     """Another instance's card for the same name — the collision shape."""
     exts = [{"instance": instance}] if instance else []
-    return json.dumps({
-        "name": name,
-        "description": "another agent",
-        "capabilities": {"streaming": True, "extensions": exts},
-    })
+    return json.dumps(
+        {
+            "name": name,
+            "description": "another agent",
+            "capabilities": {"streaming": True, "extensions": exts},
+        }
+    )
 
 
 class _FakeBroker:
@@ -96,7 +108,7 @@ class _FakeBroker:
         self.subscribed: str = ""
         self._messages = list(messages)
 
-    async def __aenter__(self) -> "_FakeBroker":
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc) -> bool:
@@ -123,8 +135,13 @@ def _spawn_inbound(mesh, task_id, sender="peer-1", text="do it", variables=None)
     """
     return asyncio.create_task(
         mesh._responder.on_request(
-            A2ARequest(text=text, request_id=task_id, task_id=task_id,
-                       sender=sender, variables=variables or {}),
+            A2ARequest(
+                text=text,
+                request_id=task_id,
+                task_id=task_id,
+                sender=sender,
+                variables=variables or {},
+            ),
             stream=AsyncMock(),
         ),
     )
@@ -134,9 +151,11 @@ class TestSendMessage:
     @pytest.mark.asyncio
     async def test_publishes_standard_sendmessage(self):
         mesh = _make_mesh()
-        with patch.object(mesh, "_publish_props", new=AsyncMock()) as pub:
-            with patch.object(mesh, "_deliver", new=AsyncMock()):
-                task_id = await mesh.send_message("peer-1", "hello")
+        with (
+            patch.object(mesh, "_publish_props", new=AsyncMock()) as pub,
+            patch.object(mesh, "_deliver", new=AsyncMock()),
+        ):
+            task_id = await mesh.send_message("peer-1", "hello")
         topic, payload, props = pub.await_args.args
         assert topic == "$a2a/v1/request/default/default/peer-1"
         env = json.loads(payload)
@@ -162,9 +181,11 @@ class TestSendMessage:
         """message_type='message' is NOT a task: no store record, and the
         request is stamped so the peer classifies it as a conversation."""
         mesh = _make_mesh()
-        with patch.object(mesh, "_publish_props", new=AsyncMock()) as pub:
-            with patch.object(mesh, "_deliver", new=AsyncMock()):
-                mid = await mesh.send_message("peer-1", "hi", message_type="message")
+        with (
+            patch.object(mesh, "_publish_props", new=AsyncMock()) as pub,
+            patch.object(mesh, "_deliver", new=AsyncMock()),
+        ):
+            mid = await mesh.send_message("peer-1", "hi", message_type="message")
         env = json.loads(pub.await_args.args[1])
         assert env["params"]["metadata"]["variables"]["message_type"] == "message"
         assert get_store().get(mid) is None
@@ -172,9 +193,11 @@ class TestSendMessage:
     @pytest.mark.asyncio
     async def test_returns_task_id_immediately(self):
         mesh = _make_mesh()
-        with patch.object(mesh, "_publish_props", new=AsyncMock()):
-            with patch.object(mesh, "_deliver", new=AsyncMock()):
-                task_id = await mesh.send_message("peer-1", "hi")
+        with (
+            patch.object(mesh, "_publish_props", new=AsyncMock()),
+            patch.object(mesh, "_deliver", new=AsyncMock()),
+        ):
+            task_id = await mesh.send_message("peer-1", "hi")
         assert isinstance(task_id, str) and len(task_id) == 32
 
 
@@ -183,15 +206,25 @@ class TestReplyRouting:
     async def test_artifact_then_terminal_completes(self):
         mesh = _make_mesh()
         completions = []
-        mesh.on_task_completion = lambda c, r, x, p, k="task": completions.append((c, r, x, p, k))
+        mesh.on_task_completion = lambda c, r, x, p, k="task": completions.append(
+            (c, r, x, p, k)
+        )
         mesh._corr_to_task["corr1"] = "task-1"
         get_store().record_send("task-1", "peer-1")
         topic = "$a2a/v1/reply/default/default/self-1/s1"
 
-        mesh._handle_reply(_msg(topic, make_artifact_event("r", "task-1", "the answer"), corr="corr1"))
+        mesh._handle_reply(
+            _msg(topic, make_artifact_event("r", "task-1", "the answer"), corr="corr1")
+        )
         assert get_store().get("task-1").status == "pending"  # artifact not terminal
 
-        mesh._handle_reply(_msg(topic, make_status_event("r", "task-1", "completed", "ctx"), corr="corr1"))
+        mesh._handle_reply(
+            _msg(
+                topic,
+                make_status_event("r", "task-1", "completed", "ctx"),
+                corr="corr1",
+            )
+        )
         rec = get_store().get("task-1")
         assert rec.status == "completed"
         assert completions == [("task-1", "the answer", False, "peer-1", "task")]
@@ -200,7 +233,9 @@ class TestReplyRouting:
     async def test_terminal_cancelled(self):
         mesh = _make_mesh()
         completions = []
-        mesh.on_task_completion = lambda c, r, x, p, k="task": completions.append((c, r, x, p, k))
+        mesh.on_task_completion = lambda c, r, x, p, k="task": completions.append(
+            (c, r, x, p, k)
+        )
         mesh._corr_to_task["corr2"] = "task-2"
         get_store().record_send("task-2", "peer-2")
         mesh._handle_reply(
@@ -230,7 +265,9 @@ class TestReplyRouting:
             _msg(topic, make_artifact_event("r", "task-m", "ok then"), corr="corr-m"),
         )
         mesh._handle_reply(
-            _msg(topic, make_status_event("r", "task-m", "completed", ""), corr="corr-m"),
+            _msg(
+                topic, make_status_event("r", "task-m", "completed", ""), corr="corr-m"
+            ),
         )
         assert completions == [("task-m", "ok then", False, "peer-1", "message")]
         assert get_store().get("task-m") is None
@@ -241,8 +278,11 @@ class TestReplyRouting:
         completions = []
         mesh.on_task_completion = lambda c, r, x, p, k="task": completions.append(c)
         mesh._handle_reply(
-            _msg("$a2a/v1/reply/default/default/self-1/s3",
-                 make_status_event("r", "nope", "completed", ""), corr="ghost"),
+            _msg(
+                "$a2a/v1/reply/default/default/self-1/s3",
+                make_status_event("r", "nope", "completed", ""),
+                corr="ghost",
+            ),
         )
         assert completions == []
 
@@ -253,10 +293,20 @@ class TestReplyRouting:
         mesh.on_task_completion = lambda c, r, x, p, k="task": completions.append(c)
         mesh._corr_to_task["corr4"] = "task-4"
         get_store().record_send("task-4", "p4")
-        mesh._handle_reply(_msg("$a2a/v1/reply/default/default/self-1/s4",
-                               make_status_event("r", "task-4", "submitted", ""), corr="corr4"))
-        mesh._handle_reply(_msg("$a2a/v1/reply/default/default/self-1/s4",
-                               make_status_event("r", "task-4", "working", "thinking"), corr="corr4"))
+        mesh._handle_reply(
+            _msg(
+                "$a2a/v1/reply/default/default/self-1/s4",
+                make_status_event("r", "task-4", "submitted", ""),
+                corr="corr4",
+            )
+        )
+        mesh._handle_reply(
+            _msg(
+                "$a2a/v1/reply/default/default/self-1/s4",
+                make_status_event("r", "task-4", "working", "thinking"),
+                corr="corr4",
+            )
+        )
         assert completions == []
         assert get_store().get("task-4").status == "pending"
 
@@ -273,10 +323,20 @@ class TestReplyRetryRouting:
         mesh._corr_to_task["orig"] = "task-r"
         mesh._corr_to_task["retry-corr"] = "task-r"
         get_store().record_send("task-r", "p")
-        mesh._handle_reply(_msg("$a2a/v1/reply/default/default/self-1/sr",
-                               make_artifact_event("r", "task-r", "from retry"), corr="retry-corr"))
-        mesh._handle_reply(_msg("$a2a/v1/reply/default/default/self-1/sr",
-                               make_status_event("r", "task-r", "completed", ""), corr="retry-corr"))
+        mesh._handle_reply(
+            _msg(
+                "$a2a/v1/reply/default/default/self-1/sr",
+                make_artifact_event("r", "task-r", "from retry"),
+                corr="retry-corr",
+            )
+        )
+        mesh._handle_reply(
+            _msg(
+                "$a2a/v1/reply/default/default/self-1/sr",
+                make_status_event("r", "task-r", "completed", ""),
+                corr="retry-corr",
+            )
+        )
         assert get_store().get("task-r").status == "completed"
         assert completions == ["task-r"]
 
@@ -314,10 +374,13 @@ class TestPresence:
         mesh = _make_mesh()
         events = []
         mesh.on_agent_change = lambda card, e: events.append(e)
-        mesh._handle_discovery(_msg(
-            "$a2a/v1/discovery/default/default/self-1",
-            _own_card(mesh), status="online",
-        ))
+        mesh._handle_discovery(
+            _msg(
+                "$a2a/v1/discovery/default/default/self-1",
+                _own_card(mesh),
+                status="online",
+            )
+        )
         assert events == []
         assert mesh.collision == ""
         assert mesh._responder_ready.is_set()
@@ -353,7 +416,7 @@ class TestPresence:
         mesh._handle_discovery(_msg(topic, b"", status=None))
 
         assert "peer-1" not in {str(c.agent_name) for c in mesh.list_agents()}
-        assert [e[1] for e in events] == ["offline"]   # announced, not silent
+        assert [e[1] for e in events] == ["offline"]  # announced, not silent
 
     def test_deleting_an_unknown_card_is_silent(self):
         """The cleanup fixture clears cards BEFORE a run too; a delete for a
@@ -397,8 +460,8 @@ class TestNameCollision:
             _msg(self._own_topic(), _foreign_card("b" * 32), status="online"),
         )
         assert "self-1" in mesh.collision
-        assert "bbbbbbbb" in mesh.collision   # the foreign instance is named
-        assert events == []                   # never announced as a peer
+        assert "bbbbbbbb" in mesh.collision  # the foreign instance is named
+        assert events == []  # never announced as a peer
         assert not mesh._responder_ready.is_set()
 
     def test_a_predecessors_retained_offline_card_is_not_a_claim(self):
@@ -433,8 +496,11 @@ class TestNameCollision:
     def test_a_peers_card_is_not_our_business(self):
         mesh = _make_mesh()
         mesh._handle_discovery(
-            _msg(self._own_topic("peer-1"), _foreign_card("b" * 32, "peer-1"),
-                 status="online"),
+            _msg(
+                self._own_topic("peer-1"),
+                _foreign_card("b" * 32, "peer-1"),
+                status="online",
+            ),
         )
         assert mesh.collision == ""
 
@@ -447,7 +513,7 @@ class TestNameCollision:
         mesh._handle_discovery(
             _msg(self._own_topic(), _foreign_card("c" * 32), status="online"),
         )
-        assert mesh.collision == first   # the first claim is the evidence
+        assert mesh.collision == first  # the first claim is the evidence
 
     @pytest.mark.asyncio
     async def test_connect_refuses_a_claimed_name(self):
@@ -455,10 +521,12 @@ class TestNameCollision:
         the other agent's session over."""
         mesh = _make_mesh()
         claim = "agent name 'self-1' is already in use on default/default"
-        with patch.object(mesh, "_probe_own_name", AsyncMock(return_value=claim)):
-            with pytest.raises(RuntimeError, match="already in use"):
-                await mesh.connect()
-        assert mesh._tasks == []          # nothing was started
+        with (
+            patch.object(mesh, "_probe_own_name", AsyncMock(return_value=claim)),
+            pytest.raises(RuntimeError, match="already in use"),
+        ):
+            await mesh.connect()
+        assert mesh._tasks == []  # nothing was started
         assert mesh.is_connected is False
 
     @pytest.mark.asyncio
@@ -479,7 +547,7 @@ class TestNameCollision:
 
         task = asyncio.create_task(teardown())
         assert await asyncio.wait_for(task, 1) == "done"  # noqa-timeout
-        assert other.cancelled()          # every OTHER mesh task still goes
+        assert other.cancelled()  # every OTHER mesh task still goes
 
 
 class TestNameProbe:
@@ -506,28 +574,48 @@ class TestNameProbe:
         assert await mesh._probe_own_name() is None
         assert made[0].subscribed == "$a2a/v1/discovery/default/default/self-1"
         # Its own client id — the probe can never displace a live session.
-        assert made[0].kwargs["identifier"].startswith(
-            "default/default/self-1-probe-",
+        assert (
+            made[0]
+            .kwargs["identifier"]
+            .startswith(
+                "default/default/self-1-probe-",
+            )
         )
 
     @pytest.mark.asyncio
     async def test_a_retained_twin_card_is_reported(self, monkeypatch):
-        made = self._fake_broker(monkeypatch, [
-            _msg("$a2a/v1/discovery/default/default/self-1",
-                 _foreign_card("b" * 32), status="online"),
-        ])
+        made = self._fake_broker(
+            monkeypatch,
+            [
+                _msg(
+                    "$a2a/v1/discovery/default/default/self-1",
+                    _foreign_card("b" * 32),
+                    status="online",
+                ),
+            ],
+        )
         mesh = _make_mesh()
         claim = await mesh._probe_own_name()
         assert claim is not None and "already in use" in claim
-        assert made[0].kwargs["identifier"].endswith("-probe-" + made[0].kwargs["identifier"].rsplit("-probe-", 1)[1])
+        assert (
+            made[0]
+            .kwargs["identifier"]
+            .endswith("-probe-" + made[0].kwargs["identifier"].rsplit("-probe-", 1)[1])
+        )
 
     @pytest.mark.asyncio
     async def test_a_predecessors_card_does_not_block_the_join(self, monkeypatch):
         monkeypatch.setattr(_timeouts.timeouts.deliver, "name_probe", 0.05)
-        self._fake_broker(monkeypatch, [
-            _msg("$a2a/v1/discovery/default/default/self-1",
-                 _foreign_card("f" * 32), status="offline"),
-        ])
+        self._fake_broker(
+            monkeypatch,
+            [
+                _msg(
+                    "$a2a/v1/discovery/default/default/self-1",
+                    _foreign_card("f" * 32),
+                    status="offline",
+                ),
+            ],
+        )
         mesh = _make_mesh()
         assert await mesh._probe_own_name() is None
 
@@ -535,6 +623,7 @@ class TestNameProbe:
     async def test_an_unreachable_broker_is_not_a_name_problem(self, monkeypatch):
         """The probe never turns a dead broker into a collision — the connect
         that follows reports that, with the error that belongs to it."""
+
         def factory(**kwargs):
             raise aiomqtt.MqttError("connection refused")
 
@@ -553,7 +642,13 @@ class TestBroadcast:
     async def test_publishes_event_qos0_with_sender(self):
         mesh = _make_mesh()
         pub = await self._publish(mesh)
-        topic, payload, qos = pub.await_args.args[0], pub.await_args.args[1], pub.await_args.kwargs.get("qos", pub.await_args.args[2] if len(pub.await_args.args) > 2 else 1)
+        topic, payload, qos = (
+            pub.await_args.args[0],
+            pub.await_args.args[1],
+            pub.await_args.kwargs.get(
+                "qos", pub.await_args.args[2] if len(pub.await_args.args) > 2 else 1
+            ),
+        )
         assert topic == "$a2a/v1/event/default/default/broadcast"
         assert json.loads(payload) == {"sender": "self-1", "text": "all hands on deck"}
         assert qos == 0
@@ -564,12 +659,16 @@ class TestBroadcast:
         events = []
         mesh.on_broadcast_event = lambda s, t: events.append((s, t))
         mesh._handle_event(
-            _msg("$a2a/v1/event/default/default/broadcast",
-                 b'{"sender":"bill","text":"hi all"}'),
+            _msg(
+                "$a2a/v1/event/default/default/broadcast",
+                b'{"sender":"bill","text":"hi all"}',
+            ),
         )
         mesh._handle_event(
-            _msg("$a2a/v1/event/default/default/broadcast",
-                 b'{"sender":"self-1","text":"echo"}'),
+            _msg(
+                "$a2a/v1/event/default/default/broadcast",
+                b'{"sender":"self-1","text":"echo"}',
+            ),
         )
         mesh._handle_event(_msg("$a2a/v1/event/default/default/broadcast", b"not json"))
         assert events == [("bill", "hi all")]
@@ -589,10 +688,12 @@ class TestResponseBackoff:
     async def test_deliver_retries_with_new_correlation_until_attempts(self):
         mesh = _make_mesh()
         send = _OutboundSend("t1", "peer-1", "s1", '{"payload":true}')
-        with patch.object(mesh, "_publish_attempt", new=AsyncMock()) as pub:
-            with patch("slife.timeouts.timeouts.deliver.reply_first", 0.01):
-                with patch("slife.a2a.mesh._backoff_delay", return_value=0.01):
-                    await mesh._deliver(send)
+        with (
+            patch.object(mesh, "_publish_attempt", new=AsyncMock()) as pub,
+            patch("slife.timeouts.timeouts.deliver.reply_first", 0.01),
+            patch("slife.a2a.mesh._backoff_delay", return_value=0.01),
+        ):
+            await mesh._deliver(send)
         # Initial attempt (in send_message) + 2 retries = 3 total; retries here.
         assert pub.await_count == 2
         corrs = [c[1] for c in pub.await_args_list]
@@ -603,9 +704,11 @@ class TestResponseBackoff:
         mesh = _make_mesh()
         send = _OutboundSend("t1", "peer-1", "s1", "x")
         send.delivered = True
-        with patch.object(mesh, "_publish_attempt", new=AsyncMock()) as pub:
-            with patch("slife.timeouts.timeouts.deliver.reply_first", 0.01):
-                await mesh._deliver(send)
+        with (
+            patch.object(mesh, "_publish_attempt", new=AsyncMock()) as pub,
+            patch("slife.timeouts.timeouts.deliver.reply_first", 0.01),
+        ):
+            await mesh._deliver(send)
         pub.assert_not_awaited()
 
 
@@ -643,7 +746,9 @@ class TestCompleteTaskBridge:
         inbound = []
         mesh.on_inbound_task = lambda s, c, t, kind="task": inbound.append(t)
         task = _spawn_inbound(
-            mesh, "tr1", variables={"message_type": "task_response"},
+            mesh,
+            "tr1",
+            variables={"message_type": "task_response"},
         )
         assert await asyncio.wait_for(task, 1) is None  # noqa-timeout
         assert inbound == []
@@ -718,18 +823,21 @@ class TestOrphanedTaskReporting:
     async def test_answering_the_peer_with_a_message_clears_it(self):
         restarted = self._orphan()
         assert len(restarted.stale_inbound()) == 1
-        with patch.object(restarted, "_publish_props", new=AsyncMock()), \
-                patch.object(restarted, "_deliver", new=AsyncMock()):
-            await restarted.send_message("jack", "here it is",
-                                         message_type="message")
+        with (
+            patch.object(restarted, "_publish_props", new=AsyncMock()),
+            patch.object(restarted, "_deliver", new=AsyncMock()),
+        ):
+            await restarted.send_message("jack", "here it is", message_type="message")
         assert restarted.stale_inbound() == []
 
     @pytest.mark.asyncio
     async def test_a_new_task_to_the_peer_does_not_clear_it(self):
         """Sending a *new* task is not answering the orphaned one."""
         restarted = self._orphan()
-        with patch.object(restarted, "_publish_props", new=AsyncMock()), \
-                patch.object(restarted, "_deliver", new=AsyncMock()):
+        with (
+            patch.object(restarted, "_publish_props", new=AsyncMock()),
+            patch.object(restarted, "_deliver", new=AsyncMock()),
+        ):
             await restarted.send_message("jack", "unrelated work")
         assert len(restarted.stale_inbound()) == 1
 
@@ -764,11 +872,12 @@ class TestWorkingKeepalive:
         monkeypatch.setattr("slife.timeouts.timeouts.deliver.keepalive", 0.01)
         mesh = _make_mesh()
         stream = AsyncMock()
-        task = asyncio.create_task(mesh._responder.on_request(
-            A2ARequest(text="hi", request_id="t-k", task_id="t-k",
-                       sender="peer-1"),
-            stream=stream,
-        ))
+        task = asyncio.create_task(
+            mesh._responder.on_request(
+                A2ARequest(text="hi", request_id="t-k", task_id="t-k", sender="peer-1"),
+                stream=stream,
+            )
+        )
         await asyncio.sleep(0.05)
         assert stream.await_count >= 1  # pings flowed while unresolved
         assert mesh.complete_task("t-k", "the answer") == "ok"
@@ -837,7 +946,7 @@ class TestCancellationPath:
         exception alone — so the delivery is gated on the link being live.
         Silence is right: the peer's requester re-sends the task.
         """
-        mesh = _make_mesh()          # _connected stays False: the link is down
+        mesh = _make_mesh()  # _connected stays False: the link is down
         delivered = []
         mesh.on_peer_cancel = lambda t, peer: delivered.append((t, peer))
         task = self_spawn_local(mesh, "t11")
@@ -871,8 +980,7 @@ def self_spawn_local(mesh, task_id):
     loop = asyncio.get_running_loop()
     return loop.create_task(
         mesh._responder.on_request(
-            A2ARequest(text="hi", request_id=task_id, task_id=task_id,
-                       sender="peer-1"),
+            A2ARequest(text="hi", request_id=task_id, task_id=task_id, sender="peer-1"),
             stream=AsyncMock(),
         ),
     )

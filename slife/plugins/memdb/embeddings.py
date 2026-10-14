@@ -16,9 +16,11 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Any
+
 from ruamel.yaml.error import YAMLError
-from slife.env import is_env_ref
+
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.env import is_env_ref
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +50,10 @@ _KNOWN_MODELS: dict[str, tuple[int, int]] = {
     # (dimension, max_tokens)
     "text-embedding-3-small": (1536, 8191),
     "text-embedding-3-large": (3072, 8191),
-    "text-embedding-ada-002":  (1536, 8191),
-    "bge-m3":                  (1024, 8192),
-    "bge-large":               (1024, 512),
-    "nomic-embed-text":        (768,  8192),
+    "text-embedding-ada-002": (1536, 8191),
+    "bge-m3": (1024, 8192),
+    "bge-large": (1024, 512),
+    "nomic-embed-text": (768, 8192),
 }
 
 #: Fallback dim/token-limit for an unknown model — *provisional* until the
@@ -138,12 +140,12 @@ class EmbeddingClient:
             self._dim_known = dim_known
         else:
             self._dim_known = (dim or 0) > 0 or _known_model(model) is not None
-        self._client: Any = None        # AsyncOpenAI
+        self._client: Any = None  # AsyncOpenAI
         # Serializes the lazy AsyncOpenAI client creation — two concurrent
         # first-time API embeds would otherwise both create a client and leak
         # one.
         self._client_init_lock = asyncio.Lock()
-        self._backend: str = ""         # "api" | ""
+        self._backend: str = ""  # "api" | ""
         self._available = False
 
         # Explicitly disabled — skip all backend detection.
@@ -163,7 +165,9 @@ class EmbeddingClient:
             self._available = _check_runtime()
             if self._available:
                 logger.info(
-                    "embeddings_backend=api model=%s dim=%d", model, self._dim,
+                    "embeddings_backend=api model=%s dim=%d",
+                    model,
+                    self._dim,
                 )
             else:
                 _log_warn(
@@ -179,16 +183,14 @@ class EmbeddingClient:
             # the health report said "has no base_url configured".
             # ``_discover_model`` already refuses an empty base_url; this
             # keeps ``available``/``load()`` from disagreeing with it.
-            _log_warn(
-                "embeddings_unavailable backend=none reason=no_base_url"
-            )
+            _log_warn("embeddings_unavailable backend=none reason=no_base_url")
         else:
-            _log_warn(
-                "embeddings_unavailable backend=none reason=no_config"
-            )
+            _log_warn("embeddings_unavailable backend=none reason=no_config")
 
     @classmethod
-    def from_config(cls, config_path: str | None = None, quiet: bool = False) -> "EmbeddingClient":
+    def from_config(
+        cls, config_path: str | None = None, quiet: bool = False
+    ) -> "EmbeddingClient":
         """Create an EmbeddingClient from slife.yaml config.
 
         Reads the first-class top-level ``embeddings`` section — the shared
@@ -238,6 +240,7 @@ class EmbeddingClient:
             return cls(enabled=False, quiet=quiet)
 
         from slife.plugins.memdb.embedding_config import _active_endpoint
+
         ep = _active_endpoint(emb_cfg)
         api_key = ep["api_key"]
         base_url = ep["base_url"]
@@ -251,6 +254,7 @@ class EmbeddingClient:
         # auth error.  Same chain as the model section: env → credstore →
         # literal.
         from slife.config import _resolve_secret
+
         api_key = _resolve_secret(api_key, accept_keyring_uri=True)
 
         # Skip still-unresolved ${VAR} placeholders — they are NOT real API
@@ -267,8 +271,15 @@ class EmbeddingClient:
         # reports it (probe / /v1/models) before vec0 is built.
         _dim_known = _known_model(model) is not None
         dim = _guess_dim(model)
-        return cls(model=model, api_key=api_key, base_url=base_url, dim=dim,
-                   dim_known=_dim_known, quiet=quiet, enabled=enabled)
+        return cls(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            dim=dim,
+            dim_known=_dim_known,
+            quiet=quiet,
+            enabled=enabled,
+        )
 
     @property
     def available(self) -> bool:
@@ -334,9 +345,11 @@ class EmbeddingClient:
 
         try:
             return await self._call_api(valid)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — any backend failure degrades to None
             logger.warning(
-                "embedding_failed backend=%s err=%s", self._backend, e,
+                "embedding_failed backend=%s err=%s",
+                self._backend,
+                e,
             )
             return None
 
@@ -350,22 +363,26 @@ class EmbeddingClient:
         """
         try:
             response = await self._call_api(["."])
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort probe; failure keeps the guess
             logger.warning(
                 "embedding_dim_probe_failed backend=api model=%s err=%s",
-                self._model, e,
+                self._model,
+                e,
             )
             return
         if not response or not response[0]:
             logger.warning(
-                "embedding_dim_probe_empty backend=api model=%s", self._model,
+                "embedding_dim_probe_empty backend=api model=%s",
+                self._model,
             )
             return
         actual = len(response[0])
         if actual and actual != self._dim:
             logger.info(
                 "api_dim_override model=%s guessed=%d actual=%d",
-                self._model, self._dim, actual,
+                self._model,
+                self._dim,
+                actual,
             )
             self._dim = actual
         self._dim_known = True
@@ -404,14 +421,15 @@ class EmbeddingClient:
                         self._client = AsyncOpenAI(**kwargs)
                     client = self._client
             models = await client.models.list()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — endpoint unreachable degrades to keyword search
             # Endpoint unreachable — treat as unavailable so the semantic
             # manager degrades (keyword search) instead of running a drainer
             # that fails on every batch.
             self._available = False
             logger.warning(
                 "embedding_model_discover_failed base_url=%s err=%s",
-                base_url, e,
+                base_url,
+                e,
             )
             return False
 
@@ -438,7 +456,8 @@ class EmbeddingClient:
                     logger.warning(
                         "embedding_model_unavailable model=%s base_url=%s "
                         "(backend dependency missing — keyword search only)",
-                        configured, base_url,
+                        configured,
+                        base_url,
                     )
                     return False
                 new_dim = int(getattr(match, "dimension", 0) or 0)
@@ -446,7 +465,9 @@ class EmbeddingClient:
                     if new_dim != self._dim:
                         logger.info(
                             "api_dim_override model=%s configured=%d actual=%d",
-                            self._model, self._dim, new_dim,
+                            self._model,
+                            self._dim,
+                            new_dim,
                         )
                         self._dim = new_dim
                     self._dim_known = True
@@ -463,21 +484,26 @@ class EmbeddingClient:
             logger.warning(
                 "embedding_model_unavailable model=%s base_url=%s "
                 "(backend dependency missing — keyword search only)",
-                entry.id, base_url,
+                entry.id,
+                base_url,
             )
             return False
         new_model = entry.id
         new_dim = int(getattr(entry, "dimension", 0) or 0)
         if new_model and new_model != self._model:
             logger.info(
-                "embedding_model_pinned model=%s (was %s)", new_model, self._model,
+                "embedding_model_pinned model=%s (was %s)",
+                new_model,
+                self._model,
             )
             self._model = new_model
         if new_dim:
             if new_dim != self._dim:
                 logger.info(
                     "api_dim_override model=%s guessed=%d actual=%d",
-                    self._model, self._dim, new_dim,
+                    self._model,
+                    self._dim,
+                    new_dim,
                 )
                 self._dim = new_dim
             self._dim_known = True
@@ -503,7 +529,8 @@ class EmbeddingClient:
             logger.warning(
                 "embedding_api_unavailable model=%s base_url=%s "
                 "(backend not ready — keyword search only)",
-                self._model, getattr(self, "_base_url", ""),
+                self._model,
+                getattr(self, "_base_url", ""),
             )
             return False
         if not self._dim_known:

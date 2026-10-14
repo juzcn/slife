@@ -30,11 +30,14 @@ class TestAddServerEntry:
     """add_server_entry — upsert persistence with merge semantics."""
 
     def test_persists_command_args_env(self):
-        cfg.add_server_entry("fs", {
-            "command": "npx",
-            "args": ["-y", "server-filesystem"],
-            "env": {"NODE_ENV": "production"},
-        })
+        cfg.add_server_entry(
+            "fs",
+            {
+                "command": "npx",
+                "args": ["-y", "server-filesystem"],
+                "env": {"NODE_ENV": "production"},
+            },
+        )
         servers = _raw_config()["mcp"]["servers"]
         assert servers["fs"]["command"] == "npx"
         assert servers["fs"]["args"] == ["-y", "server-filesystem"]
@@ -50,15 +53,18 @@ class TestAddServerEntry:
 
     def test_with_source_stored_verbatim(self):
         """The generic upsert stores source as given — no implicit stamping."""
-        cfg.add_server_entry("gh", {
-            "command": "uvx",
-            "args": ["mcp-openapi-proxy"],
-            "source": {
-                "url": "https://example.com/api.yaml",
-                "type": "mcp_package",
-                "version": "0.4.0",
+        cfg.add_server_entry(
+            "gh",
+            {
+                "command": "uvx",
+                "args": ["mcp-openapi-proxy"],
+                "source": {
+                    "url": "https://example.com/api.yaml",
+                    "type": "mcp_package",
+                    "version": "0.4.0",
+                },
             },
-        })
+        )
         source = _raw_config()["mcp"]["servers"]["gh"]["source"]
         assert source["url"] == "https://example.com/api.yaml"
         assert source["type"] == "mcp_package"
@@ -70,13 +76,16 @@ class TestAddServerEntry:
         assert "source" not in _raw_config()["mcp"]["servers"]["srv"]
 
     def test_with_url_and_headers(self):
-        cfg.add_server_entry("web", {
-            "command": "node",
-            "args": ["server.js"],
-            "url": "http://localhost:3000",
-            "headers": {"Authorization": "Bearer token"},
-            "description": "A web server",
-        })
+        cfg.add_server_entry(
+            "web",
+            {
+                "command": "node",
+                "args": ["server.js"],
+                "url": "http://localhost:3000",
+                "headers": {"Authorization": "Bearer token"},
+                "description": "A web server",
+            },
+        )
         srv = _raw_config()["mcp"]["servers"]["web"]
         assert srv["url"] == "http://localhost:3000"
         assert srv["headers"] == {"Authorization": "Bearer token"}
@@ -87,7 +96,7 @@ class TestAddServerEntry:
         cfg.add_server_entry("srv", {"args": ["b"]})
         srv = _raw_config()["mcp"]["servers"]["srv"]
         assert srv["command"] == "echo"  # preserved
-        assert srv["args"] == ["b"]       # updated
+        assert srv["args"] == ["b"]  # updated
 
     def test_none_values_skipped(self):
         cfg.add_server_entry("srv", {"command": "echo", "args": [], "env": None})
@@ -151,9 +160,7 @@ class TestLegacyServersMigration:
     def _legacy_file(self) -> None:
         path = cfg.current_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            "servers:\n  old:\n    command: echo\n", encoding="utf-8"
-        )
+        path.write_text("servers:\n  old:\n    command: echo\n", encoding="utf-8")
 
     def test_legacy_servers_read(self):
         self._legacy_file()
@@ -196,8 +203,8 @@ class TestRestAPI:
         assert entry["args"] == ["mcp-openapi-proxy"]
         assert entry["env"]["OPENAPI_SPEC_URL"] == "https://example.com/api.yaml"
         assert "API_KEY" not in entry["env"]  # public API — no auth env
-        assert "source" not in entry          # the section says it
-        assert "url" not in entry             # stdio — no url to write, empty or not
+        assert "source" not in entry  # the section says it
+        assert "url" not in entry  # stdio — no url to write, empty or not
 
     def test_a_sectioned_entry_is_a_rest_api_without_any_tag(self):
         """Placement decides, and nothing is tagged for it: this entry matches
@@ -205,11 +212,13 @@ class TestRestAPI:
         shape), so only the section can make it a REST API — and its twin
         under ``mcp.servers`` must stay an MCP server."""
         cfg.add_server_entry(
-            "handmade", {"command": "npx", "args": ["-y", "some-mcp"]},
+            "handmade",
+            {"command": "npx", "args": ["-y", "some-mcp"]},
             section="rest-api",
         )
         cfg.add_server_entry(
-            "twinshape", {"command": "npx", "args": ["-y", "some-mcp"]},
+            "twinshape",
+            {"command": "npx", "args": ["-y", "some-mcp"]},
             section="mcp",
         )
         assert "handmade" in cfg.list_rest_apis()
@@ -226,17 +235,29 @@ class TestRestAPI:
         touch it: a REST API installed from the registry keeps its origin."""
         cfg.add_server_entry(
             "from_registry",
-            {"command": "uvx", "args": ["mcp-openapi-proxy"],
-             "env": {"OPENAPI_SPEC_URL": "https://x.example/openapi.json"},
-             "source": {"type": "github", "url": "https://github.com/x/y",
-                        "version": "latest"}},
+            {
+                "command": "uvx",
+                "args": ["mcp-openapi-proxy"],
+                "env": {"OPENAPI_SPEC_URL": "https://x.example/openapi.json"},
+                "source": {
+                    "type": "github",
+                    "url": "https://github.com/x/y",
+                    "version": "latest",
+                },
+            },
             section="rest-api",
         )
         entry = _raw_config()["rest-api"]["from_registry"]
-        assert entry["source"] == {"type": "github", "url": "https://github.com/x/y",
-                                   "version": "latest"}
+        assert entry["source"] == {
+            "type": "github",
+            "url": "https://github.com/x/y",
+            "version": "latest",
+        }
         # The merged view is untouched too — the category comes from placement.
-        assert cfg._servers_dict(_raw_config())["from_registry"]["source"]["type"] == "github"
+        assert (
+            cfg._servers_dict(_raw_config())["from_registry"]["source"]["type"]
+            == "github"
+        )
         assert cfg.is_rest_api("from_registry")
 
     def test_save_rest_api_with_api_key_ref(self):
@@ -256,17 +277,13 @@ class TestResolveConfigPath:
     def test_data_dir_default(self, tmp_path, monkeypatch):
         monkeypatch.delenv("TOOLS_FILE", raising=False)
         monkeypatch.setenv("SLIFE_DATA_DIR", str(tmp_path / "data"))
-        assert cfg.resolve_config_path() == (
-            tmp_path / "data" / "tools.yaml"
-        )
+        assert cfg.resolve_config_path() == (tmp_path / "data" / "tools.yaml")
 
     def test_production_default_under_home(self, tmp_path, monkeypatch):
         monkeypatch.delenv("TOOLS_FILE", raising=False)
         monkeypatch.delenv("SLIFE_DATA_DIR", raising=False)
         monkeypatch.chdir(tmp_path)  # not the slife checkout → ~/.slife
-        assert cfg.resolve_config_path() == (
-            Path.home() / ".slife" / "tools.yaml"
-        )
+        assert cfg.resolve_config_path() == (Path.home() / ".slife" / "tools.yaml")
 
     def test_env_wins_over_data_dir(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TOOLS_FILE", str(tmp_path / "tools.yaml"))

@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from slife.logfmt import SessionFormatter, FILE_LOG_FORMAT, log_stamp, resolve_log_dir
+from slife.logfmt import FILE_LOG_FORMAT, SessionFormatter, log_stamp, resolve_log_dir
 
 if TYPE_CHECKING:
     from slife.config import Config
@@ -61,9 +61,13 @@ def setup_logging(
     # (records go to the first session's file).
     if root.handlers:
         console = next(
-            (h for h in root.handlers if isinstance(h, logging.StreamHandler)
-             and getattr(h, 'stream', None) is not None),
-            None
+            (
+                h
+                for h in root.handlers
+                if isinstance(h, logging.StreamHandler)
+                and getattr(h, "stream", None) is not None
+            ),
+            None,
         )
         file_handler = next(
             (h for h in root.handlers if isinstance(h, logging.FileHandler)),
@@ -104,21 +108,22 @@ def restore_windows_console() -> None:
         return
     try:
         import ctypes
+
         STD_INPUT_HANDLE = -10
         SANE_MODE = (
-            0x0001   # ENABLE_PROCESSED_INPUT
-            | 0x0002   # ENABLE_LINE_INPUT
-            | 0x0004   # ENABLE_ECHO_INPUT
-            | 0x0008   # ENABLE_WINDOW_INPUT
-            | 0x0010   # ENABLE_MOUSE_INPUT
-            | 0x0020   # ENABLE_INSERT_MODE
-            | 0x0040   # ENABLE_QUICK_EDIT_MODE
-            | 0x0080   # ENABLE_EXTENDED_FLAGS
+            0x0001  # ENABLE_PROCESSED_INPUT
+            | 0x0002  # ENABLE_LINE_INPUT
+            | 0x0004  # ENABLE_ECHO_INPUT
+            | 0x0008  # ENABLE_WINDOW_INPUT
+            | 0x0010  # ENABLE_MOUSE_INPUT
+            | 0x0020  # ENABLE_INSERT_MODE
+            | 0x0040  # ENABLE_QUICK_EDIT_MODE
+            | 0x0080  # ENABLE_EXTENDED_FLAGS
         )
         h = ctypes.windll.kernel32.GetStdHandle(STD_INPUT_HANDLE)
         if h != -1:
             ctypes.windll.kernel32.SetConsoleMode(h, SANE_MODE)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — best-effort Windows console restore probe
         pass
 
 
@@ -197,16 +202,18 @@ def note_session_start(log_path: Path, session_id: str) -> None:
         marker = _session_marker(Path(log_path).parent, agent, os.getpid())
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(
-            json.dumps({
-                # The agent is in the filename too; repeated here so a marker
-                # read on its own — by a person, in an editor — says whose
-                # session it describes.
-                "agent": agent,
-                "pid": os.getpid(),
-                "session_id": session_id,
-                "started": datetime.now().isoformat(timespec="seconds"),
-                "log": str(log_path),
-            }),
+            json.dumps(
+                {
+                    # The agent is in the filename too; repeated here so a marker
+                    # read on its own — by a person, in an editor — says whose
+                    # session it describes.
+                    "agent": agent,
+                    "pid": os.getpid(),
+                    "session_id": session_id,
+                    "started": datetime.now().isoformat(timespec="seconds"),
+                    "log": str(log_path),
+                }
+            ),
             encoding="utf-8",
         )
     except Exception:  # diagnostics only — never break startup over a marker
@@ -217,7 +224,9 @@ def clear_session_marker(log_dir: Path) -> None:
     """Drop this session's marker: the teardown reached its end."""
     try:
         _session_marker(
-            log_dir, _marker_agent(), os.getpid(),
+            log_dir,
+            _marker_agent(),
+            os.getpid(),
         ).unlink(missing_ok=True)
     except Exception:
         logger.debug("session_marker_clear_failed", exc_info=True)
@@ -244,7 +253,7 @@ def previous_session_killed(log_dir: Path) -> str | None:
                 _SESSION_MARKER_FMT.format(agent=_marker_agent(), pid="*"),
             )
         )
-    except Exception:
+    except OSError:
         return None
 
     reported: str | None = None
@@ -252,7 +261,12 @@ def previous_session_killed(log_dir: Path) -> str | None:
         try:
             info = json.loads(marker.read_text(encoding="utf-8"))
             pid = int(info.get("pid") or 0)
-        except Exception:  # unreadable, truncated (killed mid-write), or junk
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            AttributeError,
+        ):  # unreadable, truncated (killed mid-write), or junk
             marker.unlink(missing_ok=True)
             continue
         if pid and pid != os.getpid() and _pid_alive(pid):
@@ -281,6 +295,7 @@ def seed_skills(skills_dir: Path) -> None:
     if not pkg_skills.is_dir():
         return
     import shutil
+
     shutil.copytree(pkg_skills, skills_dir)
     logger.info("skills_seeded from=%s to=%s", pkg_skills, skills_dir)
 
@@ -393,6 +408,7 @@ def prepare_session(
     # known shape (short secret, arbitrary token).
     if config.env:
         from slife.logfmt import mask_value, sanitize_secrets
+
         for key, value in config.env.items():
             s = sanitize_secrets(str(value))
             if s == str(value) and any(

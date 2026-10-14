@@ -1,11 +1,8 @@
 """Tests for slife.plugins.memdb.embeddings — EmbeddingClient and helpers."""
 
 import asyncio
-
-import pytest; pytestmark = pytest.mark.unit
-
-
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,6 +11,8 @@ from slife.plugins.memdb.embeddings import (
     EmbeddingClient,
     _guess_dim,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _yaml_stub(config: dict) -> SimpleNamespace:
@@ -125,7 +124,7 @@ class TestEmbeddingClientFromConfig:
     def test_local_embed_from_config(self, mock_exists, mock_read_text):
         """Top-level embeddings: bare provider (local-embed) → api backend."""
         mock_exists.return_value = True
-        mock_read_text.return_value = '{}'
+        mock_read_text.return_value = "{}"
 
         mock_config = {
             "embeddings": {
@@ -140,7 +139,9 @@ class TestEmbeddingClientFromConfig:
             },
         }
 
-        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(mock_config)):
+        with patch(
+            "slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(mock_config)
+        ):
             client = EmbeddingClient.from_config("/fake/config.yaml")
             assert client.backend == "api"
             assert client.available is True
@@ -152,7 +153,7 @@ class TestEmbeddingClientFromConfig:
     def test_config_model_picked_up(self, mock_exists, mock_read_text):
         """The provider's configured model is picked up verbatim."""
         mock_exists.return_value = True
-        mock_read_text.return_value = '{}'
+        mock_read_text.return_value = "{}"
 
         mock_config = {
             "embeddings": {
@@ -168,7 +169,9 @@ class TestEmbeddingClientFromConfig:
             },
         }
 
-        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(mock_config)):
+        with patch(
+            "slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(mock_config)
+        ):
             client = EmbeddingClient.from_config("/fake/config.yaml")
             assert client.backend == "api"
             assert client._model == "bge-m3"
@@ -179,7 +182,7 @@ class TestEmbeddingClientFromConfig:
     @patch("pathlib.Path.exists")
     def test_enabled_false_disables(self, mock_exists, mock_read_text):
         mock_exists.return_value = True
-        mock_read_text.return_value = '{}'
+        mock_read_text.return_value = "{}"
 
         mock_config = {
             "embeddings": {
@@ -189,7 +192,9 @@ class TestEmbeddingClientFromConfig:
             },
         }
 
-        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(mock_config)):
+        with patch(
+            "slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(mock_config)
+        ):
             client = EmbeddingClient.from_config("/fake/config.yaml")
             assert client.available is False
 
@@ -206,7 +211,7 @@ class TestEmbeddingClientFromConfig:
         """An unrecognised model carries a provisional dim (1024) until the
         backend reports the real width."""
         mock_exists.return_value = True
-        mock_read_text.return_value = '{}'
+        mock_read_text.return_value = "{}"
 
         mock_config = {
             "embeddings": {
@@ -222,7 +227,9 @@ class TestEmbeddingClientFromConfig:
             },
         }
 
-        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(mock_config)):
+        with patch(
+            "slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(mock_config)
+        ):
             client = EmbeddingClient.from_config("/fake/config.yaml")
             assert client.backend == "api"
             assert client.available is True
@@ -234,7 +241,7 @@ class TestEmbeddingClientFromConfig:
     def test_known_model_dim_is_authoritative(self, mock_exists, mock_read_text):
         """A recognised model needs no probe — its width is authoritative."""
         mock_exists.return_value = True
-        mock_read_text.return_value = '{}'
+        mock_read_text.return_value = "{}"
 
         mock_config = {
             "embeddings": {
@@ -250,7 +257,9 @@ class TestEmbeddingClientFromConfig:
             },
         }
 
-        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(mock_config)):
+        with patch(
+            "slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(mock_config)
+        ):
             client = EmbeddingClient.from_config("/fake/config.yaml")
             assert client.backend == "api"
             assert client.dimension == 1536
@@ -259,21 +268,30 @@ class TestEmbeddingClientFromConfig:
     @patch("pathlib.Path.read_text")
     @patch("pathlib.Path.exists")
     def test_placeholder_api_key_resolves_from_env(
-        self, mock_exists, mock_read_text, monkeypatch,
+        self,
+        mock_exists,
+        mock_read_text,
+        monkeypatch,
     ):
         """``${VAR}`` api_key resolves from the shell env, like the model
         section — a SiliconFlow-style provider must not be blanked."""
         mock_exists.return_value = True
-        mock_read_text.return_value = '{}'
+        mock_read_text.return_value = "{}"
         monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-sf-test")
         # Hermetic: never fall through to the real credstore lookup.
         monkeypatch.setattr(
-            "slife.config._try_credstore_lookup", lambda key: None,
+            "slife.config._try_credstore_lookup",
+            lambda key: None,
         )
 
-        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(_embeddings_cfg(
-            api_key="${SILICONFLOW_API_KEY}",
-        ))):
+        with patch(
+            "slife.tools._yaml_doc.new_yaml",
+            return_value=_yaml_stub(
+                _embeddings_cfg(
+                    api_key="${SILICONFLOW_API_KEY}",
+                )
+            ),
+        ):
             client = EmbeddingClient.from_config("/fake/config.yaml")
         assert client.backend == "api"
         assert client.available is True
@@ -282,21 +300,29 @@ class TestEmbeddingClientFromConfig:
     @patch("pathlib.Path.read_text")
     @patch("pathlib.Path.exists")
     def test_placeholder_api_key_resolves_from_credstore(
-        self, mock_exists, mock_read_text, monkeypatch,
+        self,
+        mock_exists,
+        mock_read_text,
+        monkeypatch,
     ):
         """``${VAR}`` api_key falls back to credstore when the env var is
         unset (the documented env → credstore chain)."""
         mock_exists.return_value = True
-        mock_read_text.return_value = '{}'
+        mock_read_text.return_value = "{}"
         monkeypatch.delenv("SILICONFLOW_CRED_KEY", raising=False)
         monkeypatch.setattr(
             "slife.config._try_credstore_lookup",
             lambda key: "sk-cred" if key == "SILICONFLOW_CRED_KEY" else None,
         )
 
-        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(_embeddings_cfg(
-            api_key="${SILICONFLOW_CRED_KEY}",
-        ))):
+        with patch(
+            "slife.tools._yaml_doc.new_yaml",
+            return_value=_yaml_stub(
+                _embeddings_cfg(
+                    api_key="${SILICONFLOW_CRED_KEY}",
+                )
+            ),
+        ):
             client = EmbeddingClient.from_config("/fake/config.yaml")
         assert client.backend == "api"
         assert client._api_key == "sk-cred"
@@ -304,21 +330,30 @@ class TestEmbeddingClientFromConfig:
     @patch("pathlib.Path.read_text")
     @patch("pathlib.Path.exists")
     def test_unresolved_placeholder_api_key_stays_empty(
-        self, mock_exists, mock_read_text, monkeypatch,
+        self,
+        mock_exists,
+        mock_read_text,
+        monkeypatch,
     ):
         """An unresolvable placeholder (neither env nor credstore) must not
         be sent as a Bearer token — it degrades to empty (no auth header),
         so the api backend is not activated."""
         mock_exists.return_value = True
-        mock_read_text.return_value = '{}'
+        mock_read_text.return_value = "{}"
         monkeypatch.delenv("NO_SUCH_SF_KEY_EVER", raising=False)
         monkeypatch.setattr(
-            "slife.config._try_credstore_lookup", lambda key: None,
+            "slife.config._try_credstore_lookup",
+            lambda key: None,
         )
 
-        with patch("slife.tools._yaml_doc.new_yaml", return_value=_yaml_stub(_embeddings_cfg(
-            api_key="${NO_SUCH_SF_KEY_EVER}",
-        ))):
+        with patch(
+            "slife.tools._yaml_doc.new_yaml",
+            return_value=_yaml_stub(
+                _embeddings_cfg(
+                    api_key="${NO_SUCH_SF_KEY_EVER}",
+                )
+            ),
+        ):
             client = EmbeddingClient.from_config("/fake/config.yaml")
         assert client._api_key == ""
         assert client.backend == ""
@@ -343,7 +378,9 @@ class TestEmbeddingClientEmbed:
     @pytest.mark.asyncio
     async def test_embed_empty_strings(self):
         client = EmbeddingClient(
-            api_key="sk-key", base_url="http://127.0.0.1:9/v1", dim=4,
+            api_key="sk-key",
+            base_url="http://127.0.0.1:9/v1",
+            dim=4,
         )
         result = await client.embed(["", "  "])
         # All empty → returns zero vectors with correct dim
@@ -466,7 +503,7 @@ class TestDimProbe:
         client = EmbeddingClient.__new__(EmbeddingClient)
         client._backend = "api"
         client._available = True
-        client._model = ""            # not configured — discovered from server
+        client._model = ""  # not configured — discovered from server
         client._dim = 1024
         client._dim_known = False
         client._client = None
@@ -480,20 +517,18 @@ class TestDimProbe:
                 self.dimension = dimension
 
         class _ModelsResponse:
-            data = [
+            data: ClassVar[list] = [
                 _Model("bge-m3", dimension=1024),
                 _Model("other", dimension=768),
             ]
 
         fake_client = MagicMock()
         fake_client.models.list = AsyncMock(return_value=_ModelsResponse())
-        with patch.object(
-            client, "_client", new=fake_client, create=True
-        ):
+        with patch.object(client, "_client", new=fake_client, create=True):
             ok = await client.load()
 
         assert ok is True
-        assert client._model == "bge-m3"      # first listed entry
+        assert client._model == "bge-m3"  # first listed entry
         assert client.dimension == 1024
         assert client.dimension_known is True
 
@@ -503,7 +538,7 @@ class TestDimProbe:
         client = EmbeddingClient.__new__(EmbeddingClient)
         client._backend = "api"
         client._available = True
-        client._model = "text-embedding-3-small"   # configured
+        client._model = "text-embedding-3-small"  # configured
         client._dim = 1536
         client._dim_known = True
         client._client = None
@@ -517,7 +552,7 @@ class TestDimProbe:
                 self.dimension = dimension
 
         class _ModelsResponse:
-            data = [
+            data: ClassVar[list] = [
                 _Model("bge-m3", dimension=1024),
                 _Model("text-embedding-3-small", dimension=1536),
             ]
@@ -538,7 +573,7 @@ class TestDimProbe:
         client = EmbeddingClient.__new__(EmbeddingClient)
         client._backend = "api"
         client._available = True
-        client._model = "some-model"          # configured but not listed
+        client._model = "some-model"  # configured but not listed
         client._dim = 1024
         client._dim_known = False
         client._client = None
@@ -552,14 +587,16 @@ class TestDimProbe:
                 self.dimension = dimension
 
         class _ModelsResponse:
-            data = [_Model("bge-m3", dimension=1024)]
+            data: ClassVar[list] = [_Model("bge-m3", dimension=1024)]
 
         fake_client = MagicMock()
         fake_client.models.list = AsyncMock(return_value=_ModelsResponse())
         with (
             patch.object(client, "_client", new=fake_client, create=True),
             patch.object(
-                client, "_call_api", new=AsyncMock(return_value=[[0.1] * 1536]),
+                client,
+                "_call_api",
+                new=AsyncMock(return_value=[[0.1] * 1536]),
             ),
         ):
             ok = await client.load()

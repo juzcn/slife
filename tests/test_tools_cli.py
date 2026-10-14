@@ -1,14 +1,18 @@
 """Tests for Slife.tools.cli — CLI tool registration with source tracking."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import json
+
 import pytest
 
+from slife.tools.cli import (
+    CliListToolsTool,
+    CliRemoveTool,
+    CliSetTool,
+    get_cli_tools_summary,
+)
 from tests.conftest import dump_config, load_config_text
-from slife.tools.cli import CliSetTool, CliRemoveTool, CliListToolsTool, get_cli_tools_summary
 
+pytestmark = pytest.mark.unit
 
 # ── CliSetTool ─────────────────────────────────────────────────────────
 
@@ -51,7 +55,11 @@ class TestCliSetToolExecute:
             name="yt-dlp",
             command="yt-dlp",
             description="Video downloader",
-            source={"url": "https://github.com/yt-dlp/yt-dlp", "type": "github", "version": "2026.03.01"},
+            source={
+                "url": "https://github.com/yt-dlp/yt-dlp",
+                "type": "github",
+                "version": "2026.03.01",
+            },
         )
 
         assert "[OK]" in result
@@ -134,12 +142,16 @@ class TestCliSetToolExecute:
         tool = CliSetTool(config_path=cfg_path)
         # First add
         await tool.execute(
-            name="foo", command="foo", description="old",
+            name="foo",
+            command="foo",
+            description="old",
             source={"type": "pypi", "url": "https://pypi.org/project/foo/"},
         )
         # Update
         result = await tool.execute(
-            name="foo", command="foo", description="updated",
+            name="foo",
+            command="foo",
+            description="updated",
             source={"type": "github", "url": "https://github.com/foo/foo"},
         )
 
@@ -157,7 +169,9 @@ class TestCliSetToolExecute:
 
         tool = CliSetTool(config_path=cfg_path)
         await tool.execute(
-            name="cmd", command="cmd", description="desc",
+            name="cmd",
+            command="cmd",
+            description="desc",
             source=None,
         )
 
@@ -191,9 +205,13 @@ class TestCliRemoveTool:
     @pytest.mark.asyncio
     async def test_remove_existing(self, tmp_path):
         cfg_path = tmp_path / "tools.yaml"
-        cfg_path.write_text(dump_config({
-            "cli": {"test": {"command": "test", "description": "desc"}},
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "cli": {"test": {"command": "test", "description": "desc"}},
+                }
+            )
+        )
 
         tool = CliRemoveTool(config_path=cfg_path)
         result = await tool.execute(name="test")
@@ -229,12 +247,20 @@ class TestCliListToolsTool:
     @pytest.mark.asyncio
     async def test_list_with_entries(self, tmp_path):
         cfg_path = tmp_path / "tools.yaml"
-        cfg_path.write_text(dump_config({
-            "cli": {
-                "a": {"command": "a", "description": "Tool A"},
-                "b": {"command": "b", "description": "Tool B", "install": "pip install b"},
-            },
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "cli": {
+                        "a": {"command": "a", "description": "Tool A"},
+                        "b": {
+                            "command": "b",
+                            "description": "Tool B",
+                            "install": "pip install b",
+                        },
+                    },
+                }
+            )
+        )
 
         tool = CliListToolsTool(config_path=cfg_path)
         result = await tool.execute()
@@ -251,15 +277,23 @@ class TestGetCliToolsSummary:
 
     def test_displays_source_info(self, tmp_path):
         cfg_path = tmp_path / "tools.yaml"
-        cfg_path.write_text(dump_config({
-            "cli": {
-                "yt-dlp": {
-                    "command": "yt-dlp",
-                    "description": "Video downloader",
-                    "source": {"type": "github", "url": "https://github.com/yt-dlp/yt-dlp", "version": "2026.03.01"},
-                },
-            },
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "cli": {
+                        "yt-dlp": {
+                            "command": "yt-dlp",
+                            "description": "Video downloader",
+                            "source": {
+                                "type": "github",
+                                "url": "https://github.com/yt-dlp/yt-dlp",
+                                "version": "2026.03.01",
+                            },
+                        },
+                    },
+                }
+            )
+        )
 
         summary = get_cli_tools_summary(cfg_path)
         assert "github" in summary
@@ -268,26 +302,34 @@ class TestGetCliToolsSummary:
 
     def test_no_source_info_when_absent(self, tmp_path):
         cfg_path = tmp_path / "tools.yaml"
-        cfg_path.write_text(dump_config({
-            "cli": {
-                "cmd": {"command": "cmd", "description": "A tool"},
-            },
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "cli": {
+                        "cmd": {"command": "cmd", "description": "A tool"},
+                    },
+                }
+            )
+        )
 
         summary = get_cli_tools_summary(cfg_path)
         assert "source:" not in summary
 
     def test_source_with_type_only(self, tmp_path):
         cfg_path = tmp_path / "tools.yaml"
-        cfg_path.write_text(dump_config({
-            "cli": {
-                "cmd": {
-                    "command": "cmd",
-                    "description": "A tool",
-                    "source": {"type": "pypi"},
-                },
-            },
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "cli": {
+                        "cmd": {
+                            "command": "cmd",
+                            "description": "A tool",
+                            "source": {"type": "pypi"},
+                        },
+                    },
+                }
+            )
+        )
 
         summary = get_cli_tools_summary(cfg_path)
         assert "pypi" in summary
@@ -302,16 +344,21 @@ class TestGetCliToolsSummaryEdgeCases:
     def test_skips_non_dict_entries(self, tmp_path):
         """Entries in cli_tools that are not dicts should be skipped."""
         from slife.tools.cli import get_cli_tools_summary
+
         cfg_path = tmp_path / "tools.yaml"
-        cfg_path.write_text(dump_config({
-            "cli": {
-                "good_tool": {
-                    "command": "echo",
-                    "description": "A good tool",
-                },
-                "bad_tool": "just a string, not a dict",
-            },
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "cli": {
+                        "good_tool": {
+                            "command": "echo",
+                            "description": "A good tool",
+                        },
+                        "bad_tool": "just a string, not a dict",
+                    },
+                }
+            )
+        )
         result = get_cli_tools_summary(cfg_path)
         assert "good_tool" in result
         assert "bad_tool" not in result
@@ -319,10 +366,15 @@ class TestGetCliToolsSummaryEdgeCases:
     def test_non_dict_cli_tools_section(self, tmp_path):
         """When cli_tools is a list, should show default message."""
         from slife.tools.cli import get_cli_tools_summary
+
         cfg_path = tmp_path / "tools.yaml"
-        cfg_path.write_text(dump_config({
-            "cli": ["bad", "values"],
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "cli": ["bad", "values"],
+                }
+            )
+        )
         result = get_cli_tools_summary(cfg_path)
         assert result == "No CLI tools registered."
 
@@ -334,14 +386,20 @@ class TestCliCatalogRows:
     """`cli` entries are catalog rows: that is how tool_search finds them."""
 
     def test_rows_carry_description_and_status(self):
-        from slife.tools.cli import cli_catalog_rows
         from slife.tools.catalog import _flatten_schema
+        from slife.tools.cli import cli_catalog_rows
 
-        rows = cli_catalog_rows({
-            "gh": {"command": "gh", "description": "GitHub CLI"},
-            "off": {"command": "x", "description": "disabled one", "enabled": False},
-            "malformed": "not a dict",
-        })
+        rows = cli_catalog_rows(
+            {
+                "gh": {"command": "gh", "description": "GitHub CLI"},
+                "off": {
+                    "command": "x",
+                    "description": "disabled one",
+                    "enabled": False,
+                },
+                "malformed": "not a dict",
+            }
+        )
 
         assert rows["gh"]["description"] == "GitHub CLI"
         assert rows["gh"]["status"] == "enabled"
@@ -352,10 +410,12 @@ class TestCliCatalogRows:
         # other tool instead of being invisible to anything that reaches the
         # catalog through the index (an empty query first of all).
         assert json.loads(rows["gh"]["schema"]) == {
-            "name": "gh", "description": "GitHub CLI",
+            "name": "gh",
+            "description": "GitHub CLI",
         }
         assert _flatten_schema(rows["gh"]["schema"]).strip()
 
     def test_empty_section_is_no_rows(self):
         from slife.tools.cli import cli_catalog_rows
+
         assert cli_catalog_rows({}) == {}

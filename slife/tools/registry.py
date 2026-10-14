@@ -16,7 +16,9 @@ already run.
 
 import logging
 import time as _time
-from typing import TYPE_CHECKING, AbstractSet, Callable
+from collections.abc import Callable
+from collections.abc import Set as AbstractSet
+from typing import TYPE_CHECKING
 
 from slife.tools.base import Tool, validate_args
 from slife.tools.catalog import STATUS_DISABLED, STATUS_ERROR
@@ -58,7 +60,7 @@ class ToolRegistry:
     def __init__(self):
         self._tools: dict[str, Tool] = {}
         #: Optional shared catalog — names the state of a name this pool cannot run.
-        self._catalog: "ToolCatalogService | None" = None
+        self._catalog: ToolCatalogService | None = None
         #: Observers notified after any register/unregister mutation.  The
         #: slife-as-plugin host server subscribes here to push the standard
         #: MCP ``notifications/tools/list_changed`` to connected consumers —
@@ -102,7 +104,8 @@ class ToolRegistry:
                 )
                 return
             logger.warning(
-                "tool_register_duplicate name=%s — replacing existing tool", tool.name,
+                "tool_register_duplicate name=%s — replacing existing tool",
+                tool.name,
             )
         self._tools[tool.name] = tool
         self._notify_changed()
@@ -134,7 +137,9 @@ class ToolRegistry:
         """Return all registered tools."""
         return list(self._tools.values())
 
-    def to_openai_functions(self, projection: AbstractSet[str] | None = None) -> list[dict]:
+    def to_openai_functions(
+        self, projection: AbstractSet[str] | None = None
+    ) -> list[dict]:
         """Convert registered tools to OpenAI function definitions.
 
         With ``projection`` (the per-turn loaded snapshot), only tools whose
@@ -146,8 +151,7 @@ class ToolRegistry:
         if projection is None:
             return [t.to_openai_function() for t in self._tools.values()]
         return [
-            t.to_openai_function()
-            for t in self._tools.values() if t.name in projection
+            t.to_openai_function() for t in self._tools.values() if t.name in projection
         ]
 
     async def execute(self, tool_name: str, /, **kwargs) -> str:
@@ -200,7 +204,7 @@ class ToolRegistry:
             t0 = _time.monotonic()
             logger.debug("tool_start name=%s", tool_name)
             result = await tool.execute(**kwargs)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — tool execution boundary: any tool may raise; the caller must get an error string, not a crash
             logger.warning("tool_error name=%s err=%s", tool_name, e)
             return f"Error executing {tool_name}: {e}"
         # Bookkeeping sits OUTSIDE that try on purpose: the tool has already
@@ -219,6 +223,8 @@ class ToolRegistry:
         elapsed = (_time.monotonic() - t0) * 1000
         logger.debug(
             "tool_done name=%s took_ms=%.0f result_len=%d",
-            tool_name, elapsed, len(result),
+            tool_name,
+            elapsed,
+            len(result),
         )
         return result

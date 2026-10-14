@@ -6,11 +6,13 @@ holding this" from "I have never seen this id".  These tests cover that
 classification directly; ``test_a2a_mesh`` covers what the mesh does with it.
 """
 
-import pytest; pytestmark = pytest.mark.unit
+import pytest
 
-from slife.a2a.inbound_store import InboundStore, _MAX_ENTRIES
+from slife.a2a.inbound_store import _MAX_ENTRIES, InboundStore
 from slife.paths import get_a2a_inbound_path
 from slife.tools._yaml_doc import new_yaml
+
+pytestmark = pytest.mark.unit
 
 
 def _restart(path):
@@ -45,7 +47,9 @@ class TestOneLedgerPerAgent:
         assert get_a2a_inbound_path().name == get_a2a_inbound_path("slife").name
 
     def test_another_agents_in_flight_task_is_not_an_orphan(
-        self, monkeypatch, tmp_path,
+        self,
+        monkeypatch,
+        tmp_path,
     ):
         monkeypatch.setenv("SLIFE_DATA_DIR", str(tmp_path))
         InboundStore(get_a2a_inbound_path("slife")).add("t1", "peer-1")

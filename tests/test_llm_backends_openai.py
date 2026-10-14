@@ -1,21 +1,21 @@
 """Tests for OpenAIBackend — extracted from test_llm_client.py."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from slife.config import ModelConfig
+import pytest
+
 from slife.agent.llm_backends.openai import OpenAIBackend
+from slife.config import ModelConfig
 from tests.conftest import (
-    _MockStreamEvent,
     _MockDelta,
-    _MockUsage,
-    _MockToolCallDelta,
     _MockFunctionDelta,
+    _MockStreamEvent,
+    _MockToolCallDelta,
+    _MockUsage,
     make_async_iter,
 )
 
+pytestmark = pytest.mark.unit
 
 # ── Construction ────────────────────────────────────────────────────────
 
@@ -38,16 +38,22 @@ class TestOpenAIBackend:
 
     def test_is_deepseek_case_insensitive(self):
         mc = ModelConfig(
-            ref="DeepSeek/v3", provider="DeepSeek", api_model="v3",
-            display_name="DS", api_key="key",
+            ref="DeepSeek/v3",
+            provider="DeepSeek",
+            api_model="v3",
+            display_name="DS",
+            api_key="key",
         )
         backend = OpenAIBackend(mc)
         assert backend._is_deepseek() is True
 
     def test_is_deepseek_in_base_url(self):
         mc = ModelConfig(
-            ref="custom/v1", provider="custom", api_model="v1",
-            display_name="C", api_key="key",
+            ref="custom/v1",
+            provider="custom",
+            api_model="v1",
+            display_name="C",
+            api_key="key",
             base_url="https://api.DeepSeek.com/v1",
         )
         backend = OpenAIBackend(mc)
@@ -95,9 +101,13 @@ class TestBuildKwargs:
 
     def test_thinking_without_reasoning_effort(self):
         mc = ModelConfig(
-            ref="deepseek/v4", provider="deepseek", api_model="v4",
-            display_name="V4", api_key="key",
-            thinking_enabled=True, reasoning_effort=None,
+            ref="deepseek/v4",
+            provider="deepseek",
+            api_model="v4",
+            display_name="V4",
+            api_key="key",
+            thinking_enabled=True,
+            reasoning_effort=None,
         )
         backend = OpenAIBackend(mc)
         kw = backend._build_kwargs([], None)
@@ -107,9 +117,13 @@ class TestBuildKwargs:
     def test_thinking_enabled_non_deepseek(self):
         """Non-DeepSeek provider with thinking_enabled also gets extra_body."""
         mc = ModelConfig(
-            ref="ollama/qwen", provider="ollama", api_model="qwen",
-            display_name="Qwen", api_key="key",
-            thinking_enabled=True, reasoning_effort=None,
+            ref="ollama/qwen",
+            provider="ollama",
+            api_model="qwen",
+            display_name="Qwen",
+            api_key="key",
+            thinking_enabled=True,
+            reasoning_effort=None,
         )
         backend = OpenAIBackend(mc)
         kw = backend._build_kwargs([], None)
@@ -124,9 +138,13 @@ class TestBuildKwargs:
         reasoning-enabled model — scnet/MiniMax-M3 rejects the enabled shape
         with a 400 Format Error but reasons natively anyway."""
         mc = ModelConfig(
-            ref="scnet/MiniMax-M3", provider="scnet", api_model="MiniMax-M3",
-            display_name="MiniMax M3", api_key="key",
-            thinking_enabled=True, reasoning_effort=None,
+            ref="scnet/MiniMax-M3",
+            provider="scnet",
+            api_model="MiniMax-M3",
+            display_name="MiniMax M3",
+            api_key="key",
+            thinking_enabled=True,
+            reasoning_effort=None,
             compat={"thinking": "omit"},
         )
         backend = OpenAIBackend(mc)
@@ -135,9 +153,13 @@ class TestBuildKwargs:
 
     def test_compat_thinking_disabled_forces_disabled(self):
         mc = ModelConfig(
-            ref="scnet/MiniMax-M3", provider="scnet", api_model="MiniMax-M3",
-            display_name="MiniMax M3", api_key="key",
-            thinking_enabled=True, reasoning_effort=None,
+            ref="scnet/MiniMax-M3",
+            provider="scnet",
+            api_model="MiniMax-M3",
+            display_name="MiniMax M3",
+            api_key="key",
+            thinking_enabled=True,
+            reasoning_effort=None,
             compat={"thinking": "disabled"},
         )
         backend = OpenAIBackend(mc)
@@ -149,9 +171,13 @@ class TestBuildKwargs:
         """compat: {thinking: 'enabled'} is equivalent to thinking_enabled —
         still emits the enabled shape (with reasoning_effort)."""
         mc = ModelConfig(
-            ref="scnet/Kimi-K3", provider="scnet", api_model="Kimi-K3",
-            display_name="Kimi K3", api_key="key",
-            thinking_enabled=True, reasoning_effort="high",
+            ref="scnet/Kimi-K3",
+            provider="scnet",
+            api_model="Kimi-K3",
+            display_name="Kimi K3",
+            api_key="key",
+            thinking_enabled=True,
+            reasoning_effort="high",
             compat={"thinking": "enabled"},
         )
         backend = OpenAIBackend(mc)
@@ -163,9 +189,13 @@ class TestBuildKwargs:
         """compat 'omit' takes precedence over the DeepSeek auto-disabled —
         no thinking field at all when the user asked to omit."""
         mc = ModelConfig(
-            ref="deepseek/v4", provider="deepseek", api_model="v4",
-            display_name="V4", api_key="key",
-            thinking_enabled=False, reasoning_effort=None,
+            ref="deepseek/v4",
+            provider="deepseek",
+            api_model="v4",
+            display_name="V4",
+            api_key="key",
+            thinking_enabled=False,
+            reasoning_effort=None,
             compat={"thinking": "omit"},
         )
         backend = OpenAIBackend(mc)
@@ -190,7 +220,7 @@ class TestChat:
         mock_create.return_value = MagicMock(usage=mock_usage)
         backend.client.chat.completions.create = mock_create
 
-        response, usage = await backend.chat([{"role": "user", "content": "hi"}])
+        _response, usage = await backend.chat([{"role": "user", "content": "hi"}])
         assert usage.prompt_tokens == 50
         assert usage.completion_tokens == 25
         assert usage.total_tokens == 75
@@ -240,12 +270,16 @@ class TestChatStream:
     @pytest.mark.asyncio
     async def test_stream_content_chunks(self, sample_model_config):
         backend = OpenAIBackend(sample_model_config)
-        events = make_async_iter([
-            _MockStreamEvent(delta=_MockDelta(content="Hello")),
-            _MockStreamEvent(delta=_MockDelta(content=" world")),
-            _MockStreamEvent(delta=_MockDelta(content="!")),
-            _MockStreamEvent(delta=_MockDelta(content=""), usage=_MockUsage(10, 5, 15)),
-        ])
+        events = make_async_iter(
+            [
+                _MockStreamEvent(delta=_MockDelta(content="Hello")),
+                _MockStreamEvent(delta=_MockDelta(content=" world")),
+                _MockStreamEvent(delta=_MockDelta(content="!")),
+                _MockStreamEvent(
+                    delta=_MockDelta(content=""), usage=_MockUsage(10, 5, 15)
+                ),
+            ]
+        )
         mock_create = AsyncMock(return_value=events)
         backend.client.chat.completions.create = mock_create
 
@@ -267,10 +301,12 @@ class TestChatStream:
         chunk and context accounting stayed at the chars/3 estimate with
         token_count=0 persisted (REVIEW NEW-H3)."""
         backend = OpenAIBackend(sample_model_config)
-        events = make_async_iter([
-            _MockStreamEvent(delta=_MockDelta(content="Hello")),
-            _MockStreamEvent(delta=None, usage=_MockUsage(10, 5, 15)),
-        ])
+        events = make_async_iter(
+            [
+                _MockStreamEvent(delta=_MockDelta(content="Hello")),
+                _MockStreamEvent(delta=None, usage=_MockUsage(10, 5, 15)),
+            ]
+        )
         mock_create = AsyncMock(return_value=events)
         backend.client.chat.completions.create = mock_create
 
@@ -287,12 +323,14 @@ class TestChatStream:
     @pytest.mark.asyncio
     async def test_stream_thinking_chunks(self, thinking_model_config):
         backend = OpenAIBackend(thinking_model_config)
-        events = make_async_iter([
-            _MockStreamEvent(delta=_MockDelta(reasoning_content="Let me think...")),
-            _MockStreamEvent(delta=_MockDelta(reasoning_content=" about this.")),
-            _MockStreamEvent(delta=_MockDelta(content="The answer is 42.")),
-            _MockStreamEvent(usage=_MockUsage(20, 10, 30)),
-        ])
+        events = make_async_iter(
+            [
+                _MockStreamEvent(delta=_MockDelta(reasoning_content="Let me think...")),
+                _MockStreamEvent(delta=_MockDelta(reasoning_content=" about this.")),
+                _MockStreamEvent(delta=_MockDelta(content="The answer is 42.")),
+                _MockStreamEvent(usage=_MockUsage(20, 10, 30)),
+            ]
+        )
         backend.client.chat.completions.create = AsyncMock(return_value=events)
 
         chunks = []
@@ -307,21 +345,42 @@ class TestChatStream:
     @pytest.mark.asyncio
     async def test_stream_tool_call_deltas(self, sample_model_config):
         backend = OpenAIBackend(sample_model_config)
-        events = make_async_iter([
-            _MockStreamEvent(delta=_MockDelta(tool_calls=[
-                _MockToolCallDelta(index=0, id="call_abc",
-                    function=_MockFunctionDelta(name="web_search"))
-            ])),
-            _MockStreamEvent(delta=_MockDelta(tool_calls=[
-                _MockToolCallDelta(index=0,
-                    function=_MockFunctionDelta(arguments='{"query"'))
-            ])),
-            _MockStreamEvent(delta=_MockDelta(tool_calls=[
-                _MockToolCallDelta(index=0,
-                    function=_MockFunctionDelta(arguments=': "cats"}'))
-            ])),
-            _MockStreamEvent(usage=_MockUsage(30, 15, 45)),
-        ])
+        events = make_async_iter(
+            [
+                _MockStreamEvent(
+                    delta=_MockDelta(
+                        tool_calls=[
+                            _MockToolCallDelta(
+                                index=0,
+                                id="call_abc",
+                                function=_MockFunctionDelta(name="web_search"),
+                            )
+                        ]
+                    )
+                ),
+                _MockStreamEvent(
+                    delta=_MockDelta(
+                        tool_calls=[
+                            _MockToolCallDelta(
+                                index=0,
+                                function=_MockFunctionDelta(arguments='{"query"'),
+                            )
+                        ]
+                    )
+                ),
+                _MockStreamEvent(
+                    delta=_MockDelta(
+                        tool_calls=[
+                            _MockToolCallDelta(
+                                index=0,
+                                function=_MockFunctionDelta(arguments=': "cats"}'),
+                            )
+                        ]
+                    )
+                ),
+                _MockStreamEvent(usage=_MockUsage(30, 15, 45)),
+            ]
+        )
         backend.client.chat.completions.create = AsyncMock(return_value=events)
 
         chunks = []
@@ -337,11 +396,13 @@ class TestChatStream:
     @pytest.mark.asyncio
     async def test_stream_empty_choices(self, sample_model_config):
         backend = OpenAIBackend(sample_model_config)
-        events = make_async_iter([
-            _MockStreamEvent(),
-            _MockStreamEvent(delta=_MockDelta(content="valid")),
-            _MockStreamEvent(usage=_MockUsage(1, 1, 2)),
-        ])
+        events = make_async_iter(
+            [
+                _MockStreamEvent(),
+                _MockStreamEvent(delta=_MockDelta(content="valid")),
+                _MockStreamEvent(usage=_MockUsage(1, 1, 2)),
+            ]
+        )
         backend.client.chat.completions.create = AsyncMock(return_value=events)
 
         chunks = []
@@ -353,11 +414,13 @@ class TestChatStream:
     @pytest.mark.asyncio
     async def test_stream_reasoning_empty_string(self, thinking_model_config):
         backend = OpenAIBackend(thinking_model_config)
-        events = make_async_iter([
-            _MockStreamEvent(delta=_MockDelta(reasoning_content="")),
-            _MockStreamEvent(delta=_MockDelta(content="OK")),
-            _MockStreamEvent(usage=_MockUsage(0, 1, 1)),
-        ])
+        events = make_async_iter(
+            [
+                _MockStreamEvent(delta=_MockDelta(reasoning_content="")),
+                _MockStreamEvent(delta=_MockDelta(content="OK")),
+                _MockStreamEvent(usage=_MockUsage(0, 1, 1)),
+            ]
+        )
         backend.client.chat.completions.create = AsyncMock(return_value=events)
 
         chunks = []
@@ -406,13 +469,19 @@ class TestOpenAIResponsesBackend:
     @staticmethod
     def _evt(etype, **kw):
         from types import SimpleNamespace
+
         return SimpleNamespace(type=etype, **kw)
 
     @staticmethod
     def _fn_item(item_id, name, call_id):
         from types import SimpleNamespace
+
         return SimpleNamespace(
-            type="function_call", id=item_id, name=name, call_id=call_id, arguments="",
+            type="function_call",
+            id=item_id,
+            name=name,
+            call_id=call_id,
+            arguments="",
         )
 
     def test_compat_thinking_escape_honoured(self):
@@ -445,19 +514,22 @@ class TestOpenAIResponsesBackend:
         from slife.agent.llm_backends.openai_responses import OpenAIResponsesBackend
 
         tools = [
-            {"type": "function", "function": {
-                "name": "run",
-                "description": "Runs something.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "arg1": {"type": "string"},
-                        "_timeout": {"type": "integer"},
-                        "_async": {"type": "boolean"},
+            {
+                "type": "function",
+                "function": {
+                    "name": "run",
+                    "description": "Runs something.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "arg1": {"type": "string"},
+                            "_timeout": {"type": "integer"},
+                            "_async": {"type": "boolean"},
+                        },
+                        "required": ["arg1"],
                     },
-                    "required": ["arg1"],
                 },
-            }},
+            },
         ]
         result = OpenAIResponsesBackend._oa_tools_to_responses(tools)
         props = result[0]["parameters"]["properties"]
@@ -470,13 +542,44 @@ class TestOpenAIResponsesBackend:
         """Tool deltas carry the name/call_id captured on output_item.added."""
         from slife.agent.llm_backends.openai_responses import OpenAIResponsesBackend
 
-        events = make_async_iter([
-            self._evt("response.output_item.added", item=self._fn_item("fc_1", "web_search", "call_abc"), output_index=0, sequence_number=0),
-            self._evt("response.function_call_arguments.delta", item_id="fc_1", output_index=0, sequence_number=1, delta='{"query"'),
-            self._evt("response.function_call_arguments.delta", item_id="fc_1", output_index=0, sequence_number=2, delta=': "cats"}'),
-            self._evt("response.output_item.done", item=self._fn_item("fc_1", "web_search", "call_abc"), output_index=0, sequence_number=3),
-            self._evt("response.completed", response=MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5, total_tokens=15))),
-        ])
+        events = make_async_iter(
+            [
+                self._evt(
+                    "response.output_item.added",
+                    item=self._fn_item("fc_1", "web_search", "call_abc"),
+                    output_index=0,
+                    sequence_number=0,
+                ),
+                self._evt(
+                    "response.function_call_arguments.delta",
+                    item_id="fc_1",
+                    output_index=0,
+                    sequence_number=1,
+                    delta='{"query"',
+                ),
+                self._evt(
+                    "response.function_call_arguments.delta",
+                    item_id="fc_1",
+                    output_index=0,
+                    sequence_number=2,
+                    delta=': "cats"}',
+                ),
+                self._evt(
+                    "response.output_item.done",
+                    item=self._fn_item("fc_1", "web_search", "call_abc"),
+                    output_index=0,
+                    sequence_number=3,
+                ),
+                self._evt(
+                    "response.completed",
+                    response=MagicMock(
+                        usage=MagicMock(
+                            input_tokens=10, output_tokens=5, total_tokens=15
+                        )
+                    ),
+                ),
+            ]
+        )
 
         backend = OpenAIResponsesBackend(self._responses_cfg())
         backend.client.responses.create = AsyncMock(return_value=events)
@@ -492,19 +595,46 @@ class TestOpenAIResponsesBackend:
             assert td["id"] == "call_abc"  # call_id, not item_id
         # Stable, collision-free index across the deltas of one item.
         assert tool_deltas[0]["index"] == tool_deltas[1]["index"] == 0
-        assert "".join(td["function"]["arguments"] for td in tool_deltas) == '{"query": "cats"}'
+        assert (
+            "".join(td["function"]["arguments"] for td in tool_deltas)
+            == '{"query": "cats"}'
+        )
 
     @pytest.mark.asyncio
     async def test_stream_parallel_tool_calls_distinct_indices(self):
         """Two tool calls in one batch get distinct deterministic indices."""
         from slife.agent.llm_backends.openai_responses import OpenAIResponsesBackend
 
-        events = make_async_iter([
-            self._evt("response.output_item.added", item=self._fn_item("fc_1", "tool_a", "call_a"), output_index=0, sequence_number=0),
-            self._evt("response.output_item.added", item=self._fn_item("fc_2", "tool_b", "call_b"), output_index=1, sequence_number=1),
-            self._evt("response.function_call_arguments.delta", item_id="fc_1", output_index=0, sequence_number=2, delta='{}'),
-            self._evt("response.function_call_arguments.delta", item_id="fc_2", output_index=1, sequence_number=3, delta='{}'),
-        ])
+        events = make_async_iter(
+            [
+                self._evt(
+                    "response.output_item.added",
+                    item=self._fn_item("fc_1", "tool_a", "call_a"),
+                    output_index=0,
+                    sequence_number=0,
+                ),
+                self._evt(
+                    "response.output_item.added",
+                    item=self._fn_item("fc_2", "tool_b", "call_b"),
+                    output_index=1,
+                    sequence_number=1,
+                ),
+                self._evt(
+                    "response.function_call_arguments.delta",
+                    item_id="fc_1",
+                    output_index=0,
+                    sequence_number=2,
+                    delta="{}",
+                ),
+                self._evt(
+                    "response.function_call_arguments.delta",
+                    item_id="fc_2",
+                    output_index=1,
+                    sequence_number=3,
+                    delta="{}",
+                ),
+            ]
+        )
 
         backend = OpenAIResponsesBackend(self._responses_cfg())
         backend.client.responses.create = AsyncMock(return_value=events)
@@ -527,12 +657,22 @@ class TestOpenAIResponsesBackend:
         messages = [
             {"role": "system", "content": "Be brief."},
             {"role": "user", "content": "call two tools"},
-            {"role": "assistant", "content": "On it.", "tool_calls": [
-                {"id": "call_a", "type": "function",
-                 "function": {"name": "tool_a", "arguments": '{"x":1}'}},
-                {"id": "call_b", "type": "function",
-                 "function": {"name": "tool_b", "arguments": '{"y":2}'}},
-            ]},
+            {
+                "role": "assistant",
+                "content": "On it.",
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "tool_a", "arguments": '{"x":1}'},
+                    },
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "tool_b", "arguments": '{"y":2}'},
+                    },
+                ],
+            },
             {"role": "tool", "tool_call_id": "call_a", "content": "A done"},
             {"role": "tool", "tool_call_id": "call_b", "content": "B done"},
         ]
@@ -545,22 +685,39 @@ class TestOpenAIResponsesBackend:
 
         types = [item.get("type", item.get("role")) for item in items]
         assert types == [
-            "user", "assistant",
-            "function_call", "function_call",
-            "function_call_output", "function_call_output",
+            "user",
+            "assistant",
+            "function_call",
+            "function_call",
+            "function_call_output",
+            "function_call_output",
         ]
 
         fcs = [i for i in items if i.get("type") == "function_call"]
-        assert fcs[0] == {"type": "function_call", "call_id": "call_a",
-                          "name": "tool_a", "arguments": '{"x":1}'}
-        assert fcs[1] == {"type": "function_call", "call_id": "call_b",
-                          "name": "tool_b", "arguments": '{"y":2}'}
+        assert fcs[0] == {
+            "type": "function_call",
+            "call_id": "call_a",
+            "name": "tool_a",
+            "arguments": '{"x":1}',
+        }
+        assert fcs[1] == {
+            "type": "function_call",
+            "call_id": "call_b",
+            "name": "tool_b",
+            "arguments": '{"y":2}',
+        }
 
         outputs = [i for i in items if i.get("type") == "function_call_output"]
-        assert outputs[0] == {"type": "function_call_output", "call_id": "call_a",
-                              "output": "A done"}
-        assert outputs[1] == {"type": "function_call_output", "call_id": "call_b",
-                              "output": "B done"}
+        assert outputs[0] == {
+            "type": "function_call_output",
+            "call_id": "call_a",
+            "output": "A done",
+        }
+        assert outputs[1] == {
+            "type": "function_call_output",
+            "call_id": "call_b",
+            "output": "B done",
+        }
 
     def test_assistant_tool_calls_without_text_emit_only_function_calls(self):
         """REVIEW W2 — empty assistant content is dropped; each tool call is
@@ -568,14 +725,26 @@ class TestOpenAIResponsesBackend:
         from slife.agent.llm_backends.openai_responses import OpenAIResponsesBackend
 
         messages = [
-            {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "call_1", "type": "function",
-                 "function": {"name": "t", "arguments": "{}"}},
-            ]},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "t", "arguments": "{}"},
+                    },
+                ],
+            },
             {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
         ]
-        instructions, items = OpenAIResponsesBackend._oa_msgs_to_responses(messages)
+        _instructions, items = OpenAIResponsesBackend._oa_msgs_to_responses(messages)
         assert items == [
-            {"type": "function_call", "call_id": "call_1", "name": "t", "arguments": "{}"},
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "t",
+                "arguments": "{}",
+            },
             {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
         ]

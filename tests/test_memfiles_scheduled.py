@@ -33,12 +33,16 @@ async def _real_store(tmp_path) -> MemfilesStore:
 
 # ── scheduled_tasks ──────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_upsert_scheduled_task_create_and_update(tmp_path):
     store = await _real_store(tmp_path)
     try:
         r = await store.upsert_scheduled_task(
-            "daily_diary", "write the diary", "0 0 * * *", "Asia/Shanghai",
+            "daily_diary",
+            "write the diary",
+            "0 0 * * *",
+            "Asia/Shanghai",
         )
         assert r["name"] == "daily_diary"
 
@@ -50,7 +54,9 @@ async def test_upsert_scheduled_task_create_and_update(tmp_path):
 
         # update (same name → same id)
         await store.upsert_scheduled_task(
-            "daily_diary", "new description", "0 9 * * *",
+            "daily_diary",
+            "new description",
+            "0 9 * * *",
         )
         task2 = await store.get_scheduled_task("daily_diary")
         assert task2["description"] == "new description"
@@ -75,6 +81,7 @@ async def test_scheduled_tasks_list_enabled_filter(tmp_path):
 
 # ── task removal ─────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_remove_scheduled_task_cleans_runs(tmp_path):
     store = await _real_store(tmp_path)
@@ -89,6 +96,7 @@ async def test_remove_scheduled_task_cleans_runs(tmp_path):
         assert await store.remove_scheduled_task("daily") is False
     finally:
         await store.close()
+
 
 @pytest.mark.asyncio
 async def test_record_and_mark_missed(tmp_path):
@@ -123,24 +131,42 @@ async def test_mark_run_skipped_closes_missed_and_failed(tmp_path):
         await store.record_scheduled_run(task["task_id"], "2026-08-27T00:00:00")
 
         # The return value IS the verdict the caller reports on.
-        assert await store.mark_run_skipped(task["task_id"], "2026-08-26T00:00:00") is True
-        assert await store.mark_run_skipped(task["task_id"], "2026-08-25T00:00:00") is True
+        assert (
+            await store.mark_run_skipped(task["task_id"], "2026-08-26T00:00:00") is True
+        )
+        assert (
+            await store.mark_run_skipped(task["task_id"], "2026-08-25T00:00:00") is True
+        )
         runs = await store.scheduled_runs_list(status="skipped")
         assert {r["due_at"] for r in runs} == {
-            "2026-08-25T00:00:00", "2026-08-26T00:00:00",
+            "2026-08-25T00:00:00",
+            "2026-08-26T00:00:00",
         }
 
         # a pending (unconfirmed) run is not closed by skip — only missed/failed
-        assert await store.mark_run_skipped(task["task_id"], "2026-08-27T00:00:00") is False
+        assert (
+            await store.mark_run_skipped(task["task_id"], "2026-08-27T00:00:00")
+            is False
+        )
         runs = await store.scheduled_runs_list(status="pending")
         assert len(runs) == 1
         # an already-skipped run is not re-closed either
-        assert await store.mark_run_skipped(task["task_id"], "2026-08-26T00:00:00") is False
+        assert (
+            await store.mark_run_skipped(task["task_id"], "2026-08-26T00:00:00")
+            is False
+        )
         # …and neither is a due_at no run carries
-        assert await store.mark_run_skipped(task["task_id"], "2027-01-01T00:00:00") is False
+        assert (
+            await store.mark_run_skipped(task["task_id"], "2027-01-01T00:00:00")
+            is False
+        )
 
-        assert await store.run_status(task["task_id"], "2026-08-27T00:00:00") == "pending"
-        assert await store.run_status(task["task_id"], "2026-08-26T00:00:00") == "skipped"
+        assert (
+            await store.run_status(task["task_id"], "2026-08-27T00:00:00") == "pending"
+        )
+        assert (
+            await store.run_status(task["task_id"], "2026-08-26T00:00:00") == "skipped"
+        )
         assert await store.run_status(task["task_id"], "2027-01-01T00:00:00") is None
     finally:
         await store.close()
@@ -152,8 +178,9 @@ async def test_mark_run_failed_only_pending(tmp_path):
     try:
         task = await store.upsert_scheduled_task("daily", schedule="0 0 * * *")
         await store.record_scheduled_run(task["task_id"], "2026-08-25T00:00:00")
-        await store.mark_run_failed(task["task_id"], "2026-08-25T00:00:00",
-                                    "interrupted")
+        await store.mark_run_failed(
+            task["task_id"], "2026-08-25T00:00:00", "interrupted"
+        )
         runs = await store.scheduled_runs_list(task_id=task["task_id"])
         assert runs[0]["status"] == "failed"
         assert runs[0]["error"] == "interrupted"
@@ -161,8 +188,9 @@ async def test_mark_run_failed_only_pending(tmp_path):
         # a ran (report-backed) run is not downgraded by a late cancel
         await store.record_scheduled_run(task["task_id"], "2026-08-26T00:00:00")
         await store.upsert_report(task["task_id"], "Ok", "fine")
-        await store.mark_run_failed(task["task_id"], "2026-08-26T00:00:00",
-                                    "late cancel")
+        await store.mark_run_failed(
+            task["task_id"], "2026-08-26T00:00:00", "late cancel"
+        )
         runs = await store.scheduled_runs_list(task_id=task["task_id"])
         by_due = {r["due_at"]: r for r in runs}
         assert by_due["2026-08-26T00:00:00"]["status"] == "ran"
@@ -178,12 +206,14 @@ async def test_fail_unconfirmed_runs_sweep(tmp_path):
 
         # pending without a report → swept to failed
         await store.record_scheduled_run(task["task_id"], "2026-08-25T00:00:00")
-        await store.record_scheduled_run(task["task_id"], "2026-08-26T00:00:00",
-                                         status="ran")
+        await store.record_scheduled_run(
+            task["task_id"], "2026-08-26T00:00:00", status="ran"
+        )
 
         # 'ran' rows are always report-backed = confirmed success → untouched
-        await store.record_scheduled_run(task["task_id"], "2026-08-27T00:00:00",
-                                         status="ran")
+        await store.record_scheduled_run(
+            task["task_id"], "2026-08-27T00:00:00", status="ran"
+        )
         await store.upsert_report(task["task_id"], "Done", "ok")
 
         stale = await store.fail_unconfirmed_runs()
@@ -196,8 +226,10 @@ async def test_fail_unconfirmed_runs_sweep(tmp_path):
         by_due = {r["due_at"]: r for r in runs}
         assert by_due["2026-08-25T00:00:00"]["status"] == "failed"
         assert by_due["2026-08-26T00:00:00"]["status"] == "ran"
-        assert by_due["2026-08-25T00:00:00"]["error"] == \
-            "slife restarted before completion"
+        assert (
+            by_due["2026-08-25T00:00:00"]["error"]
+            == "slife restarted before completion"
+        )
         assert by_due["2026-08-27T00:00:00"]["status"] == "ran"
 
         # idempotent — a second sweep can't repeat the run
@@ -221,6 +253,7 @@ async def test_record_run_idempotent_on_due_at(tmp_path):
 
 # ── reports + backfill ───────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_upsert_report_mirrors_md_and_backfills_run(tmp_path):
     store = await _real_store(tmp_path)
@@ -230,7 +263,8 @@ async def test_upsert_report_mirrors_md_and_backfills_run(tmp_path):
         await store.record_scheduled_run(task["task_id"], due)
 
         rep = await store.upsert_report(
-            task_id=task["task_id"], title="Daily Report",
+            task_id=task["task_id"],
+            title="Daily Report",
             content="Today went well.",
         )
         assert rep["kind"] == "report"
@@ -262,13 +296,17 @@ async def test_late_report_clears_the_failure_reason(tmp_path):
         due = "2026-08-25T00:00:00"
         await store.record_scheduled_run(task["task_id"], due)
         await store.mark_run_failed(
-            task["task_id"], due, "worker finished without confirming the run",
+            task["task_id"],
+            due,
+            "worker finished without confirming the run",
         )
         runs = await store.scheduled_runs_list(task_id=task["task_id"])
         assert runs[0]["status"] == "failed" and runs[0]["error"]
 
         await store.upsert_report(
-            task_id=task["task_id"], due_at=due, title="Daily Report",
+            task_id=task["task_id"],
+            due_at=due,
+            title="Daily Report",
             content="Late but real.",
         )
         runs = await store.scheduled_runs_list(task_id=task["task_id"])
@@ -285,11 +323,14 @@ async def test_upsert_report_standalone_no_task(tmp_path):
     store = await _real_store(tmp_path)
     try:
         rep = await store.upsert_report(
-            task_id=None, title="Standalone", content="solo note",
+            task_id=None,
+            title="Standalone",
+            content="solo note",
         )
         assert rep["kind"] == "report"
         assert (tmp_path / "reports" / "standalone.md").read_text(
-            encoding="utf-8") == "# Standalone\n\nsolo note\n"
+            encoding="utf-8"
+        ) == "# Standalone\n\nsolo note\n"
         row = await store.get_report(rep["doc_id"])
         assert row["task_id"] is None
         # nothing was dispatched or confirmed — runs table stays empty
@@ -331,14 +372,18 @@ async def test_upsert_report_with_due_at_confirms_exact_run(tmp_path):
         # Backfill transitions the OLD run to pending in place (ON CONFLICT).
         await store.record_scheduled_run(task["task_id"], old)
         rep = await store.upsert_report(
-            task_id=task["task_id"], title="Backfill", content="done",
+            task_id=task["task_id"],
+            title="Backfill",
+            content="done",
             due_at=old,
         )
-        runs = {r["due_at"]: r for r in
-                await store.scheduled_runs_list(task_id=task["task_id"])}
-        assert runs[old]["status"] == "ran"           # the backfilled run
+        runs = {
+            r["due_at"]: r
+            for r in await store.scheduled_runs_list(task_id=task["task_id"])
+        }
+        assert runs[old]["status"] == "ran"  # the backfilled run
         assert runs[old]["report_id"] == rep["doc_id"]
-        assert runs[newer]["status"] == "missed"      # newer stale run untouched
+        assert runs[newer]["status"] == "missed"  # newer stale run untouched
         assert runs[newer]["report_id"] is None
     finally:
         await store.close()
@@ -349,8 +394,13 @@ async def test_list_and_get_report(tmp_path):
     store = await _real_store(tmp_path)
     try:
         task = await store.upsert_scheduled_task("daily", schedule="0 0 * * *")
-        await store.upsert_report(task["task_id"], "Alpha", "content a",
-                                  period_start="2026-08-01", period_end="2026-08-07")
+        await store.upsert_report(
+            task["task_id"],
+            "Alpha",
+            "content a",
+            period_start="2026-08-01",
+            period_end="2026-08-07",
+        )
         await store.upsert_report(task["task_id"], "Beta", "content b")
 
         listed = await store.report_list(task_id=task["task_id"])
@@ -375,7 +425,9 @@ async def test_report_kind_in_unified_search(tmp_path):
     store = await _real_store(tmp_path)
     try:
         task = await store.upsert_scheduled_task("daily", schedule="0 0 * * *")
-        await store.upsert_report(task["task_id"], "Quarterly", "revenue up 20%", tags="finance")
+        await store.upsert_report(
+            task["task_id"], "Quarterly", "revenue up 20%", tags="finance"
+        )
         await store.upsert_note("Python", "asyncio notes", "py")
 
         # report is a searchable kind.  A hit carries the corpus's normalized
@@ -405,7 +457,9 @@ async def test_report_in_drainer_view(tmp_path):
             if store2._embedding_dim <= 0:
                 pytest.skip("sqlite-vec unavailable")
             task = await store2.upsert_scheduled_task("daily", schedule="0 0 * * *")
-            await store2.upsert_report(task["task_id"], "Quarterly", "revenue up", tags="")
+            await store2.upsert_report(
+                task["task_id"], "Quarterly", "revenue up", tags=""
+            )
             kinds = {d["kind"] for d in await store2.get_unembedded_docs(10)}
             assert "report" in kinds
         finally:
@@ -439,8 +493,9 @@ class TestScheduledServerTools:
 
         async def fake_call_tool(name, arguments=None):
             calls.append((name, arguments))
-            return ('{"name": "%s", "task_id": 1, "schedule": "%s", "enabled": true}'
-                    % (arguments["name"], arguments["schedule"]))
+            return '{{"name": "{}", "task_id": 1, "schedule": "{}", "enabled": true}}'.format(
+                arguments["name"], arguments["schedule"]
+            )
 
         ctx = MagicMock()
         ctx.memfiles_client = AsyncMock()
@@ -473,8 +528,9 @@ class TestScheduledServerTools:
 
         async def fake_call_tool(name, arguments=None):
             calls.append(name)
-            return ('{"name": "%s", "task_id": 2, "schedule": "%s", "enabled": true}'
-                    % (arguments["name"], arguments["schedule"]))
+            return '{{"name": "{}", "task_id": 2, "schedule": "{}", "enabled": true}}'.format(
+                arguments["name"], arguments["schedule"]
+            )
 
         ctx = MagicMock()
         ctx.memfiles_client = AsyncMock()
@@ -487,7 +543,9 @@ class TestScheduledServerTools:
             assert "not a valid task name" in err, bad
         assert calls == []
 
-        ok = await tool.execute(name="daily_report", description="d", schedule="0 9 * * *")
+        ok = await tool.execute(
+            name="daily_report", description="d", schedule="0 9 * * *"
+        )
         assert "task_id" in json.loads(ok)
 
     @pytest.mark.asyncio
@@ -497,7 +555,9 @@ class TestScheduledServerTools:
             with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
                 await _sched_upsert(name="a", schedule="0 9 * * *")
                 await _sched_upsert(
-                    name="b", schedule="0 9 * * *", enabled=False,
+                    name="b",
+                    schedule="0 9 * * *",
+                    enabled=False,
                 )
                 listed = json.loads(await _sched_tasks())
                 assert listed["total"] == 2
@@ -521,14 +581,12 @@ class TestScheduledServerTools:
 
                 runs = json.loads(await _sched_runs(name="daily"))
                 assert runs["total"] == 2
-                missed = json.loads(
-                    await _sched_runs(name="daily", status="missed"))
+                missed = json.loads(await _sched_runs(name="daily", status="missed"))
                 assert missed["total"] == 1
 
                 skip = await _sched_skip("daily", "2026-08-26T00:00:00")
                 assert "skipped" in skip
-                skipped = json.loads(
-                    await _sched_runs(name="daily", status="skipped"))
+                skipped = json.loads(await _sched_runs(name="daily", status="skipped"))
                 assert skipped["total"] == 1
                 # unknown task
                 assert "not found" in await _sched_runs(name="nope")
@@ -555,8 +613,10 @@ class TestScheduledServerTools:
                 assert "'pending'" in reply  # names the status it found
                 assert "marked skipped" not in reply
                 # The db agrees with the reply.
-                assert await store.run_status(
-                    task["id"], "2026-08-27T00:00:00") == "pending"
+                assert (
+                    await store.run_status(task["id"], "2026-08-27T00:00:00")
+                    == "pending"
+                )
                 assert await store.scheduled_runs_list(status="skipped") == []
 
                 # A run that does not exist is reported as absent, not skipped.
@@ -585,12 +645,22 @@ class TestScheduledServerTools:
                 # The older run is confirmed (a report bound to its due_at)
                 # while the newer one is still open.
                 await store.upsert_report(
-                    task["id"], "daily report", "body", due_at=older,
+                    task["id"],
+                    "daily report",
+                    "body",
+                    due_at=older,
                 )
 
-                assert json.loads(await run_status(task["id"], older))["status"] == "ran"
-                assert json.loads(await run_status(task["id"], newer))["status"] == "pending"
-                unknown = json.loads(await run_status(task["id"], "2027-01-01T00:00:00"))
+                assert (
+                    json.loads(await run_status(task["id"], older))["status"] == "ran"
+                )
+                assert (
+                    json.loads(await run_status(task["id"], newer))["status"]
+                    == "pending"
+                )
+                unknown = json.loads(
+                    await run_status(task["id"], "2027-01-01T00:00:00")
+                )
                 assert unknown["status"] is None
         finally:
             await store.close()
@@ -640,7 +710,9 @@ class TestScheduledServerTools:
                 await store.record_scheduled_run(task["id"], "2026-08-25T00:00:00")
 
                 saved = await plugin.report_save(
-                    name="daily", title="Daily Report", content="All good.",
+                    name="daily",
+                    title="Daily Report",
+                    content="All good.",
                 )
                 assert saved.startswith("Saved: ")
                 # run got linked
@@ -667,8 +739,10 @@ class TestScheduledServerTools:
         store = await _real_store(tmp_path)
         manager = MagicMock()
         try:
-            with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-                 patch.object(plugin, "_manager", manager):
+            with (
+                patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)),
+                patch.object(plugin, "_manager", manager),
+            ):
                 await plugin.report_save(title="Standalone", content="solo")
         finally:
             await store.close()

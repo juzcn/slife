@@ -8,13 +8,14 @@ with Shift+Enter — and up/down walk command history only when the cursor
 is on the first / last line, otherwise they move the cursor.
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
+import pytest
 from textual.app import App, ComposeResult
 from textual.events import Paste
 from textual.widgets import Static
 
 from slife.ui.app import HistoryInput
+
+pytestmark = pytest.mark.unit
 
 
 class _PromptHost(App):

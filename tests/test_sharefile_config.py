@@ -42,14 +42,17 @@ class TestLoadConfig:
         assert cfg.providers == {}
 
     def test_reads_active_provider_and_options(self, tmp_path):
-        p = _write(tmp_path, """
+        p = _write(
+            tmp_path,
+            """
         active_provider: localhost.run
         providers:
           ngrok: {}
           localhost.run:
             user: nokey
             remote_port: 80
-        """)
+        """,
+        )
         cfg = cfgmod.load_sharefile_config(p)
         assert cfg.active_provider == "localhost.run"
         assert cfg.options_for("localhost.run") == {"user": "nokey", "remote_port": 80}
@@ -75,25 +78,36 @@ class TestLoadConfig:
 
     def test_provider_resolves_env_references(self, tmp_path, monkeypatch):
         monkeypatch.setenv("SHAREFILE_TEST_SSH", "/opt/openssh/ssh")
-        cfg = cfgmod.load_sharefile_config(_write(tmp_path, """
+        cfg = cfgmod.load_sharefile_config(
+            _write(
+                tmp_path,
+                """
         active_provider: localhost.run
         providers:
           localhost.run:
             ssh: ${SHAREFILE_TEST_SSH}
             remote_port: ${UNSET_PORT:-8022}
-        """))
+        """,
+            )
+        )
         assert cfg.options_for("localhost.run") == {
-            "ssh": "/opt/openssh/ssh", "remote_port": "8022",
+            "ssh": "/opt/openssh/ssh",
+            "remote_port": "8022",
         }
 
     def test_provider_with_unresolved_env_is_dropped_alone(self, tmp_path):
-        cfg = cfgmod.load_sharefile_config(_write(tmp_path, """
+        cfg = cfgmod.load_sharefile_config(
+            _write(
+                tmp_path,
+                """
         active_provider: localhost.run
         providers:
           localhost.run:
             ssh: ${SHAREFILE_DEFINITELY_UNSET_VAR}
           ngrok: {}
-        """))
+        """,
+            )
+        )
         # The broken provider is dropped with a warning; its sibling survives.
         assert "localhost.run" not in cfg.providers
         assert "ngrok" in cfg.providers

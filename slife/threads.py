@@ -20,18 +20,19 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 T = TypeVar("T")
 
 __all__ = ["run_daemon"]
 
 
-def run_daemon(
+def run_daemon[T](
     fn: Callable[..., T],
     *args: Any,
     name: str = "slife-daemon",
-) -> "asyncio.Future[T]":
+) -> asyncio.Future[T]:
     """Run ``fn(*args)`` on a daemon thread; return an awaitable Future.
 
     The result (or raised exception) is delivered back on the calling
@@ -44,7 +45,7 @@ def run_daemon(
     loop loses it, exactly as with ``run_in_executor``.
     """
     loop = asyncio.get_running_loop()
-    fut: "asyncio.Future[T]" = loop.create_future()
+    fut: asyncio.Future[T] = loop.create_future()
 
     def _run() -> None:
         try:

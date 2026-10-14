@@ -14,9 +14,6 @@ mirroring, hybrid search, the SemanticManager contract) are covered against
 a real temp DB in ``TestMemfilesStore``.
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
 import codecs
 import json
@@ -24,16 +21,19 @@ import re
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Self
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 
-from slife import net
-from slife.plugins.memdb.search import SearchLegs, run_search
+import pytest
 
 import slife.plugins.memfiles.server as plugin
+from slife import net
+from slife.plugins.memdb.search import SearchLegs, run_search
 from slife.plugins.memfiles.store import CABINET_BROWSE_TOOLS, MemfilesStore
 from slife.timeutil import InvalidTimeBound
 
+pytestmark = pytest.mark.unit
 
 # ── Fixtures ────────────────────────────────────────────────────────────
 
@@ -52,9 +52,17 @@ def _reset_state():
 
 #: One cabinet hit, in the shape the legs return (already normalized: the
 #: composition's legs carry the model-facing keys).
-_HIT = {"id": "note:1", "kind": "note", "key": "subj", "title": "subj",
-        "file_path": "notes/subj.md", "time": "2026-01-02", "tags": "",
-        "snippet": "…", "rrf_score": 0.01}
+_HIT = {
+    "id": "note:1",
+    "kind": "note",
+    "key": "subj",
+    "title": "subj",
+    "file_path": "notes/subj.md",
+    "time": "2026-01-02",
+    "tags": "",
+    "snippet": "…",
+    "rrf_score": 0.01,
+}
 
 
 def _fake_legs(**overrides) -> SearchLegs:
@@ -63,7 +71,9 @@ def _fake_legs(**overrides) -> SearchLegs:
         keyword=AsyncMock(return_value=[dict(_HIT)]),
         semantic=AsyncMock(return_value=[dict(_HIT)]),
         regex=AsyncMock(return_value=[dict(_HIT)]),
-        key_field="id", noun="entries", browse=CABINET_BROWSE_TOOLS,
+        key_field="id",
+        noun="entries",
+        browse=CABINET_BROWSE_TOOLS,
     )
     for name, value in overrides.items():
         setattr(legs, name, value)
@@ -106,46 +116,101 @@ def _fake_store(mem_dir: Path) -> tuple[MagicMock, SearchLegs]:
     """A store stand-in: mem_dir real, writes/searches mocked."""
     store = AsyncMock()
     store.mem_dir = mem_dir
-    store.upsert_note = AsyncMock(return_value={
-        "kind": "note", "doc_id": 1, "key": "subj",
-        "file_path": "notes/subj.md", "content": "# subj\n\nbody"})
-    store.upsert_diary = AsyncMock(return_value={
-        "kind": "diary", "doc_id": 2, "key": "2026-08-15",
-        "file_path": "diary/2026-08-15.md", "content": "# 2026-08-15\n\nbody"})
-    store.add_file = AsyncMock(return_value={
-        "kind": "file", "doc_id": 3, "key": "a.txt", "file_path": "a.txt"})
+    store.upsert_note = AsyncMock(
+        return_value={
+            "kind": "note",
+            "doc_id": 1,
+            "key": "subj",
+            "file_path": "notes/subj.md",
+            "content": "# subj\n\nbody",
+        }
+    )
+    store.upsert_diary = AsyncMock(
+        return_value={
+            "kind": "diary",
+            "doc_id": 2,
+            "key": "2026-08-15",
+            "file_path": "diary/2026-08-15.md",
+            "content": "# 2026-08-15\n\nbody",
+        }
+    )
+    store.add_file = AsyncMock(
+        return_value={"kind": "file", "doc_id": 3, "key": "a.txt", "file_path": "a.txt"}
+    )
     # The three legs the composition drives.  A test asserting WHICH search
     # ran, and with what, reads them here — the store's own ``search_legs``
     # builds the same object over the real corpus.
     store.search_legs = MagicMock(return_value=_fake_legs())
-    store.note_list = AsyncMock(return_value={
-        "entries": [
-            {"id": 1, "subject": "subj", "tags": "", "file_path": "notes/subj.md",
-             "created_at": "2026-01-01", "updated_at": "2026-01-02"},
-        ],
-        "total": 1,
-    })
-    store.diary_list = AsyncMock(return_value={
-        "entries": [
-            {"id": 2, "date": "2026-08-15", "tags": "", "file_path": "diary/2026-08-15.md",
-             "created_at": "2026-08-15", "updated_at": "2026-08-15"},
-        ],
-        "total": 1,
-    })
-    store.get_note = AsyncMock(return_value={
-        "id": 1, "subject": "subj", "content": "# subj\n\nbody", "tags": "",
-        "file_path": "notes/subj.md", "created_at": "2026-01-01", "updated_at": "2026-01-02"})
-    store.get_diary = AsyncMock(return_value={
-        "id": 2, "date": "2026-08-15", "content": "# 2026-08-15\n\nbody", "tags": "",
-        "file_path": "diary/2026-08-15.md", "created_at": "2026-08-15", "updated_at": "2026-08-15"})
-    store.file_list = AsyncMock(return_value={
-        "entries": [
-            {"id": 3, "title": "a.txt", "saved_path": "files/documents/a.txt",
-             "category": "documents", "mime": "text/plain", "size": 3,
-             "tags": "", "summary": "", "created_at": "2026-08-15"},
-        ],
-        "total": 1,
-    })
+    store.note_list = AsyncMock(
+        return_value={
+            "entries": [
+                {
+                    "id": 1,
+                    "subject": "subj",
+                    "tags": "",
+                    "file_path": "notes/subj.md",
+                    "created_at": "2026-01-01",
+                    "updated_at": "2026-01-02",
+                },
+            ],
+            "total": 1,
+        }
+    )
+    store.diary_list = AsyncMock(
+        return_value={
+            "entries": [
+                {
+                    "id": 2,
+                    "date": "2026-08-15",
+                    "tags": "",
+                    "file_path": "diary/2026-08-15.md",
+                    "created_at": "2026-08-15",
+                    "updated_at": "2026-08-15",
+                },
+            ],
+            "total": 1,
+        }
+    )
+    store.get_note = AsyncMock(
+        return_value={
+            "id": 1,
+            "subject": "subj",
+            "content": "# subj\n\nbody",
+            "tags": "",
+            "file_path": "notes/subj.md",
+            "created_at": "2026-01-01",
+            "updated_at": "2026-01-02",
+        }
+    )
+    store.get_diary = AsyncMock(
+        return_value={
+            "id": 2,
+            "date": "2026-08-15",
+            "content": "# 2026-08-15\n\nbody",
+            "tags": "",
+            "file_path": "diary/2026-08-15.md",
+            "created_at": "2026-08-15",
+            "updated_at": "2026-08-15",
+        }
+    )
+    store.file_list = AsyncMock(
+        return_value={
+            "entries": [
+                {
+                    "id": 3,
+                    "title": "a.txt",
+                    "saved_path": "files/documents/a.txt",
+                    "category": "documents",
+                    "mime": "text/plain",
+                    "size": 3,
+                    "tags": "",
+                    "summary": "",
+                    "created_at": "2026-08-15",
+                },
+            ],
+            "total": 1,
+        }
+    )
     store.resolve_safe_path = MagicMock(return_value=mem_dir / "notes" / "subj.md")
     return store, store.search_legs.return_value
 
@@ -166,7 +231,9 @@ class TestHelpers:
         only when it matches the one the caller will append, so "notes.v2"
         keeps its dot while "paper.pdf" against a .txt source does not become
         "paper.pdf.txt"."""
-        assert plugin._name_to_stem("memfiles_test_doc.txt", ".txt") == "memfiles_test_doc"
+        assert (
+            plugin._name_to_stem("memfiles_test_doc.txt", ".txt") == "memfiles_test_doc"
+        )
         assert plugin._name_to_stem("notes.v2.txt", ".txt") == "notes.v2"
         assert plugin._name_to_stem("Release 2.0", ".txt") == "release-2.0"
         assert plugin._name_to_stem("report.pdf", ".txt") == "report.pdf"
@@ -197,8 +264,9 @@ class TestNoteEdit:
         mem_dir.mkdir()
         store, _ = _fake_store(mem_dir)
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            result = await plugin.note_edit(subject="Python", content="asyncio notes",
-                                            tags="py")
+            result = await plugin.note_edit(
+                subject="Python", content="asyncio notes", tags="py"
+            )
         assert "Saved:" in result
         assert result.rstrip().replace("\\", "/").endswith("notes/subj.md")
         assert "URL:" not in result
@@ -208,8 +276,10 @@ class TestNoteEdit:
     async def test_wakes_drainer(self, tmp_path):
         store, _ = _fake_store(tmp_path / "files")
         manager = MagicMock()
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             patch.object(plugin, "_manager", manager):
+        with (
+            patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)),
+            patch.object(plugin, "_manager", manager),
+        ):
             await plugin.note_edit(subject="s", content="c")
         manager.on_saved.assert_called_once()
 
@@ -243,7 +313,9 @@ class TestNoteRemove:
         The store unlinks before it deletes the row, so the note survived —
         and the caller must hear that, not a traceback out of the MCP layer."""
         store, _ = _fake_store(tmp_path / "files")
-        store.remove_note = AsyncMock(side_effect=PermissionError("in use by another process"))
+        store.remove_note = AsyncMock(
+            side_effect=PermissionError("in use by another process")
+        )
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
             out = await plugin.note_remove(subject="Python")
         assert out.startswith("Error")
@@ -331,13 +403,15 @@ class TestFileSave:
         mem_dir.mkdir()
         store, _ = _fake_store(mem_dir)
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
+            await plugin.file_save(paths=[str(doc)], title="memfiles_test_doc.txt")
             await plugin.file_save(
-                paths=[str(doc)], title="memfiles_test_doc.txt")
-            await plugin.file_save(
-                paths=[str(png)], title="slife_r2_vision_cjk-page-1.png")
+                paths=[str(png)], title="slife_r2_vision_cjk-page-1.png"
+            )
         assert (mem_dir / "files" / "documents" / "memfiles_test_doc.txt").is_file()
         # src is a .png, so the title's own extension is dropped, not doubled
-        assert (mem_dir / "files" / "images" / "slife_r2_vision_cjk-page-1.png").is_file()
+        assert (
+            mem_dir / "files" / "images" / "slife_r2_vision_cjk-page-1.png"
+        ).is_file()
 
     @pytest.mark.asyncio
     async def test_category_override(self, tmp_path):
@@ -363,8 +437,10 @@ class TestFileSave:
         f.write_bytes(b"pdf")
         store, _ = _fake_store(tmp_path / "files")
         manager = MagicMock()
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             patch.object(plugin, "_manager", manager):
+        with (
+            patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)),
+            patch.object(plugin, "_manager", manager),
+        ):
             await plugin.file_save(paths=[str(f)], summary="a doc about pdfs")
         manager.on_saved.assert_called_once()
 
@@ -377,8 +453,10 @@ class TestFileSave:
         f.write_bytes(b"pdf")
         store, _ = _fake_store(tmp_path / "files")
         manager = MagicMock()
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             patch.object(plugin, "_manager", manager):
+        with (
+            patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)),
+            patch.object(plugin, "_manager", manager),
+        ):
             await plugin.file_save(paths=[str(f)])
         manager.on_saved.assert_called_once()
 
@@ -404,11 +482,15 @@ class TestFileSave:
         mem_dir = tmp_path / "files"
         mem_dir.mkdir()
         store, _ = _fake_store(mem_dir)
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             patch.object(plugin, "_download",
-                          AsyncMock(return_value=(b"page bytes", ""))):
+        with (
+            patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)),
+            patch.object(
+                plugin, "_download", AsyncMock(return_value=(b"page bytes", ""))
+            ),
+        ):
             result = await plugin.file_save(
-                paths=[str(local), "https://example.com/page.html"])
+                paths=[str(local), "https://example.com/page.html"]
+            )
         assert store.add_file.await_count == 2
         # Each entry is filed by its own extension, so the two land in
         # different categories: .txt is documents, .html is code.
@@ -423,11 +505,17 @@ class TestFileSave:
         local = tmp_path / "a.txt"
         local.write_text("ok")
         store, _ = _fake_store(tmp_path / "files")
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             patch.object(plugin, "_download",
-                          AsyncMock(return_value=(b"", "refusing URL — nope"))):
+        with (
+            patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)),
+            patch.object(
+                plugin,
+                "_download",
+                AsyncMock(return_value=(b"", "refusing URL — nope")),
+            ),
+        ):
             result = await plugin.file_save(
-                paths=[str(local), "https://169.254.169.254/x"])
+                paths=[str(local), "https://169.254.169.254/x"]
+            )
         assert "Error: refusing URL" in result
         assert "Saved:" in result
         assert store.add_file.await_count == 1
@@ -461,7 +549,9 @@ class TestFileRemove:
         answer is "not found" — but a row that *does* is the case the guard
         exists for (see the store-level test)."""
         store, _ = _fake_store(tmp_path / "files")
-        store.remove_file = AsyncMock(side_effect=ValueError("path escapes the files directory"))
+        store.remove_file = AsyncMock(
+            side_effect=ValueError("path escapes the files directory")
+        )
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
             out = await plugin.file_remove(path="../../secrets.txt")
         assert out.startswith("Error")
@@ -472,7 +562,9 @@ class TestFileRemove:
         """Same Windows case as the note's: the bytes are held open, the unlink
         fails before the row is touched, and the entry is still whole."""
         store, _ = _fake_store(tmp_path / "files")
-        store.remove_file = AsyncMock(side_effect=PermissionError("in use by another process"))
+        store.remove_file = AsyncMock(
+            side_effect=PermissionError("in use by another process")
+        )
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
             out = await plugin.file_remove(path="files/documents/a.pdf")
         assert out.startswith("Error")
@@ -500,19 +592,28 @@ class TestFileSaveFromUrl:
 
         class _Resp:
             status = 200
+
             @property
             def content(self):
                 return _Content(b"<html>Page</html>")
-            async def __aenter__(self): return self
-            async def __aexit__(self, *a): return None
-            async def read(self): return b"<html>Page</html>"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def read(self):
+                return b"<html>Page</html>"
 
         def _fake_get(url, timeout=None, **kwargs):
             # sync: file_save does ``async with session.get(...)``
             return _Resp()
 
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             patch("aiohttp.ClientSession") as sess_cls:
+        with (
+            patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)),
+            patch("aiohttp.ClientSession") as sess_cls,
+        ):
             sess = MagicMock()
             sess.get.side_effect = _fake_get
             sess.__aenter__ = AsyncMock(return_value=sess)
@@ -521,13 +622,18 @@ class TestFileSaveFromUrl:
             result = await plugin.file_save(paths=["https://8.8.8.8/page.html"])
         assert "Saved:" in result
         store.add_file.assert_awaited_once()
-        assert store.add_file.await_args.kwargs["original_path"] == "https://8.8.8.8/page.html"
+        assert (
+            store.add_file.await_args.kwargs["original_path"]
+            == "https://8.8.8.8/page.html"
+        )
 
     @pytest.mark.asyncio
     async def test_refuses_non_public(self, tmp_path):
         store, _ = _fake_store(tmp_path / "files")
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
-            result = await plugin.file_save(paths=["http://169.254.169.254/latest/meta-data/"])
+            result = await plugin.file_save(
+                paths=["http://169.254.169.254/latest/meta-data/"]
+            )
         assert result.startswith("Error: refusing URL")
         store.add_file.assert_not_awaited()
 
@@ -563,8 +669,11 @@ class TestFileSaveFromUrl:
             ("https://example.com/other.pdf", "My Paper", "my-paper.pdf"),
             # a title that is itself a filename: the dot is part of the name,
             # and the extension still appears exactly once (2026-09-26)
-            ("https://example.com/dl", "memfiles_test_doc.txt",
-             "memfiles_test_doc.txt"),
+            (
+                "https://example.com/dl",
+                "memfiles_test_doc.txt",
+                "memfiles_test_doc.txt",
+            ),
             ("https://example.com/other.pdf", "My Paper.pdf", "my-paper.pdf"),
             # a dot inside the basename survives too
             ("https://example.com/a.b.c", "", "a.b.c"),
@@ -651,8 +760,7 @@ class TestCabinetSearch:
                     assert "must not be empty" in out
                     # And it names where browsing actually lives — all four
                     # kind lists, since there is no single cabinet browse.
-                    for tool in ("note_list", "diary_list", "file_list",
-                                 "report_list"):
+                    for tool in ("note_list", "diary_list", "file_list", "report_list"):
                         assert tool in out, (mode, q, tool)
         legs.keyword.assert_not_awaited()
         legs.regex.assert_not_awaited()
@@ -694,8 +802,10 @@ class TestCabinetSearch:
         manager must not change the answer either: grep never consults it.
         """
         store, legs = _fake_store(tmp_path / "files")
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             patch.object(plugin, "_manager", _ready_manager()):
+        with (
+            patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)),
+            patch.object(plugin, "_manager", _ready_manager()),
+        ):
             out = await plugin.cabinet_search(query="depl.y", mode="grep")
         data = json.loads(out)
         assert data["mode"] == "grep"
@@ -711,8 +821,10 @@ class TestCabinetSearch:
         fts5, not the hybrid the manager could have served."""
         store, legs = _fake_store(tmp_path / "files")
         manager = _ready_manager()
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             patch.object(plugin, "_manager", manager):
+        with (
+            patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)),
+            patch.object(plugin, "_manager", manager),
+        ):
             out = await plugin.cabinet_search(query="python", mode="fts5")
         assert json.loads(out)["mode"] == "fts5"
         manager.embedder.embed_one.assert_not_awaited()
@@ -724,9 +836,11 @@ class TestCabinetSearch:
         ``reason``.  Keying the fallback on None alone answered that with an
         empty hint — the silent fallback the degradation prose exists to
         prevent."""
-        store, legs = _fake_store(tmp_path / "files")
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             patch.object(plugin, "_manager", _stub_manager(reason="")):
+        store, _legs = _fake_store(tmp_path / "files")
+        with (
+            patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)),
+            patch.object(plugin, "_manager", _stub_manager(reason="")),
+        ):
             out = await plugin.cabinet_search(query="python", mode="hybrid")
 
         data = json.loads(out)
@@ -739,8 +853,10 @@ class TestCabinetSearch:
     @pytest.mark.asyncio
     async def test_hybrid_with_ready_manager_embeds_query(self, tmp_path):
         store, legs = _fake_store(tmp_path / "files")
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             patch.object(plugin, "_manager", _ready_manager()):
+        with (
+            patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)),
+            patch.object(plugin, "_manager", _ready_manager()),
+        ):
             out = await plugin.cabinet_search(query="python", mode="hybrid")
         data = json.loads(out)
         assert data["mode"] == "hybrid"
@@ -885,8 +1001,8 @@ class TestCabinetRead:
         mem_dir = tmp_path / "files"
         mem_dir.mkdir(parents=True, exist_ok=True)
         for name, raw, expected in (
-            ("plain.txt", "中文 plain\n".encode("utf-8"), "中文 plain\n"),
-            ("bom.txt", codecs.BOM_UTF8 + "中文 bom\n".encode("utf-8"), "中文 bom\n"),
+            ("plain.txt", "中文 plain\n".encode(), "中文 plain\n"),
+            ("bom.txt", codecs.BOM_UTF8 + "中文 bom\n".encode(), "中文 bom\n"),
         ):
             target = mem_dir / name
             target.write_bytes(raw)
@@ -910,7 +1026,10 @@ class TestNoteDiaryBrowse:
         assert data["entries"][0]["subject"] == "subj"
         assert data["entries"][0]["file_path"] == "notes/subj.md"
         store.note_list.assert_awaited_once_with(
-            since=None, until=None, limit=50, offset=0,
+            since=None,
+            until=None,
+            limit=50,
+            offset=0,
         )
 
     @pytest.mark.asyncio
@@ -921,7 +1040,10 @@ class TestNoteDiaryBrowse:
         data = json.loads(out)
         assert data["entries"][0]["date"] == "2026-08-15"
         store.diary_list.assert_awaited_once_with(
-            since="2026-08-01", until="2026-08-31", limit=50, offset=0,
+            since="2026-08-01",
+            until="2026-08-31",
+            limit=50,
+            offset=0,
         )
 
     @pytest.mark.asyncio
@@ -964,7 +1086,11 @@ class TestNoteDiaryBrowse:
         assert data["entries"][0]["category"] == "documents"
         assert data["entries"][0]["saved_path"] == "files/documents/a.txt"
         store.file_list.assert_awaited_once_with(
-            category="documents", since=None, until=None, limit=50, offset=0,
+            category="documents",
+            since=None,
+            until=None,
+            limit=50,
+            offset=0,
         )
 
 
@@ -973,8 +1099,9 @@ class TestCabinetStatus:
 
     @pytest.mark.asyncio
     async def test_store_error_reports_failure(self, tmp_path):
-        with patch.object(plugin, "_ensure_store",
-                          AsyncMock(side_effect=RuntimeError("boom"))):
+        with patch.object(
+            plugin, "_ensure_store", AsyncMock(side_effect=RuntimeError("boom"))
+        ):
             out = await getattr(plugin, "__check")()
         data = json.loads(out)
         assert data["ok"] is False
@@ -989,9 +1116,11 @@ class TestCabinetStatus:
         manager.state = "indexing"
         manager.reason = "index building"
         manager.unembedded = AsyncMock(return_value=5)
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             patch.object(plugin, "_store", store), \
-             patch.object(plugin, "_manager", manager):
+        with (
+            patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)),
+            patch.object(plugin, "_store", store),
+            patch.object(plugin, "_manager", manager),
+        ):
             out = await getattr(plugin, "__check")()
         data = json.loads(out)
         assert data["ok"] is True
@@ -1003,9 +1132,11 @@ class TestCabinetStatus:
     @pytest.mark.asyncio
     async def test_no_manager(self, tmp_path):
         store, _ = _fake_store(tmp_path / "files")
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             patch.object(plugin, "_store", store), \
-             patch.object(plugin, "_manager", None):
+        with (
+            patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)),
+            patch.object(plugin, "_store", store),
+            patch.object(plugin, "_manager", None),
+        ):
             out = await getattr(plugin, "__check")()
         data = json.loads(out)
         assert data["ok"] is True
@@ -1085,12 +1216,17 @@ class TestSaveUrlPublicGuard:
         (``is_fake_ip_address``) rather than the coarse accusation.
         """
         for url in (
-            "http://127.0.0.1:8080/admin", "http://[::1]/x",
-            "http://169.254.169.254/latest/meta-data/", "http://[fe80::1]/x",
-            "http://10.0.0.1/", "http://192.168.1.1/", "http://172.16.0.1/",
-            "http://[fd00::1]/x", "http://[fd00:ec2::254]/x",
+            "http://127.0.0.1:8080/admin",
+            "http://[::1]/x",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[fe80::1]/x",
+            "http://10.0.0.1/",
+            "http://192.168.1.1/",
+            "http://172.16.0.1/",
+            "http://[fd00::1]/x",
+            "http://[fd00:ec2::254]/x",
             "http://[2001:db8::1]/x",
-            "http://[::ffff:127.0.0.1]/x",   # an IPv4 address, IPv6 spelling
+            "http://[::ffff:127.0.0.1]/x",  # an IPv4 address, IPv6 spelling
         ):
             assert plugin._reject_non_public_url(url), url
 
@@ -1103,19 +1239,23 @@ class TestSaveUrlPublicGuard:
         answered with, so this aims the fetch at the proxy, not at a host."""
         monkeypatch.setattr(net, "fake_ip_exempt", lambda: True)
         for url in (
-            "http://198.18.0.1/x", "http://198.18.1.53/x",         # RFC 2544
-            "http://[2001:2::127]/x",                              # RFC 5180
-            "http://[fdfe:dcba:9876::1]/x", "http://[fc00::1]/x",  # the ULA pools
-            "http://[::ffff:198.18.0.1]/x",   # one destination, IPv6 spelling
+            "http://198.18.0.1/x",
+            "http://198.18.1.53/x",  # RFC 2544
+            "http://[2001:2::127]/x",  # RFC 5180
+            "http://[fdfe:dcba:9876::1]/x",
+            "http://[fc00::1]/x",  # the ULA pools
+            "http://[::ffff:198.18.0.1]/x",  # one destination, IPv6 spelling
         ):
             assert plugin._reject_non_public_url(url) is None, url
 
         # Still refused on the same machine: the exemption is a permission,
         # and what it does not cover is where it matters most.
         for url in (
-            "http://127.0.0.1:8080/admin", "http://192.168.1.1/",
+            "http://127.0.0.1:8080/admin",
+            "http://192.168.1.1/",
             "http://169.254.169.254/latest/meta-data/",
-            "http://[fd00:ec2::254]/x", "http://[fd00::1]/x",
+            "http://[fd00:ec2::254]/x",
+            "http://[fd00::1]/x",
         ):
             assert plugin._reject_non_public_url(url), url
 
@@ -1133,9 +1273,14 @@ class TestSaveUrlPublicGuard:
         label carries an encoded literal the same way: 2130706433 is
         127.0.0.1, and a trailing dot is legal FQDN syntax for the same host."""
         for url in (
-            "http://localhost/admin", "http://nas.lan/", "http://nas.lan./",
-            "http://router.local/", "http://printer/", "http://foo.internal/",
-            "http://metadata.google.internal/", "http://2130706433/",
+            "http://localhost/admin",
+            "http://nas.lan/",
+            "http://nas.lan./",
+            "http://router.local/",
+            "http://printer/",
+            "http://foo.internal/",
+            "http://metadata.google.internal/",
+            "http://2130706433/",
         ):
             assert plugin._reject_non_public_url(url), url
 
@@ -1150,7 +1295,9 @@ class TestSaveUrlPublicGuard:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-async def _real_store(tmp_path, dim: int = 4, require_vec: bool = False) -> MemfilesStore:
+async def _real_store(
+    tmp_path, dim: int = 4, require_vec: bool = False
+) -> MemfilesStore:
     store = MemfilesStore(tmp_path / ".index.db")
     await store.setup(embedding_dim=dim, embedding_model="test:model")
     if require_vec and store._embedding_dim <= 0:
@@ -1221,8 +1368,13 @@ class TestMemfilesStore:
             md = tmp_path / note["file_path"]
             assert md.is_file()
             await store.replace_embedding_chunks(
-                {"kind": "note", "doc_id": note["doc_id"], "summary": "",
-                 "tags": "py", "created_at": "2026-01-01"},
+                {
+                    "kind": "note",
+                    "doc_id": note["doc_id"],
+                    "summary": "",
+                    "tags": "py",
+                    "created_at": "2026-01-01",
+                },
                 [[0.1, 0.2, 0.3, 0.4]],
             )
             assert await store.count_unembedded() == 0
@@ -1238,7 +1390,8 @@ class TestMemfilesStore:
             # Re-creating the subject starts clean, not from the old text.
             again = await store.upsert_note("Python", "fresh", "")
             assert (tmp_path / again["file_path"]).read_text(
-                encoding="utf-8") == "# Python\n\nfresh\n"
+                encoding="utf-8"
+            ) == "# Python\n\nfresh\n"
         finally:
             await store.close()
 
@@ -1261,16 +1414,25 @@ class TestMemfilesStore:
             src.parent.mkdir()
             src.write_text("original bytes")
             entry = await store.add_file(
-                title="a.txt", original_path=str(src),
-                saved_path="files/documents/a.txt", mime="text/plain",
-                size=14, tags="t", summary="a memo",
+                title="a.txt",
+                original_path=str(src),
+                saved_path="files/documents/a.txt",
+                mime="text/plain",
+                size=14,
+                tags="t",
+                summary="a memo",
             )
             saved = store.mem_dir / "files" / "documents" / "a.txt"
             saved.parent.mkdir(parents=True, exist_ok=True)
             saved.write_text("copied bytes")
             await store.replace_embedding_chunks(
-                {"kind": "file", "doc_id": entry["doc_id"], "summary": "a memo",
-                 "tags": "t", "created_at": "2026-01-01"},
+                {
+                    "kind": "file",
+                    "doc_id": entry["doc_id"],
+                    "summary": "a memo",
+                    "tags": "t",
+                    "created_at": "2026-01-01",
+                },
                 [[0.1, 0.2, 0.3, 0.4]],
             )
             assert await store.count_unembedded() == 0
@@ -1279,7 +1441,7 @@ class TestMemfilesStore:
             assert await store.remove_file("files/documents/a.txt") is True
 
             assert not saved.exists()
-            assert src.read_text() == "original bytes"   # the source is the caller's
+            assert src.read_text() == "original bytes"  # the source is the caller's
             assert (await store.file_list())["total"] == 0
             assert await store.count_unembedded() == 0
             cur = await store._c.execute("SELECT COUNT(*) FROM files")
@@ -1299,9 +1461,13 @@ class TestMemfilesStore:
         outside.write_text("not the cabinet's")
         try:
             await store.add_file(
-                title=outside.name, original_path="",
-                saved_path="../" + outside.name, mime="text/plain",
-                size=16, tags="", summary="",
+                title=outside.name,
+                original_path="",
+                saved_path="../" + outside.name,
+                mime="text/plain",
+                size=16,
+                tags="",
+                summary="",
             )
             with pytest.raises(ValueError):
                 await store.remove_file("../" + outside.name)
@@ -1329,10 +1495,9 @@ class TestMemfilesStore:
         store = await _real_store(tmp_path)
         try:
             n = 8
-            results = await asyncio.gather(*[
-                store.upsert_note("same", f"payload {i}", "t")
-                for i in range(n)
-            ])
+            results = await asyncio.gather(
+                *[store.upsert_note("same", f"payload {i}", "t") for i in range(n)]
+            )
             assert len({r["doc_id"] for r in results}) == 1  # one row
             cur = await store._c.execute(
                 "SELECT COUNT(*) FROM notes WHERE subject='same'",
@@ -1408,12 +1573,24 @@ class TestMemfilesStore:
         try:
             await store.upsert_note("Python", "asyncio concurrency", "")
             await store.upsert_diary("2026-08-15", "shipped the refactor", "")
-            await store.add_file(title="report", original_path="/x/r.pdf",
-                                 saved_path="r.pdf", mime="pdf", size=1,
-                                 tags="", summary="Q2 financial results")
-            memo = await store.add_file(title="memo", original_path="/x/m.txt",
-                                        saved_path="m.txt", mime="text", size=2,
-                                        tags="", summary="")
+            await store.add_file(
+                title="report",
+                original_path="/x/r.pdf",
+                saved_path="r.pdf",
+                mime="pdf",
+                size=1,
+                tags="",
+                summary="Q2 financial results",
+            )
+            memo = await store.add_file(
+                title="memo",
+                original_path="/x/m.txt",
+                saved_path="m.txt",
+                mime="text",
+                size=2,
+                tags="",
+                summary="",
+            )
             # 4 embeddable docs, the summary-less memo among them: a file has
             # no content of its own, so its body — what every leg reads and the
             # drainer embeds — is what it IS (title, source path, saved path)
@@ -1424,8 +1601,9 @@ class TestMemfilesStore:
             docs = await store.get_unembedded_docs(10)
             assert {d["kind"] for d in docs} == {"note", "diary", "file"}
             assert all(d["text"] for d in docs)
-            memo_doc = next(d for d in docs if d["kind"] == "file"
-                            and d["doc_id"] == memo["doc_id"])
+            memo_doc = next(
+                d for d in docs if d["kind"] == "file" and d["doc_id"] == memo["doc_id"]
+            )
             assert memo_doc["text"] == "memo /x/m.txt m.txt"
         finally:
             await store.close()
@@ -1435,8 +1613,13 @@ class TestMemfilesStore:
         store = await _real_store(tmp_path, require_vec=True)
         try:
             note = await store.upsert_note("Python", "asyncio concurrency", "")
-            doc = {"kind": "note", "doc_id": note["doc_id"],
-                   "summary": "Python", "tags": "", "created_at": "2026-01-01"}
+            doc = {
+                "kind": "note",
+                "doc_id": note["doc_id"],
+                "summary": "Python",
+                "tags": "",
+                "created_at": "2026-01-01",
+            }
             await store.replace_embedding_chunks(doc, [[0.1, 0.2, 0.3, 0.4]])
             assert await store.count_unembedded() == 0
             # updated note is re-marked unembedded (stale vectors cleared)
@@ -1487,6 +1670,7 @@ class TestMemfilesStore:
         """since/until follow the shared grammar: ISO datetimes and relative
         words are reduced to the date-only column."""
         from datetime import date as _date
+
         store = await _real_store(tmp_path)
         try:
             await store.upsert_diary("2026-08-14", "setup day", "")
@@ -1517,12 +1701,24 @@ class TestMemfilesStore:
     async def test_file_list(self, tmp_path):
         store = await _real_store(tmp_path)
         try:
-            await store.add_file(title="a", original_path="/x/a",
-                                 saved_path="files/documents/a.pdf",
-                                 mime="pdf", size=1, tags="", summary="")
-            await store.add_file(title="b", original_path="/x/b",
-                                 saved_path="files/images/b.png",
-                                 mime="png", size=2, tags="", summary="s")
+            await store.add_file(
+                title="a",
+                original_path="/x/a",
+                saved_path="files/documents/a.pdf",
+                mime="pdf",
+                size=1,
+                tags="",
+                summary="",
+            )
+            await store.add_file(
+                title="b",
+                original_path="/x/b",
+                saved_path="files/images/b.png",
+                mime="png",
+                size=2,
+                tags="",
+                summary="s",
+            )
 
             data = await store.file_list()
             assert data["total"] == 2
@@ -1539,10 +1735,12 @@ class TestMemfilesStore:
             # The window merges with the category filter, and `total` counts
             # their intersection rather than the whole table.
             assert (await store.file_list(category="documents"))["total"] == 1
-            assert (await store.file_list(
-                category="documents", until="2020-01-01"))["total"] == 0
-            assert (await store.file_list(
-                category="documents", since="2020-01-01"))["total"] == 1
+            assert (await store.file_list(category="documents", until="2020-01-01"))[
+                "total"
+            ] == 0
+            assert (await store.file_list(category="documents", since="2020-01-01"))[
+                "total"
+            ] == 1
         finally:
             await store.close()
 
@@ -1553,15 +1751,29 @@ class TestMemfilesStore:
         slug-adjacent category beside the one that was asked for."""
         store = await _real_store(tmp_path)
         try:
-            await store.add_file(title="a", original_path="/x/a",
-                                 saved_path="files/my_docs/a.txt",
-                                 mime="txt", size=1, tags="", summary="")
-            await store.add_file(title="b", original_path="/x/b",
-                                 saved_path="files/my-docs/b.txt",
-                                 mime="txt", size=1, tags="", summary="")
+            await store.add_file(
+                title="a",
+                original_path="/x/a",
+                saved_path="files/my_docs/a.txt",
+                mime="txt",
+                size=1,
+                tags="",
+                summary="",
+            )
+            await store.add_file(
+                title="b",
+                original_path="/x/b",
+                saved_path="files/my-docs/b.txt",
+                mime="txt",
+                size=1,
+                tags="",
+                summary="",
+            )
 
-            for category, expected in (("my_docs", "files/my_docs/a.txt"),
-                                       ("my-docs", "files/my-docs/b.txt")):
+            for category, expected in (
+                ("my_docs", "files/my_docs/a.txt"),
+                ("my-docs", "files/my-docs/b.txt"),
+            ):
                 data = await store.file_list(category=category)
                 assert data["total"] == 1, category
                 assert data["entries"][0]["saved_path"] == expected
@@ -1583,13 +1795,18 @@ class TestMemfilesStore:
             await store.upsert_diary("2020-01-15", "asyncio retro", "")
 
             early = await store.keyword_hits(
-                query="asyncio", kind="diary", limit=20, until="last month")
+                query="asyncio", kind="diary", limit=20, until="last month"
+            )
             assert [h["id"] for h in early] == ["diary:1"]
             assert (await store.diary_list(until="last month"))["total"] == 1
 
             # The same axis from the other side, in both entry points.
-            assert await store.keyword_hits(
-                query="asyncio", kind="diary", limit=20, since="2020-06-01") == []
+            assert (
+                await store.keyword_hits(
+                    query="asyncio", kind="diary", limit=20, since="2020-06-01"
+                )
+                == []
+            )
             assert (await store.diary_list(since="2020-06-01"))["total"] == 0
         finally:
             await store.close()
@@ -1604,9 +1821,14 @@ class TestMemfilesStore:
         now: a window on ``period_start`` would have kept it."""
         store = await _real_store(tmp_path)
         try:
-            await store.upsert_report(None, "Weekly", "body", "",
-                                      period_start="2020-01-01",
-                                      period_end="2020-01-31")
+            await store.upsert_report(
+                None,
+                "Weekly",
+                "body",
+                "",
+                period_start="2020-01-01",
+                period_end="2020-01-31",
+            )
             assert (await store.report_list(since="last month"))["total"] == 1
             assert (await store.report_list(until="last month"))["total"] == 0
         finally:
@@ -1634,7 +1856,7 @@ class TestMemfilesStore:
 
             recent = await store.note_list(since="2026-01-01")
             assert [n["subject"] for n in recent["entries"]] == ["Python"]
-            assert recent["total"] == 1        # total counts the window
+            assert recent["total"] == 1  # total counts the window
             old = await store.note_list(until="2026-01-01")
             assert [n["subject"] for n in old["entries"]] == ["Go"]
         finally:
@@ -1644,7 +1866,9 @@ class TestMemfilesStore:
     async def test_search_fts5_and_cjk_like(self, tmp_path):
         store = await _real_store(tmp_path)
         try:
-            await store.upsert_note("Python", "Everything about asyncio concurrency", "")
+            await store.upsert_note(
+                "Python", "Everything about asyncio concurrency", ""
+            )
             hits = await _search(store, "asyncio", kind="note", mode="fts5")
             assert [h["id"] for h in hits] == ["note:1"]
             hits = await _search(store, "并发", kind="note", mode="fts5")  # CJK → LIKE
@@ -1675,13 +1899,25 @@ class TestMemfilesStore:
     async def test_search_hybrid_with_vectors(self, tmp_path):
         store = await _real_store(tmp_path, require_vec=True)
         try:
-            await store.upsert_note("Python", "Everything about asyncio concurrency", "")
-            await store.add_file(title="report", original_path="/x/r.pdf",
-                                 saved_path="r.pdf", mime="pdf", size=1,
-                                 tags="", summary="Q2 financial results")
+            await store.upsert_note(
+                "Python", "Everything about asyncio concurrency", ""
+            )
+            await store.add_file(
+                title="report",
+                original_path="/x/r.pdf",
+                saved_path="r.pdf",
+                mime="pdf",
+                size=1,
+                tags="",
+                summary="Q2 financial results",
+            )
             docs = await store.get_unembedded_docs(10)
             for d in docs:
-                emb = [0.1, 0.2, 0.3, 0.4] if d["kind"] != "file" else [0.4, 0.3, 0.2, 0.1]
+                emb = (
+                    [0.1, 0.2, 0.3, 0.4]
+                    if d["kind"] != "file"
+                    else [0.4, 0.3, 0.2, 0.1]
+                )
                 await store.replace_embedding_chunks(d, [emb])
             # The two legs fuse — and the fusion, the gate and the one embed
             # are the shared composition's, so a store test drives it the way
@@ -1689,7 +1925,8 @@ class TestMemfilesStore:
             legs = store.search_legs("all")
             manager = _stub_manager([0.1, 0.2, 0.3, 0.4])
             out = await run_search(
-                legs, manager, query="python concurrency", mode="hybrid", limit=20)
+                legs, manager, query="python concurrency", mode="hybrid", limit=20
+            )
             hits = out.results
             assert hits[0]["id"] == "note:1"
             assert all("rrf_score" in h for h in hits)
@@ -1704,14 +1941,31 @@ class TestMemfilesStore:
             # ignored the window, this note (which HAS an embedding and is the
             # closest hit) would still come back through the semantic leg, and
             # a windowed search would silently answer with out-of-window rows.
-            assert (await run_search(
-                store.search_legs("all"), manager, query="python concurrency",
-                mode="hybrid", limit=20, until="last month",
-            )).results == []
-            assert len((await run_search(
-                store.search_legs("all"), manager, query="python concurrency",
-                mode="hybrid", limit=20, since="last month",
-            )).results) > 0
+            assert (
+                await run_search(
+                    store.search_legs("all"),
+                    manager,
+                    query="python concurrency",
+                    mode="hybrid",
+                    limit=20,
+                    until="last month",
+                )
+            ).results == []
+            assert (
+                len(
+                    (
+                        await run_search(
+                            store.search_legs("all"),
+                            manager,
+                            query="python concurrency",
+                            mode="hybrid",
+                            limit=20,
+                            since="last month",
+                        )
+                    ).results
+                )
+                > 0
+            )
         finally:
             await store.close()
 
@@ -1729,14 +1983,25 @@ class TestMemfilesStore:
         try:
             await store.upsert_diary("2026-10-03", "apples and pears", "fruit")
 
-            assert [h["id"] for h in await store.keyword_hits(
-                query="apples", kind="diary", limit=5,
-                since="2026-10-03T00:00:00",
-            )] == ["diary:1"]
+            assert [
+                h["id"]
+                for h in await store.keyword_hits(
+                    query="apples",
+                    kind="diary",
+                    limit=5,
+                    since="2026-10-03T00:00:00",
+                )
+            ] == ["diary:1"]
             # …and the axis still excludes a day outside the window.
-            assert await store.keyword_hits(
-                query="apples", kind="diary", limit=5, since="2026-10-04",
-            ) == []
+            assert (
+                await store.keyword_hits(
+                    query="apples",
+                    kind="diary",
+                    limit=5,
+                    since="2026-10-04",
+                )
+                == []
+            )
         finally:
             await store.close()
 
@@ -1757,19 +2022,41 @@ class TestMemfilesStore:
 
             # Written just now: inside a window open since last month, outside
             # one that closed at the end of it — in every mode.
-            assert len(await store.keyword_hits(query="asyncio",
-                                          since="last month", **common)) == 1
-            assert await store.keyword_hits(query="asyncio",
-                                      until="last month", **common) == []
-            assert len(await store.regex_hits(pattern="asyncio",
-                                          since="last month", **common)) == 1
-            assert await store.regex_hits(pattern="asyncio",
-                                      until="last month", **common) == []
+            assert (
+                len(
+                    await store.keyword_hits(
+                        query="asyncio", since="last month", **common
+                    )
+                )
+                == 1
+            )
+            assert (
+                await store.keyword_hits(query="asyncio", until="last month", **common)
+                == []
+            )
+            assert (
+                len(
+                    await store.regex_hits(
+                        pattern="asyncio", since="last month", **common
+                    )
+                )
+                == 1
+            )
+            assert (
+                await store.regex_hits(pattern="asyncio", until="last month", **common)
+                == []
+            )
             # …including the CJK (LIKE) fallback.
-            assert len(await store.keyword_hits(query="并发",
-                                          since="last month", **common)) == 1
-            assert await store.keyword_hits(query="并发",
-                                      until="last month", **common) == []
+            assert (
+                len(
+                    await store.keyword_hits(query="并发", since="last month", **common)
+                )
+                == 1
+            )
+            assert (
+                await store.keyword_hits(query="并发", until="last month", **common)
+                == []
+            )
 
             with pytest.raises(InvalidTimeBound):
                 await store.keyword_hits(query="asyncio", since="昨天", **common)
@@ -1786,12 +2073,18 @@ class TestMemfilesStore:
         try:
             await store.upsert_note("Python", "asyncio concurrency notes", "")
             await store.upsert_report(None, "Weekly review", "asyncio report body", "")
-            assert [h["id"] for h in await _search(store, 
-                "asyncio", kind="report", mode="fts5")] == ["report:1"]
-            assert [h["id"] for h in await _search(store, 
-                "asyncio", kind="note", mode="fts5")] == ["note:1"]
-            assert {h["id"] for h in await _search(store, 
-                "asyncio", kind="all", mode="fts5")} == {"note:1", "report:1"}
+            assert [
+                h["id"]
+                for h in await _search(store, "asyncio", kind="report", mode="fts5")
+            ] == ["report:1"]
+            assert [
+                h["id"]
+                for h in await _search(store, "asyncio", kind="note", mode="fts5")
+            ] == ["note:1"]
+            assert {
+                h["id"]
+                for h in await _search(store, "asyncio", kind="all", mode="fts5")
+            } == {"note:1", "report:1"}
         finally:
             await store.close()
 
@@ -1805,8 +2098,15 @@ class TestMemfilesStore:
         try:
             await store.upsert_note("Python", "asyncio notes", "py")
             await store.upsert_diary("2026-08-15", "refactor day", "")
-            await store.add_file(title="f", original_path="/x/f", saved_path="f.txt",
-                                 mime="text", size=1, tags="", summary="")
+            await store.add_file(
+                title="f",
+                original_path="/x/f",
+                saved_path="f.txt",
+                mime="text",
+                size=1,
+                tags="",
+                summary="",
+            )
             hits = await _search(store, "asyncio", kind="note", mode="fts5")
             assert [h["id"] for h in hits] == ["note:1"]
         finally:
@@ -1829,7 +2129,7 @@ class TestMemfilesStore:
 class _QueryCursor:
     """An aiosqlite-like cursor: async context manager with async fetchone."""
 
-    async def __aenter__(self) -> "_QueryCursor":
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc) -> bool:
@@ -1859,11 +2159,16 @@ class TestMemfilesLifespan:
     @pytest.mark.asyncio
     async def test_store_failure_raises(self):
         """Store cannot be established → the lifespan raises on enter."""
-        with patch.object(plugin, "_ensure_store",
-                          AsyncMock(side_effect=RuntimeError("db locked"))):
-            with pytest.raises(RuntimeError, match="db locked"):
-                async with plugin._memfiles_lifespan(None):
-                    pass
+        with (
+            patch.object(
+                plugin,
+                "_ensure_store",
+                AsyncMock(side_effect=RuntimeError("db locked")),
+            ),
+            pytest.raises(RuntimeError, match="db locked"),
+        ):
+            async with plugin._memfiles_lifespan(None):
+                pass
 
     @pytest.mark.asyncio
     async def test_store_ok_yields_then_closes(self, tmp_path):
@@ -1896,7 +2201,8 @@ class TestStaleCabinet:
         old.execute(
             "CREATE TABLE notes (id INTEGER PRIMARY KEY, subject TEXT NOT NULL "
             "UNIQUE, content TEXT NOT NULL, tags TEXT DEFAULT '', "
-            "file_path TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+            "file_path TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
         old.commit()
         old.close()
 
@@ -1931,40 +2237,55 @@ class TestCabinetSummarize:
 
     @pytest.mark.asyncio
     async def test_a_file_summary_makes_it_searchable_and_reembeddable(
-        self, tmp_path,
+        self,
+        tmp_path,
     ):
         """A file saved without a summary is absent from semantic search
         forever — the drainer only embeds rows whose summary is non-empty, and
         ``file_save`` was the only writer.  This is what closes that."""
         store = await _real_store(tmp_path, require_vec=True)
         try:
-            await store.add_file(title="paper", original_path="/dl/paper.pdf",
-                                 saved_path="files/documents/paper.pdf",
-                                 mime="application/pdf", size=10, tags="",
-                                 summary="")
+            await store.add_file(
+                title="paper",
+                original_path="/dl/paper.pdf",
+                saved_path="files/documents/paper.pdf",
+                mime="application/pdf",
+                size=10,
+                tags="",
+                summary="",
+            )
             # No summary yet, so "survey" matches nothing — but the file is
             # not a blank: its identity is already its text, in the vector and
             # in the keyword index both.
-            assert await store.keyword_hits(
-                query="survey", kind="file", limit=20) == []
+            assert await store.keyword_hits(query="survey", kind="file", limit=20) == []
             assert (await store.get_unembedded_docs(10))[0]["text"] == (
-                "paper /dl/paper.pdf files/documents/paper.pdf")
-            assert [h["id"] for h in await store.keyword_hits(
-                query="paper", kind="file", limit=20)] == ["file:1"]
-            assert [h["id"] for h in await store.regex_hits(
-                pattern=r"paper\.pdf", limit=20)] == ["file:1"]
+                "paper /dl/paper.pdf files/documents/paper.pdf"
+            )
+            assert [
+                h["id"]
+                for h in await store.keyword_hits(query="paper", kind="file", limit=20)
+            ] == ["file:1"]
+            assert [
+                h["id"] for h in await store.regex_hits(pattern=r"paper\.pdf", limit=20)
+            ] == ["file:1"]
 
-            await store.summarize("file", "files/documents/paper.pdf",
-                                  summary="a survey of retrieval", tags="nlp")
+            await store.summarize(
+                "file",
+                "files/documents/paper.pdf",
+                summary="a survey of retrieval",
+                tags="nlp",
+            )
             # The AFTER UPDATE trigger carried it into the one index…
-            assert [h["id"] for h in await store.keyword_hits(
-                query="survey", kind="file", limit=20)] == ["file:1"]
+            assert [
+                h["id"]
+                for h in await store.keyword_hits(query="survey", kind="file", limit=20)
+            ] == ["file:1"]
             # …and it is now the drainer's to embed.
             assert await store.count_unembedded() == 1
             docs = await store.get_unembedded_docs(10)
             assert docs[0]["text"] == (
-                "paper /dl/paper.pdf files/documents/paper.pdf "
-                "a survey of retrieval"), "identity, then the summary"
+                "paper /dl/paper.pdf files/documents/paper.pdf a survey of retrieval"
+            ), "identity, then the summary"
             assert docs[0]["kind"] == "file"
         finally:
             await store.close()
@@ -1976,9 +2297,15 @@ class TestCabinetSummarize:
         correct."""
         store = await _real_store(tmp_path, require_vec=True)
         try:
-            await store.add_file(title="paper", original_path="/dl/paper.pdf",
-                                 saved_path="p.pdf", mime="application/pdf",
-                                 size=10, tags="", summary="first text")
+            await store.add_file(
+                title="paper",
+                original_path="/dl/paper.pdf",
+                saved_path="p.pdf",
+                mime="application/pdf",
+                size=10,
+                tags="",
+                summary="first text",
+            )
             doc = (await store.get_unembedded_docs(10))[0]
             await store.replace_embedding_chunks(doc, [[0.1, 0.2, 0.3, 0.4]])
             assert await store.count_unembedded() == 0
@@ -1986,7 +2313,8 @@ class TestCabinetSummarize:
             await store.summarize("file", "p.pdf", summary="second text")
             assert await store.count_unembedded() == 1, "chunks must be cleared"
             assert (await store.get_unembedded_docs(10))[0]["text"] == (
-                "paper /dl/paper.pdf p.pdf second text")
+                "paper /dl/paper.pdf p.pdf second text"
+            )
         finally:
             await store.close()
 
@@ -2002,12 +2330,20 @@ class TestCabinetSummarize:
             await store.summarize("diary", "2026-08-15", tags="work")
             await store.summarize("report", "1", tags="weekly")
 
-            assert [h["id"] for h in await store.keyword_hits(
-                query="async", kind="note", limit=20)] == ["note:1"]
-            assert [h["id"] for h in await store.keyword_hits(
-                query="work", kind="diary", limit=20)] == ["diary:1"]
-            assert [h["id"] for h in await store.keyword_hits(
-                query="weekly", kind="report", limit=20)] == ["report:1"]
+            assert [
+                h["id"]
+                for h in await store.keyword_hits(query="async", kind="note", limit=20)
+            ] == ["note:1"]
+            assert [
+                h["id"]
+                for h in await store.keyword_hits(query="work", kind="diary", limit=20)
+            ] == ["diary:1"]
+            assert [
+                h["id"]
+                for h in await store.keyword_hits(
+                    query="weekly", kind="report", limit=20
+                )
+            ] == ["report:1"]
         finally:
             await store.close()
 
@@ -2024,11 +2360,14 @@ class TestCabinetSummarize:
             await store.replace_embedding_chunks(doc, [[0.1, 0.2, 0.3, 0.4]])
             assert await store.count_unembedded() == 0, "indexed"
 
-            await store.summarize("note", "Python",
-                                  summary="an asyncio retrospective")
+            await store.summarize("note", "Python", summary="an asyncio retrospective")
             # Keyword: the summary went into the one index…
-            assert [h["id"] for h in await store.keyword_hits(
-                query="retrospective", kind="note", limit=20)] == ["note:1"]
+            assert [
+                h["id"]
+                for h in await store.keyword_hits(
+                    query="retrospective", kind="note", limit=20
+                )
+            ] == ["note:1"]
             # …and NOT into the vector, so the stored one is still current and
             # the row is NOT re-queued.  A note is embedded from its own text,
             # exactly as a turn is embedded from the conversation; only a file
@@ -2067,19 +2406,30 @@ class TestCabinetSummarize:
         """``is_error`` keys on the "Error" prefix, so a refusal has to be a
         plain string — and a success an envelope."""
         store, _ = _fake_store(tmp_path / "files")
-        store.summarize = AsyncMock(return_value={
-            "kind": "file", "id": 3, "key": "files/documents/a.txt",
-            "tags": "nlp", "summary": "a survey", "reembedded": True})
-        with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)), \
-             patch.object(plugin, "_manager", _ready_manager()):
+        store.summarize = AsyncMock(
+            return_value={
+                "kind": "file",
+                "id": 3,
+                "key": "files/documents/a.txt",
+                "tags": "nlp",
+                "summary": "a survey",
+                "reembedded": True,
+            }
+        )
+        with (
+            patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)),
+            patch.object(plugin, "_manager", _ready_manager()),
+        ):
             out = await plugin.cabinet_summarize(
-                kind="file", key="files/documents/a.txt",
-                summary="a survey", tags="nlp")
+                kind="file", key="files/documents/a.txt", summary="a survey", tags="nlp"
+            )
         data = json.loads(out)
         assert data["status"] == "updated"
         assert data["key"] == "files/documents/a.txt"
         assert store.summarize.await_args.kwargs == {
-            "summary": "a survey", "tags": "nlp"}
+            "summary": "a survey",
+            "tags": "nlp",
+        }
 
         store.summarize = AsyncMock(side_effect=ValueError("file not found — x"))
         with patch.object(plugin, "_ensure_store", AsyncMock(return_value=store)):
@@ -2101,12 +2451,15 @@ class TestCabinetGrep:
         await store.upsert_note("Deploy runbook", "how to deploy the service", "")
         await store.upsert_note("Unrelated", "nothing to see", "")
 
-        assert [r["id"] for r in await _search(store, "depl.y", mode="grep")] == ["note:1"]
+        assert [r["id"] for r in await _search(store, "depl.y", mode="grep")] == [
+            "note:1"
+        ]
         # A tag, a title and a summary are how a row is named and classified;
         # grep reads what it SAYS, so none of them matches here — the summary
         # is findable by keyword search and not by grep, exactly as in memdb.
-        await store.summarize("note", "Deploy runbook", tags="deployish",
-                              summary="deployish")
+        await store.summarize(
+            "note", "Deploy runbook", tags="deployish", summary="deployish"
+        )
         # A SUMMARY is the one column a model wrote, and it is the keyword
         # leg's; a TITLE is the row's own name, so grep reads it.
         assert await _search(store, "deployish", mode="grep") == []

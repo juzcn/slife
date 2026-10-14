@@ -18,6 +18,7 @@ import time
 from urllib.parse import quote
 
 import aiohttp
+
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.logfmt import sanitize_secrets
 
@@ -104,10 +105,11 @@ class WechatClawbotClient:
         self._base_url: str = BASE_URL
         self._get_updates_buf: str = ""
         self._typing_tickets: dict[str, str] = {}
-        self._ilink_user_id: str = ""   # bot's own iLink user ID (from login)
-        self._ilink_bot_id: str = ""    # bot's iLink bot ID (from login)
+        self._ilink_user_id: str = ""  # bot's own iLink user ID (from login)
+        self._ilink_bot_id: str = ""  # bot's iLink bot ID (from login)
         self.last_contact: dict[str, str | None] = {
-            "from_id": None, "context_token": None,
+            "from_id": None,
+            "context_token": None,
         }
         # Session health, surfaced to the LLM by wechat_check_status:
         # ``last_error`` records the most recent poll/validation failure (None
@@ -128,17 +130,23 @@ class WechatClawbotClient:
     async def _fetch_qrcode(self, base_url: str) -> dict:
         body = {"local_token_list": []}
         data = await self._api_post(
-            "ilink/bot/get_bot_qrcode?bot_type=3", body, base_url,
+            "ilink/bot/get_bot_qrcode?bot_type=3",
+            body,
+            base_url,
         )
         if data.get("qrcode"):
             return data
         logger.debug("qr_post_empty action=get_fallback")
         return await self._api_get(
-            "ilink/bot/get_bot_qrcode?bot_type=3", base_url,
+            "ilink/bot/get_bot_qrcode?bot_type=3",
+            base_url,
         )
 
     async def _poll_login_status(
-        self, qrcode: str, base_url: str, verify_code: str | None = None,
+        self,
+        qrcode: str,
+        base_url: str,
+        verify_code: str | None = None,
     ) -> dict:
         endpoint = f"ilink/bot/get_qrcode_status?qrcode={quote(qrcode, safe='')}"
         if verify_code:
@@ -164,7 +172,9 @@ class WechatClawbotClient:
             return {}
         if state == "scaned":
             return {"scanned": True, "verify_code_accepted": bool(verify_code)}
-        if state in ("need_verifycode", "verify_code_blocked") or status.get("need_verifycode"):
+        if state in ("need_verifycode", "verify_code_blocked") or status.get(
+            "need_verifycode"
+        ):
             if state == "verify_code_blocked":
                 return {"verify_code_blocked": True}
             return {"need_verifycode": True, "retry_verifycode": bool(verify_code)}
@@ -176,8 +186,11 @@ class WechatClawbotClient:
     # ── Session lifecycle ──────────────────────────────────────────────
 
     async def start(
-        self, bot_token: str, base_url: str = "",
-        ilink_user_id: str = "", ilink_bot_id: str = "",
+        self,
+        bot_token: str,
+        base_url: str = "",
+        ilink_user_id: str = "",
+        ilink_bot_id: str = "",
     ) -> None:
         """Set credentials. Call after ``login()``.
 
@@ -202,8 +215,10 @@ class WechatClawbotClient:
 
         saved_at = saved.get("saved_at", 0)
         if time.time() - saved_at > _timeouts.timeouts.pacing.wechat_session_max_age:
-            logger.debug("session_expired age_hours=%s",
-                         _timeouts.timeouts.pacing.wechat_session_max_age // 3600)
+            logger.debug(
+                "session_expired age_hours=%s",
+                _timeouts.timeouts.pacing.wechat_session_max_age // 3600,
+            )
             return False
 
         bot_token = saved.get("bot_token")
@@ -212,7 +227,8 @@ class WechatClawbotClient:
             return False
 
         await self.start(
-            bot_token, base_url,
+            bot_token,
+            base_url,
             ilink_user_id=saved.get("ilink_user_id", ""),
             ilink_bot_id=saved.get("ilink_bot_id", ""),
         )
@@ -249,7 +265,7 @@ class WechatClawbotClient:
                 self.last_error = _envelope_error(result) or "session rejected"
                 return False
             return True  # ambiguous envelope — don't false-revoke
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort: a network error is transient
             self.last_error = str(e)
             return False
 
@@ -324,7 +340,7 @@ class WechatClawbotClient:
                 "ilink/bot/getupdates",
                 {"get_updates_buf": self._get_updates_buf, "base_info": _base_info()},
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort: a poll error is recorded, not raised
             self.last_error = str(e)
             return []
         if not isinstance(result, dict):
@@ -338,7 +354,10 @@ class WechatClawbotClient:
         return result.get("msgs") or []
 
     async def send_message(
-        self, to_user_id: str, context_token: str, text: str,
+        self,
+        to_user_id: str,
+        context_token: str,
+        text: str,
     ) -> dict:
         """Send a text message to the WeChat user."""
         client_id = f"slife-wechat-{random.randint(0, 0xFFFFFFFF):08x}"
@@ -359,7 +378,10 @@ class WechatClawbotClient:
         )
 
     async def send_typing(
-        self, to_user_id: str, context_token: str, status: int = 1,
+        self,
+        to_user_id: str,
+        context_token: str,
+        status: int = 1,
     ) -> dict | None:
         """Send typing indicator. ``status=1`` to show, ``status=2`` to hide."""
         ticket = await self._ensure_typing_ticket(to_user_id, context_token)
@@ -376,10 +398,12 @@ class WechatClawbotClient:
         )
 
     async def _ensure_typing_ticket(
-        self, user_id: str, context_token: str,
+        self,
+        user_id: str,
+        context_token: str,
     ) -> str:
         # Return cached ticket if valid (non-empty)
-        if user_id in self._typing_tickets and self._typing_tickets[user_id]:
+        if self._typing_tickets.get(user_id):
             return self._typing_tickets[user_id]
 
         # getconfig is a bot-level endpoint — it needs the bot's own
@@ -401,14 +425,21 @@ class WechatClawbotClient:
         else:
             logger.debug(
                 "_ensure_typing_ticket_empty ilink_user_id=%s context_token=%s "
-                "cfg_keys=%s", bot_id, context_token, list(cfg.keys()),
+                "cfg_keys=%s",
+                bot_id,
+                context_token,
+                list(cfg.keys()),
             )
         return ticket
 
     # ── Internal helpers ───────────────────────────────────────────────
 
     async def _api_request(
-        self, method: str, path: str, body: dict | None = None, base_url: str = "",
+        self,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        base_url: str = "",
     ) -> dict:
         """One WeChat HTTP call: build the URL, send, decode, mask the log.
 
@@ -432,17 +463,23 @@ class WechatClawbotClient:
                 text = await res.text()
                 logger.debug(
                     "http_request method=%s url=%s status=%s body=%.200s",
-                    method, path, res.status, sanitize_secrets(text),
+                    method,
+                    path,
+                    res.status,
+                    sanitize_secrets(text),
                 )
                 try:
                     return json.loads(text)
-                except Exception:
+                except json.JSONDecodeError:
                     return {}
 
     async def _api_get(self, path: str, base_url: str = "") -> dict:
         return await self._api_request("GET", path, base_url=base_url)
 
     async def _api_post(
-        self, path: str, body: dict, base_url: str = "",
+        self,
+        path: str,
+        body: dict,
+        base_url: str = "",
     ) -> dict:
         return await self._api_request("POST", path, body, base_url=base_url)

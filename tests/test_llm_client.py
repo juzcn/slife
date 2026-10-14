@@ -1,13 +1,14 @@
 """Tests for LLMClient thin router, TokenUsage, and StreamChunk."""
 
-import pytest; pytestmark = pytest.mark.unit
+import pytest
 
 from slife.agent.llm_client import (
     LLMClient,
-    TokenUsage,
     StreamChunk,
+    TokenUsage,
 )
 
+pytestmark = pytest.mark.unit
 
 # ── TokenUsage ────────────────────────────────────────────────────────
 
@@ -88,10 +89,12 @@ class TestLLMClient:
         client = LLMClient(sample_model_config)
         assert client.model_config == sample_model_config
         from slife.agent.llm_backends.openai import OpenAIBackend
+
         assert isinstance(client._backend, OpenAIBackend)
 
     def test_construction_anthropic_messages(self):
         from slife.config import ModelConfig
+
         mc = ModelConfig(
             ref="anthropic/claude-sonnet",
             provider="anthropic",
@@ -103,10 +106,12 @@ class TestLLMClient:
         )
         client = LLMClient(mc)
         from slife.agent.llm_backends.anthropic import AnthropicBackend
+
         assert isinstance(client._backend, AnthropicBackend)
 
     def test_construction_openai_responses(self):
         from slife.config import ModelConfig
+
         mc = ModelConfig(
             ref="openai/gpt-4o",
             provider="openai",
@@ -117,10 +122,12 @@ class TestLLMClient:
         )
         client = LLMClient(mc)
         from slife.agent.llm_backends.openai_responses import OpenAIResponsesBackend
+
         assert isinstance(client._backend, OpenAIResponsesBackend)
 
     def test_default_api_is_openai_completions(self):
         from slife.config import ModelConfig
+
         mc = ModelConfig(
             ref="custom/v1",
             provider="custom",
@@ -130,11 +137,10 @@ class TestLLMClient:
         )
         client = LLMClient(mc)
         from slife.agent.llm_backends.openai import OpenAIBackend
+
         assert isinstance(client._backend, OpenAIBackend)
 
     def test_delegates_chat(self, sample_model_config):
         client = LLMClient(sample_model_config)
         assert callable(client.chat)
         assert callable(client.chat_stream)
-
-

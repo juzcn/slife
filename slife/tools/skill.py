@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from slife.paths import get_tools_config_path
 from slife.tools._config_io import (
+    ConfigParseError,
     config_write_locked,
     format_source_info,
     read_config,
@@ -177,8 +178,9 @@ def _disabled_skill_names(config) -> set[str]:
     names = set(getattr(config, "disabled_skills", ()) or ())
     legacy = _legacy_disabled_skills(config_path)
     if legacy - names:
-        logger.debug("skills_disabled_in_legacy_location names=%s",
-                     sorted(legacy - names))
+        logger.debug(
+            "skills_disabled_in_legacy_location names=%s", sorted(legacy - names)
+        )
     return names | legacy
 
 
@@ -188,13 +190,14 @@ def _legacy_disabled_skills(config_path: Path | None) -> set[str]:
         return set()
     try:
         raw = read_config(config_path)
-    except Exception:
+    except ConfigParseError:
         return set()
     skills = raw.get("skills", {})
     if not isinstance(skills, dict):
         return set()
     return {
-        n for n, e in skills.items()
+        n
+        for n, e in skills.items()
         if isinstance(e, dict) and e.get("enabled") is False
     }
 
@@ -214,7 +217,9 @@ def get_skills_summary(
         return ""
     disabled = disabled or set()
 
-    lines = [f"> **Skills root:** `{Path(skills_dir).resolve()}` — use this path for skill scripts.\n"]
+    lines = [
+        f"> **Skills root:** `{Path(skills_dir).resolve()}` — use this path for skill scripts.\n"
+    ]
     for d, fm in skills:
         name = fm.get("name", d.name)
         if name in disabled:
@@ -270,7 +275,8 @@ def _read_skill(skills_dir: Path, skill_name: str) -> str:
 
 
 def skill_catalog_rows(
-    skills_dir: str | Path, disabled: set[str] | None = None,
+    skills_dir: str | Path,
+    disabled: set[str] | None = None,
 ) -> dict[str, dict]:
     """The catalog rows the skills dir implies — name → {description, schema, status}.
 
@@ -299,8 +305,7 @@ def skill_catalog_rows(
             "description": fm.get("description", ""),
             "schema": content,
             "status": (
-                STATUS_ERROR if content is None
-                else config_status(name not in disabled)
+                STATUS_ERROR if content is None else config_status(name not in disabled)
             ),
         }
     return rows
@@ -317,7 +322,8 @@ async def sync_skill_catalog(ctx, skills_dir: str | Path) -> None:
 
     config = getattr(ctx, "config", None)
     await mirror_source_rows(
-        ctx, "skill",
+        ctx,
+        "skill",
         skill_catalog_rows(skills_dir, _disabled_skill_names(config)),
     )
 
@@ -367,7 +373,7 @@ class ListSkillsTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibl
     name = "skill_list"
     category = "Skills"
     description = "List installed skills with names and one-line descriptions."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {},
         "required": [],
@@ -386,7 +392,7 @@ class UseSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
     name = "skill_use"
     category = "Skills"
     description = "Return the full SKILL.md documentation for a skill."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "Skill name, from skill_list."},
@@ -401,7 +407,7 @@ class UseSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
         if name in disabled:
             return (
                 f"Skill '{name}' is disabled. "
-                f"Use skill_set_enabled(name=\"{name}\", enabled=true) to re-enable."
+                f'Use skill_set_enabled(name="{name}", enabled=true) to re-enable.'
             )
         return _read_skill(self.skills_dir, name)
 
@@ -424,30 +430,45 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
     name = "skill_set"
     category = "Skills"
     description = "Install/update a skill from [{path, content}] files or a base64 .zip/.tar.gz archive."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "name": {"type": "string", "description": "Directory name, kebab-case (e.g. 'browser-use')."},
+            "name": {
+                "type": "string",
+                "description": "Directory name, kebab-case (e.g. 'browser-use').",
+            },
             "files": {
                 "type": "array",
                 "description": "[{path, content}]; must include SKILL.md with YAML frontmatter.",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "Relative path (e.g. 'SKILL.md', 'scripts/run.py')."},
+                        "path": {
+                            "type": "string",
+                            "description": "Relative path (e.g. 'SKILL.md', 'scripts/run.py').",
+                        },
                         "content": {"type": "string", "description": "File content."},
                     },
                     "required": ["path", "content"],
                 },
             },
-            "archive": {"type": "string", "description": "Base64-encoded .zip or .tar.gz."},
+            "archive": {
+                "type": "string",
+                "description": "Base64-encoded .zip or .tar.gz.",
+            },
             "source": {
                 "type": "object",
                 "description": "Provenance for future updates.",
                 "properties": {
                     "url": {"type": "string", "description": "Discovery URL."},
-                    "type": {"type": "string", "description": "Where it came from — e.g. github, marketplace, url."},
-                    "version": {"type": "string", "description": "Version at install time."},
+                    "type": {
+                        "type": "string",
+                        "description": "Where it came from — e.g. github, marketplace, url.",
+                    },
+                    "version": {
+                        "type": "string",
+                        "description": "Version at install time.",
+                    },
                     "description": {"type": "string", "description": "Optional note."},
                 },
             },
@@ -495,9 +516,13 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
         import os as _os
         import shutil as _shutil
         import tempfile as _tempfile
-        tmp_dir = Path(_tempfile.mkdtemp(
-            prefix=f".{name}.install-", dir=str(skill_dir.parent),
-        ))
+
+        tmp_dir = Path(
+            _tempfile.mkdtemp(
+                prefix=f".{name}.install-",
+                dir=str(skill_dir.parent),
+            )
+        )
 
         # Preserve the live skill's external _meta.json fields across an
         # update: the temp dir starts empty and _write_meta_json merges into
@@ -507,20 +532,25 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
             if live_meta.exists():
                 try:
                     (tmp_dir / "_meta.json").write_text(
-                        live_meta.read_text(encoding="utf-8"), encoding="utf-8",
+                        live_meta.read_text(encoding="utf-8"),
+                        encoding="utf-8",
                     )
                 except OSError:
                     pass
 
         try:
             if archive_b64:
-                result = self._install_from_archive(name, archive_b64, tmp_dir, is_update)
+                result = self._install_from_archive(
+                    name, archive_b64, tmp_dir, is_update
+                )
             else:
                 result = self._install_from_files(name, files, tmp_dir, is_update)  # type: ignore[arg-type]
             self._write_meta_json(tmp_dir, source)
         except Exception as e:
             _shutil.rmtree(tmp_dir, ignore_errors=True)
-            logger.exception("skill_install_failed name=%s is_update=%s", name, is_update)
+            logger.exception(
+                "skill_install_failed name=%s is_update=%s", name, is_update
+            )
             if is_update:
                 logger.warning("skill_update_failed name=%s err=%s", name, e)
             return f"Error: installing skill '{name}': {e}"
@@ -555,7 +585,9 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
         # Cosmetic: report the real install path, not the temp one.
         return result.replace(str(tmp_dir), str(skill_dir))
 
-    def _install_from_files(self, name: str, files: list[dict], skill_dir: Path, is_update: bool = False) -> str:
+    def _install_from_files(
+        self, name: str, files: list[dict], skill_dir: Path, is_update: bool = False
+    ) -> str:
         """Write individual files to the skill directory."""
         count = 0
         for f in files:
@@ -577,23 +609,25 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
             )
         return msg
 
-    def _install_from_archive(self, name: str, archive_b64: str, skill_dir: Path, is_update: bool = False) -> str:
+    def _install_from_archive(
+        self, name: str, archive_b64: str, skill_dir: Path, is_update: bool = False
+    ) -> str:
         """Decode and extract a base64-encoded archive into the skill directory."""
         import base64
         import io
-        import zipfile
         import tarfile
+        import zipfile
 
         data = base64.b64decode(archive_b64)
         bio = io.BytesIO(data)
 
         # Detect format by magic bytes
-        if data[:2] == b'PK':
+        if data[:2] == b"PK":
             with zipfile.ZipFile(bio) as zf:
                 # zipfile has no filter= protection (unlike tarfile's
                 # PEP 706 filter="data"), so validate members manually.
                 _extract_zip_safely(zf, skill_dir)
-        elif data[:2].hex() == '1f8b':  # gzip magic
+        elif data[:2].hex() == "1f8b":  # gzip magic
             with tarfile.open(fileobj=bio, mode="r:gz") as tf:
                 tf.extractall(skill_dir, filter="data")
         else:
@@ -605,6 +639,7 @@ class SetSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatibleM
             wrapper = entries[0]
             if (wrapper / "SKILL.md").exists():
                 import shutil
+
                 for item in wrapper.iterdir():
                     shutil.move(str(item), str(skill_dir / item.name))
                 wrapper.rmdir()
@@ -653,7 +688,7 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
     name = "skill_remove"
     category = "Skills"
     description = "Delete a skill directory and all its contents."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "Skill name, from skill_list."},
@@ -677,6 +712,7 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
         for d, fm in skills:
             if fm.get("name") == name or d.name == name:
                 import shutil
+
                 shutil.rmtree(d)
                 logger.info("skill_removed name=%s", name)
                 await sync_skill_catalog(getattr(self, "_ctx", None), self.skills_dir)
@@ -686,6 +722,7 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
         #    or archives that lack SKILL.md)
         if direct.exists() and direct.is_dir():
             import shutil
+
             shutil.rmtree(direct)
             logger.info("skill_dir_removed path=%s", direct)
             await sync_skill_catalog(getattr(self, "_ctx", None), self.skills_dir)
@@ -709,12 +746,14 @@ class RemoveSkillTool(_SkillDirMixin, Tool):  # pyright: ignore[reportIncompatib
 # skill_set_enabled
 # ═══════════════════════════════════════════════════════════════════════
 
+
 class SkillSetEnabledTool(_SkillDirMixin, Tool):  # type: ignore[reportIncompatibleMethodOverride]
     name = "skill_set_enabled"
     category: ClassVar[str] = "Skills"
-    description = ("Enable or disable a skill (skill_list hides / skill_use "
-                   "refuses disabled).")
-    parameters = {
+    description = (
+        "Enable or disable a skill (skill_list hides / skill_use refuses disabled)."
+    )
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "Skill name, from skill_list."},
@@ -734,7 +773,11 @@ class SkillSetEnabledTool(_SkillDirMixin, Tool):  # type: ignore[reportIncompati
 
     @classmethod
     def from_config(cls, cfg: dict, config: "Config | None", ctx=None):  # pyright: ignore[reportIncompatibleMethodOverride]
-        path = config._tools_config_path() if config is not None else get_tools_config_path()
+        path = (
+            config._tools_config_path()
+            if config is not None
+            else get_tools_config_path()
+        )
         tool = cls(skills_dir=cfg.get("skills_dir", ""), config_path=path)
         if ctx is not None:
             object.__setattr__(tool, "_ctx", ctx)

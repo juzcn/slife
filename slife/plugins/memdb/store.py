@@ -18,9 +18,9 @@ from pathlib import Path
 import aiosqlite
 import sqlparse
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.plugins.memdb.search import GREP_SCAN_LIMIT, _clamp_limit
 from slife.timeutil import normalize_time_bound, now_local_seconds
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,7 @@ def semantic_fetch_limit(limit: int, *, windowed: bool) -> int:
     """
     return limit * (_WINDOWED_OVERFETCH if windowed else _UNWINDOWED_OVERFETCH)
 
+
 #: The turn columns a live-context read returns — one spelling, so the
 #: read and any future windowed query over the same rows agree.
 _TURN_COLUMNS = """rowid, user_message, messages, summary, tags,
@@ -86,6 +87,7 @@ def _normalise_turns(rowids) -> list[int]:
         seen.add(rowid)
         turns.append(rowid)
     return turns
+
 
 #: Local ISO-seconds timestamp — the shared helper under the store's name
 #: (memfiles/mcp_gateway stores alias it the same way).
@@ -129,13 +131,12 @@ def _like_where(columns: tuple[str, ...]) -> str:
     Generated from the list rather than spelled out so the placeholder count
     cannot drift away from the columns it belongs to.
     """
-    return "(" + " OR ".join(
-        f"{c} LIKE ? ESCAPE '\\'" for c in columns
-    ) + ")"
+    return "(" + " OR ".join(f"{c} LIKE ? ESCAPE '\\'" for c in columns) + ")"
 
 
 def _like_terms(
-    words: list[str], columns: tuple[str, ...],
+    words: list[str],
+    columns: tuple[str, ...],
 ) -> tuple[str, list[str]]:
     """AND-ed per-word substring predicates over *columns*.
 
@@ -234,7 +235,8 @@ class VecStoreLifecycleMixin:
         self._embedding_model = embedding_model
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(
-            str(self._db_path), timeout=_timeouts.timeouts.storage.sqlite_busy,
+            str(self._db_path),
+            timeout=_timeouts.timeouts.storage.sqlite_busy,
         )
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA journal_mode=WAL")
@@ -254,12 +256,16 @@ class VecStoreLifecycleMixin:
         await self._run_schema()
         logger.info(
             "%s_ready path=%s wal=on vec_dim=%d model=%s",
-            self._store_log_key, self._db_path, self._embedding_dim,
+            self._store_log_key,
+            self._db_path,
+            self._embedding_dim,
             embedding_model or "none",
         )
 
     async def reconfigure_for_embedding(
-        self, embedding_dim: int, embedding_model: str = "",
+        self,
+        embedding_dim: int,
+        embedding_model: str = "",
     ) -> None:
         """Switch the live connection to a real embedding dimension.
 
@@ -273,7 +279,8 @@ class VecStoreLifecycleMixin:
         """
         if self._conn is None:
             await self.setup(
-                embedding_dim=embedding_dim, embedding_model=embedding_model,
+                embedding_dim=embedding_dim,
+                embedding_model=embedding_model,
             )
             return
         self._embedding_dim = embedding_dim
@@ -285,7 +292,8 @@ class VecStoreLifecycleMixin:
         await self._run_schema()
         logger.info(
             "%s_reconfigured vec_dim=%d model=%s",
-            self._store_log_key, self._embedding_dim,
+            self._store_log_key,
+            self._embedding_dim,
             embedding_model or "none",
         )
 
@@ -313,28 +321,32 @@ class VecStoreLifecycleMixin:
             )
             logger.warning(
                 "%s_vec_unavailable err=no_enable_load_extension — semantic "
-                "search disabled (keyword only)", self._store_log_key,
+                "search disabled (keyword only)",
+                self._store_log_key,
             )
             return
         try:
             import sqlite_vec
+
             await self._c.enable_load_extension(True)
             await self._c.load_extension(sqlite_vec.loadable_path())
             await self._c.enable_load_extension(False)
             row = await self._c.execute("SELECT vec_version()")
             version = await row.fetchone() if row else None
             logger.info(
-                "%s_vec_loaded version=%s", self._store_log_key,
+                "%s_vec_loaded version=%s",
+                self._store_log_key,
                 version[0] if version else "unknown",
             )
             self._vec_available = True
             self._vec_reason = ""
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — extension-load probe; any failure disables semantic search
             self._vec_available = False
             self._vec_reason = str(e)
             logger.warning(
-                "%s_vec_unavailable err=%s — semantic search disabled "
-                "(keyword only)", self._store_log_key, e,
+                "%s_vec_unavailable err=%s — semantic search disabled (keyword only)",
+                self._store_log_key,
+                e,
             )
 
     async def _run_schema(self) -> None:
@@ -347,8 +359,10 @@ class VecStoreLifecycleMixin:
         """
         keep = None if self._embedding_dim > 0 else _not_vec0_create
         await run_schema(
-            self._c, self._schema_dir / "schema.sql",
-            self._embedding_dim, keep=keep,
+            self._c,
+            self._schema_dir / "schema.sql",
+            self._embedding_dim,
+            keep=keep,
             log_prefix=f"{self._store_log_key}_schema",
         )
         await self._maybe_migrate_vec_tables()
@@ -388,8 +402,7 @@ class VecStoreLifecycleMixin:
         if self._embedding_dim <= 0:
             return
         cursor = await self._c.execute(
-            f"SELECT value FROM {self._meta_table} "
-            "WHERE key = 'embedding_model'",
+            f"SELECT value FROM {self._meta_table} WHERE key = 'embedding_model'",
         )
         row = await cursor.fetchone()
         stored_model = row[0] if (row and isinstance(row[0], str)) else ""
@@ -425,16 +438,25 @@ class VecStoreLifecycleMixin:
             )
             table_missing = not create_sql
             if (
-                dim_changed or model_changed or metric_changed or table_missing
+                dim_changed
+                or model_changed
+                or metric_changed
+                or table_missing
                 or text_changed
             ):
                 logger.info(
                     "%s_vec_migrate table=%s dim=%s→%s model=%s→%s metric=%s→%s "
                     "text=%s→%s",
-                    self._store_log_key, sem, existing_dim,
-                    self._embedding_dim, stored_model, model_identity,
-                    self._vec_metric(create_sql), schema_metric,
-                    stored_text or "none", self._index_text_version or "none",
+                    self._store_log_key,
+                    sem,
+                    existing_dim,
+                    self._embedding_dim,
+                    stored_model,
+                    model_identity,
+                    self._vec_metric(create_sql),
+                    schema_metric,
+                    stored_text or "none",
+                    self._index_text_version or "none",
                 )
                 await self._c.execute(f"DROP TABLE IF EXISTS {sem}")
                 migrated = True
@@ -442,8 +464,10 @@ class VecStoreLifecycleMixin:
             await self._c.commit()
             # Recreate only the vec0 CREATE statements, at the new width.
             await run_schema(
-                self._c, self._schema_dir / "schema.sql",
-                self._embedding_dim, keep=_vec0_create,
+                self._c,
+                self._schema_dir / "schema.sql",
+                self._embedding_dim,
+                keep=_vec0_create,
                 log_prefix=f"{self._store_log_key}_vec_recreate",
             )
         # Persist the new model identity (the first run records it too).
@@ -480,7 +504,9 @@ class VecStoreLifecycleMixin:
     def _vec_metric(create_sql: str) -> str:
         """The distance metric a vec0 CREATE declares (sqlite-vec's default is L2)."""
         m = re.search(
-            r"distance_metric\s*=\s*(\w+)", create_sql or "", re.IGNORECASE,
+            r"distance_metric\s*=\s*(\w+)",
+            create_sql or "",
+            re.IGNORECASE,
         )
         return m.group(1).lower() if m else "l2"
 
@@ -489,7 +515,7 @@ class VecStoreLifecycleMixin:
         try:
             text = (self._schema_dir / "schema.sql").read_text(encoding="utf-8")
         except OSError:
-            return "l2"          # unreadable schema → do not force a rebuild
+            return "l2"  # unreadable schema → do not force a rebuild
         return self._vec_metric(text)
 
 
@@ -569,7 +595,8 @@ class SessionStore(VecStoreLifecycleMixin):
                 logger.error(
                     "turn_legacy_column prompt_tokens still present — this DB "
                     "predates the context_tokens rename and is NOT migrated; "
-                    "delete and rebuild it (path=%s)", self._db_path,
+                    "delete and rebuild it (path=%s)",
+                    self._db_path,
                 )
             # ``context_turns`` is a turn_meta KEY, not a turn column.
             cursor = await self._c.execute("SELECT COUNT(*) FROM turn")
@@ -584,7 +611,9 @@ class SessionStore(VecStoreLifecycleMixin):
                     "context_turns_absent turns=%d — pre-list DB: the live "
                     "context starts empty; older turns stay searchable via "
                     "turn_search and re-enter as new turns are saved "
-                    "(path=%s)", turns, self._db_path,
+                    "(path=%s)",
+                    turns,
+                    self._db_path,
                 )
             legacy = await self._legacy_diary_turns()
             if legacy:
@@ -594,7 +623,11 @@ class SessionStore(VecStoreLifecycleMixin):
                     "``turn`` table, and the old rows are NOT loaded.  Carry "
                     "them over with `uv run python "
                     "scripts/migrate_memdb_diary_to_turn.py --db %s` "
-                    "(path=%s)", legacy, turns, self._db_path, self._db_path,
+                    "(path=%s)",
+                    legacy,
+                    turns,
+                    self._db_path,
+                    self._db_path,
                 )
         except Exception:
             # These checks ARE the diagnostics: the one-time migration warnings
@@ -602,7 +635,9 @@ class SessionStore(VecStoreLifecycleMixin):
             # makes a broken or half-migrated DB look clean.  A failure here
             # must not break open() — it is logged, not raised.
             logger.warning(
-                "post_schema_check_failed path=%s", self._db_path, exc_info=True,
+                "post_schema_check_failed path=%s",
+                self._db_path,
+                exc_info=True,
             )
 
     async def close(self) -> None:
@@ -667,8 +702,17 @@ class SessionStore(VecStoreLifecycleMixin):
                                       who_helped, what_model, token_count,
                                       context_tokens)
                    VALUES (?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)""",
-                (user_message, messages_json, channel, now, done,
-                 who_helped, what_model, token_count, context_tokens),
+                (
+                    user_message,
+                    messages_json,
+                    channel,
+                    now,
+                    done,
+                    who_helped,
+                    what_model,
+                    token_count,
+                    context_tokens,
+                ),
             )
             rowid = cursor.lastrowid
             assert rowid is not None  # insert just succeeded
@@ -719,7 +763,7 @@ class SessionStore(VecStoreLifecycleMixin):
 
         found: dict[int, dict] = {}
         for start in range(0, len(ordered), _MAX_SQL_VARS):
-            chunk = ordered[start:start + _MAX_SQL_VARS]
+            chunk = ordered[start : start + _MAX_SQL_VARS]
             cursor = await self._c.execute(
                 f"SELECT {_TURN_COLUMNS} FROM turn "
                 f"WHERE rowid IN ({in_placeholders(len(chunk))})",
@@ -733,15 +777,13 @@ class SessionStore(VecStoreLifecycleMixin):
         present = [r for r in ordered if r in found]
         payloads: dict[int, str] = {}
         for start in range(0, len(present), _MAX_SQL_VARS):
-            chunk = present[start:start + _MAX_SQL_VARS]
+            chunk = present[start : start + _MAX_SQL_VARS]
             cur = await self._c.execute(
                 "SELECT turn_id, data FROM turn_channel "
                 f"WHERE turn_id IN ({in_placeholders(len(chunk))})",
                 chunk,
             )
-            payloads.update(
-                {r["turn_id"]: r["data"] for r in await cur.fetchall()}
-            )
+            payloads.update({r["turn_id"]: r["data"] for r in await cur.fetchall()})
 
         turns: list[dict] = []
         for rowid in present:
@@ -841,7 +883,8 @@ class SessionStore(VecStoreLifecycleMixin):
             await self._c.commit()
         logger.info(
             "context_turns_dropped dropped=%d remaining=%d",
-            len(current) - len(remaining), len(remaining),
+            len(current) - len(remaining),
+            len(remaining),
         )
         return remaining
 
@@ -854,8 +897,10 @@ class SessionStore(VecStoreLifecycleMixin):
 
     async def count_turns(
         self,
-        since: str | None = None, until: str | None = None,
-        query: str | None = None, mode: str = "fts5",
+        since: str | None = None,
+        until: str | None = None,
+        query: str | None = None,
+        mode: str = "fts5",
     ) -> dict:
         """Count turns, optionally filtered by time or search query.
 
@@ -871,10 +916,19 @@ class SessionStore(VecStoreLifecycleMixin):
             # different numbers for one query, which is the disagreement the
             # fts5 fallback below already guards against.
             hits = await self._grep_scan(
-                re.compile(query), since, until, hard_limit=GREP_SCAN_LIMIT,
+                re.compile(query),
+                since,
+                until,
+                hard_limit=GREP_SCAN_LIMIT,
             )
-            return {"total": total, "filtered": len(hits), "query": query,
-                    "mode": "grep", "since": since, "until": until}
+            return {
+                "total": total,
+                "filtered": len(hits),
+                "query": query,
+                "mode": "grep",
+                "since": since,
+                "until": until,
+            }
 
         if query and query.strip():
             mode = mode.lower()
@@ -893,8 +947,14 @@ class SessionStore(VecStoreLifecycleMixin):
                 # query over two columns.
                 words = [w for w in query.split() if w]
                 if not words:
-                    return {"total": total, "filtered": 0, "query": query,
-                            "mode": mode, "since": since, "until": until}
+                    return {
+                        "total": total,
+                        "filtered": 0,
+                        "query": query,
+                        "mode": mode,
+                        "since": since,
+                        "until": until,
+                    }
                 where, params = _like_terms(words, _LIKE_COLUMNS)
             else:
                 fts_query = _to_fts5_query(query)
@@ -927,12 +987,19 @@ class SessionStore(VecStoreLifecycleMixin):
                     if not _is_fts_parse_error(e):
                         raise
                     logger.debug(
-                        "turn_count_fts_parse_error query=%s err=%s", query, e,
+                        "turn_count_fts_parse_error query=%s err=%s",
+                        query,
+                        e,
                     )
                     filtered = 0
-                return {"total": total, "filtered": filtered,
-                        "query": query, "mode": mode,
-                        "since": since, "until": until}
+                return {
+                    "total": total,
+                    "filtered": filtered,
+                    "query": query,
+                    "mode": mode,
+                    "since": since,
+                    "until": until,
+                }
 
             if since:
                 since = normalize_time_bound(since, role="since")
@@ -943,7 +1010,8 @@ class SessionStore(VecStoreLifecycleMixin):
                 where += " AND created_at <= ?"
                 params.append(until)
             row2 = await self._c.execute(
-                f"SELECT COUNT(*) FROM turn WHERE {where}", params,
+                f"SELECT COUNT(*) FROM turn WHERE {where}",
+                params,
             )
             count_row = await row2.fetchone()
             filtered = count_row[0] if count_row else 0
@@ -960,16 +1028,22 @@ class SessionStore(VecStoreLifecycleMixin):
                 params.append(until)
             where = " AND ".join(clauses)
             row2 = await self._c.execute(
-                f"SELECT COUNT(*) FROM turn WHERE {where}", params,
+                f"SELECT COUNT(*) FROM turn WHERE {where}",
+                params,
             )
             count_row = await row2.fetchone()
             filtered = count_row[0] if count_row else 0
         else:
             filtered = total
 
-        return {"total": total, "filtered": filtered,
-                "since": since, "until": until,
-                "query": query, "mode": mode if query else None}
+        return {
+            "total": total,
+            "filtered": filtered,
+            "since": since,
+            "until": until,
+            "query": query,
+            "mode": mode if query else None,
+        }
 
     async def token_usage(
         self,
@@ -1027,10 +1101,8 @@ class SessionStore(VecStoreLifecycleMixin):
                 "count": len(rows),
                 "total_token_count": total_billed,
                 "total_context_tokens": total_context,
-                "avg_token_count": (total_billed // len(rows))
-                if rows else 0,
-                "avg_context_tokens": (total_context // len(rows))
-                if rows else 0,
+                "avg_token_count": (total_billed // len(rows)) if rows else 0,
+                "avg_context_tokens": (total_context // len(rows)) if rows else 0,
             },
             "filters": {"turn_id": rowid, "since": since, "until": until},
         }
@@ -1038,8 +1110,10 @@ class SessionStore(VecStoreLifecycleMixin):
     # ── Summarize ──────────────────────────────────────────────────
 
     async def update_summary(
-        self, rowid: int,
-        summary: str | None = None, tags: str | None = None,
+        self,
+        rowid: int,
+        summary: str | None = None,
+        tags: str | None = None,
     ) -> int:
         """Write summary and/or tags for a turn; returns the rows changed.
 
@@ -1072,8 +1146,11 @@ class SessionStore(VecStoreLifecycleMixin):
     # ── Search ──────────────────────────────────────────────────────
 
     async def search_keyword(
-        self, query: str, limit: int = 20,
-        since: str | None = None, until: str | None = None,
+        self,
+        query: str,
+        limit: int = 20,
+        since: str | None = None,
+        until: str | None = None,
     ) -> list[dict]:
         """FTS5 keyword search with snippet highlighting."""
         limit = _clamp_limit(limit)
@@ -1084,7 +1161,10 @@ class SessionStore(VecStoreLifecycleMixin):
         # merge_hybrid are agnostic to the backend).
         if _contains_cjk(query):
             return await self._search_like(
-                query, limit=limit, since=since, until=until,
+                query,
+                limit=limit,
+                since=since,
+                until=until,
             )
         fts_query = _to_fts5_query(query)
         time_clauses = ""
@@ -1119,8 +1199,11 @@ class SessionStore(VecStoreLifecycleMixin):
             return []
 
     async def _search_like(
-        self, pattern: str, limit: int,
-        since: str | None = None, until: str | None = None,
+        self,
+        pattern: str,
+        limit: int,
+        since: str | None = None,
+        until: str | None = None,
     ) -> list[dict]:
         """Substring (LIKE) search over the searchable columns.
 
@@ -1168,8 +1251,11 @@ class SessionStore(VecStoreLifecycleMixin):
         return results
 
     async def search_semantic(
-        self, embedding: list[float], limit: int = 20,
-        since: str | None = None, until: str | None = None,
+        self,
+        embedding: list[float],
+        limit: int = 20,
+        since: str | None = None,
+        until: str | None = None,
     ) -> list[dict]:
         """sqlite-vec KNN on turn_embedding, deduplicated by turn_rowid.
 
@@ -1225,7 +1311,9 @@ class SessionStore(VecStoreLifecycleMixin):
                 f"SELECT rowid, user_message FROM turn WHERE rowid IN ({ph})",
                 rowids,
             )
-            msgs = {r["rowid"]: r["user_message"] for r in await _fetch_all_bounded(cur)}
+            msgs = {
+                r["rowid"]: r["user_message"] for r in await _fetch_all_bounded(cur)
+            }
             for r in results:
                 r["user_message"] = msgs.get(r["turn_rowid"], "")
         logger.debug("search_semantic hits=%s", len(results))
@@ -1233,7 +1321,8 @@ class SessionStore(VecStoreLifecycleMixin):
 
     @staticmethod
     def _time_window(
-        since: str | None, until: str | None,
+        since: str | None,
+        until: str | None,
     ) -> tuple[str, list[str]]:
         """``(where, params)`` for the ``created_at`` window.
 
@@ -1253,8 +1342,12 @@ class SessionStore(VecStoreLifecycleMixin):
         return where, params
 
     async def turn_list(
-        self, since: str | None = None, until: str | None = None,
-        limit: int = 50, offset: int = 0, newest_first: bool = True,
+        self,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        newest_first: bool = True,
     ) -> dict:
         """Browse turns, newest first, within an optional time window.
 
@@ -1292,13 +1385,19 @@ class SessionStore(VecStoreLifecycleMixin):
         entries = [dict(row) for row in await _fetch_all_bounded(cursor)]
         logger.debug(
             "turn_list since=%s until=%s offset=%s entries=%s total=%s",
-            since, until, offset, len(entries), total,
+            since,
+            until,
+            offset,
+            len(entries),
+            total,
         )
         return {"entries": entries, "total": total}
 
     async def search_time(
-        self, limit: int = 20,
-        since: str | None = None, until: str | None = None,
+        self,
+        limit: int = 20,
+        since: str | None = None,
+        until: str | None = None,
         newest_first: bool = True,
     ) -> list[dict]:
         """Time-range browsing of turns — the recall selector's window.
@@ -1312,12 +1411,18 @@ class SessionStore(VecStoreLifecycleMixin):
         takes in order, so the end that leads is the end the budget starts at.
         """
         result = await self.turn_list(
-            since=since, until=until, limit=limit, newest_first=newest_first,
+            since=since,
+            until=until,
+            limit=limit,
+            newest_first=newest_first,
         )
         return result["entries"]
 
     async def _grep_scan(
-        self, rx: "re.Pattern", since: str | None, until: str | None,
+        self,
+        rx: "re.Pattern",
+        since: str | None,
+        until: str | None,
         hard_limit: int,
     ) -> list[dict]:
         """Rows whose text matches *rx*, newest first, at most *hard_limit*.
@@ -1347,8 +1452,10 @@ class SessionStore(VecStoreLifecycleMixin):
         hits: list[dict] = []
         for row in await _fetch_all_bounded(cursor):
             r = dict(row)
-            if not (rx.search(r.get("user_message") or "")
-                    or rx.search(r.get("messages") or "")):
+            if not (
+                rx.search(r.get("user_message") or "")
+                or rx.search(r.get("messages") or "")
+            ):
                 continue
             hits.append(r)
             if len(hits) >= hard_limit:
@@ -1363,12 +1470,15 @@ class SessionStore(VecStoreLifecycleMixin):
             m = rx.search(text)
             if m is not None:
                 start = max(0, m.start() - 40)
-                return text[start:start + 160]
+                return text[start : start + 160]
         return ""
 
     async def search_grep(
-        self, pattern: str, limit: int = 20,
-        since: str | None = None, until: str | None = None,
+        self,
+        pattern: str,
+        limit: int = 20,
+        since: str | None = None,
+        until: str | None = None,
     ) -> list[dict]:
         """REGEX search over user_message + messages — a real ``grep``.
 
@@ -1395,9 +1505,10 @@ class SessionStore(VecStoreLifecycleMixin):
 
     # ── Embedding ───────────────────────────────────────────────────
 
-
     async def replace_embedding_chunks(
-        self, doc: dict, embeddings: list[list[float]],
+        self,
+        doc: dict,
+        embeddings: list[list[float]],
     ) -> None:
         """Atomically replace a document's embedding chunks.
 
@@ -1436,7 +1547,8 @@ class SessionStore(VecStoreLifecycleMixin):
                 raise
         logger.debug(
             "embedding_chunks_replaced turn_rowid=%s chunks=%d",
-            turn_rowid, len(vec_blobs),
+            turn_rowid,
+            len(vec_blobs),
         )
 
     # A turn is "embeddable" when :func:`_turn_text_for_embedding` would render
@@ -1489,15 +1601,18 @@ class SessionStore(VecStoreLifecycleMixin):
         docs = []
         for row in await cursor.fetchall():
             r = dict(row)
-            docs.append({
-                "doc_id": r["doc_id"],
-                "text": _turn_text_for_embedding(
-                    r["user_message"], _loaded_messages(r.get("messages")),
-                ),
-                "summary": r.get("summary", ""),
-                "tags": r.get("tags", ""),
-                "created_at": r.get("created_at", ""),
-            })
+            docs.append(
+                {
+                    "doc_id": r["doc_id"],
+                    "text": _turn_text_for_embedding(
+                        r["user_message"],
+                        _loaded_messages(r.get("messages")),
+                    ),
+                    "summary": r.get("summary", ""),
+                    "tags": r.get("tags", ""),
+                    "created_at": r.get("created_at", ""),
+                }
+            )
         return docs
 
     async def count_unembedded(self) -> int:
@@ -1513,6 +1628,7 @@ class SessionStore(VecStoreLifecycleMixin):
         )
         row = await cursor.fetchone()
         return row[0] if row else 0
+
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -1571,7 +1687,7 @@ async def run_schema(
         await _drop_view_if_redefined(conn, stmt, log_prefix)
         try:
             await conn.execute(stmt)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — one failed DDL statement must not abort the schema run
             # A failed CREATE TRIGGER / FTS / vec0 statement leaves the index
             # missing with no production signal — log it loudly (DEBUG would
             # silently hide a structurally broken DB).
@@ -1607,7 +1723,8 @@ async def _drop_view_if_redefined(conn, stmt: str, log_prefix: str) -> None:
     name = match.group(1)
     want = _normalize_ddl(f"CREATE VIEW {name} AS {match.group(2)}")
     cursor = await conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?", (name,),
+        "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?",
+        (name,),
     )
     row = await cursor.fetchone()
     have = row[0] if (row and isinstance(row[0], str)) else ""
@@ -1641,6 +1758,7 @@ def _split_sql(sql_text: str) -> list[str]:
 #: the command); its arguments are unbounded (a file body, a rendered page),
 #: so keeping all of them would let one call own the whole chunk.
 TOOL_ARG_CHARS = 400
+
 
 def _loaded_messages(raw: str | None) -> list[dict]:
     """The ``messages`` column as a list — ``[]`` when it will not parse.
@@ -1703,8 +1821,8 @@ def _turn_text_for_embedding(user_message: str, messages: list[dict]) -> str:
 
 # ── Chunking ────────────────────────────────────────────────────────
 
-CHUNK_SIZE_CHARS = 2000     # ~500 tokens — well under bge-m3's 8192 limit
-CHUNK_OVERLAP_LINES = 1     # carry last paragraph into the next chunk
+CHUNK_SIZE_CHARS = 2000  # ~500 tokens — well under bge-m3's 8192 limit
+CHUNK_OVERLAP_LINES = 1  # carry last paragraph into the next chunk
 
 
 def _chunk_text(
@@ -1797,10 +1915,7 @@ def _contains_cjk(text: str) -> bool:
     a longer stored turn.  Substring (LIKE) matching is what Chinese users
     expect, so search_keyword routes CJK queries to it.
     """
-    return any(
-        "㐀" <= ch <= "䶿" or "一" <= ch <= "鿿"
-        for ch in text
-    )
+    return any("㐀" <= ch <= "䶿" or "一" <= ch <= "鿿" for ch in text)
 
 
 #: Characters FTS5 treats as query operators/grouping when unquoted (parens,
@@ -1839,7 +1954,7 @@ def _is_fts_parse_error(exc: BaseException) -> bool:
 
 
 def _to_fts5_query(query: str) -> str:
-    cleaned = query.replace('"', '').replace("'", "").replace("*", "")
+    cleaned = query.replace('"', "").replace("'", "").replace("*", "")
     words = cleaned.split()
     if not words:
         return '""'
@@ -1851,9 +1966,7 @@ def _to_fts5_query(query: str) -> str:
         # special characters (which would otherwise raise a MATCH syntax
         # error, e.g. a lone '(').  Inside double quotes those characters are
         # literal phrase content, never operators.
-        if low in ("and", "or", "not", "near") or any(
-            c in _FTS_SPECIALS for c in w
-        ):
+        if low in ("and", "or", "not", "near") or any(c in _FTS_SPECIALS for c in w):
             # A token that is PURELY operators (e.g. "-" or "(") has no search
             # content — drop it rather than emit an empty phrase.
             inner = w.strip("()[]{}:^~+-,.")

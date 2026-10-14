@@ -1,12 +1,13 @@
 """Tests for slife.threads — daemon-thread helper run_daemon."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
 import threading
 
+import pytest
+
 from slife.threads import run_daemon
+
+pytestmark = pytest.mark.unit
 
 
 class TestRunDaemon:
@@ -20,6 +21,7 @@ class TestRunDaemon:
     @pytest.mark.asyncio
     async def test_forwards_exception(self):
         """Exceptions raised on the daemon thread propagate to the awaiter."""
+
         def boom() -> None:
             raise ValueError("nope")
 
@@ -41,5 +43,5 @@ class TestRunDaemon:
     @pytest.mark.asyncio
     async def test_fire_and_forget_is_safe(self):
         """Dropping the Future without awaiting neither raises nor hangs."""
-        run_daemon(lambda: None, name="t")  # noqa: B018 - deliberate drop
+        run_daemon(lambda: None, name="t")
         await asyncio.sleep(0.05)  # let the thread finish and be GC'd

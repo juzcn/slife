@@ -19,22 +19,37 @@ Read through the AST rather than importing, which is what keeps this check
 inside the boundary above (the same way ``test_no_magic_timeouts`` reads
 sources instead of running them).
 """
+
 from __future__ import annotations
 
-import pytest; pytestmark = pytest.mark.unit
-
 import ast
+import importlib.util
 from pathlib import Path
+
+import pytest
+
+pytestmark = pytest.mark.unit
 
 ROOT = Path(__file__).resolve().parents[1]
 
-#: The two copies, and whether a missing one is a failure or a skip.  The
-#: slife copy always ships; the local-embed SOURCE is absent when slife is
-#: installed from a wheel without the workspace, so it skips there.
-SOURCES = {
-    "slife": ROOT / "slife" / "plugins" / "memdb" / "embeddings.py",
-    "local-embed": ROOT / "local-embed" / "local_embed" / "engine.py",
-}
+#: slife's own copy — this tree always has it.
+SLIFE_TABLE = ROOT / "slife" / "plugins" / "memdb" / "embeddings.py"
+
+
+def _local_embed_engine() -> Path:
+    """The installed ``local_embed/engine.py``, located without importing it.
+
+    local-embed ships from PyPI now, so the table is read from the installed
+    distribution rather than a source directory in this repo.  ``find_spec``
+    on the top-level name locates the package without executing it — importing
+    a *submodule* would import the parent, which would break the no-import
+    boundary this gate is built on (see the module docstring).
+    """
+    spec = importlib.util.find_spec("local_embed")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.fail("local-embed is not installed (a runtime dependency of slife)")
+    return Path(next(iter(spec.submodule_search_locations))) / "engine.py"
+
 
 #: The names that make up the table — the mapping and its two fallbacks.
 WANTED = ("_KNOWN_MODELS", "_DEFAULT_DIM", "_DEFAULT_MAX_TOKENS")
@@ -58,17 +73,17 @@ def _literals(path: Path) -> dict:
 
 
 def test_both_copies_of_the_embedding_table_agree():
-    missing = {k: p for k, p in SOURCES.items() if not p.exists()}
-    if "slife" in missing:
-        pytest.fail(f"the slife table is missing: {missing['slife']}")
-    if missing:
-        pytest.skip(f"source not in this checkout: {sorted(missing)}")
+    engine = _local_embed_engine()
+    if not engine.is_file():
+        pytest.fail(f"the local-embed table is missing: {engine}")
 
-    slife = _literals(SOURCES["slife"])
-    local = _literals(SOURCES["local-embed"])
+    slife = _literals(SLIFE_TABLE)
+    local = _literals(engine)
 
     assert set(slife) == set(WANTED), f"missing from slife: {set(WANTED) - set(slife)}"
-    assert set(local) == set(WANTED), f"missing from local-embed: {set(WANTED) - set(local)}"
+    assert set(local) == set(WANTED), (
+        f"missing from local-embed: {set(WANTED) - set(local)}"
+    )
     # Field by field, so a failure names the value rather than printing two
     # whole dicts.
     for name in WANTED:

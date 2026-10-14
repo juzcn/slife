@@ -14,8 +14,9 @@ on cancel).  The caller performs the actual switch.
 from __future__ import annotations
 
 import asyncio
+from typing import ClassVar
 
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.content import Content
 from textual.widgets import Static
 
@@ -42,7 +43,7 @@ class ModelPicker(Static):
     # Priority bindings fire in Textual's priority pass (App → … → this
     # widget) BEFORE ChatView's printable-key redirect and the App's
     # non-priority escape -> cancel — same as ApprovalPrompt.
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("up", "cursor_up", "Up", priority=True),
         Binding("down", "cursor_down", "Down", priority=True),
         Binding("enter", "pick", "Pick", priority=True),
@@ -63,9 +64,7 @@ class ModelPicker(Static):
         self._choice: ModelConfig | None = None
         # Cursor opens on the active model, so a bare Enter switches to the
         # current selection without any navigation.
-        self._cursor = next(
-            (i for i, m in enumerate(models) if m.ref == active_ref), 0
-        )
+        self._cursor = next((i for i, m in enumerate(models) if m.ref == active_ref), 0)
         # Reuse the approval-prompt visual style (unified with approve).
         self.add_class("approval-prompt")
         self.update(self._build_content())

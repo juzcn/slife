@@ -1,20 +1,19 @@
 """Tests for Slife.config — configuration loading and model definitions."""
 
-import pytest; pytestmark = pytest.mark.unit
-
 
 # pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 
 import json
 import logging
 import os
+from pathlib import Path
 
 import pytest
-from pathlib import Path
 
 from slife.config import DEFAULT_CONTEXT_WINDOW, Config, ModelConfig
 from tests.conftest import dump_config, load_config_text
 
+pytestmark = pytest.mark.unit
 
 # ── ModelConfig.from_dict ─────────────────────────────────────────────
 
@@ -24,10 +23,12 @@ class TestModelConfigFromDict:
 
     def test_minimal_dict(self):
         """Minimal valid model entry."""
-        mc = ModelConfig.from_dict({
-            "model": "gpt-4o",
-            "api_key": "sk-test",
-        })
+        mc = ModelConfig.from_dict(
+            {
+                "model": "gpt-4o",
+                "api_key": "sk-test",
+            }
+        )
         assert mc.api_model == "gpt-4o"
         assert mc.ref == "unknown/gpt-4o"
         assert mc.display_name == "gpt-4o"
@@ -37,31 +38,35 @@ class TestModelConfigFromDict:
 
     def test_model_with_provider_prefix(self):
         """model field may contain provider/model format."""
-        mc = ModelConfig.from_dict({
-            "model": "openai/gpt-4o",
-            "api_key": "sk-test",
-        })
+        mc = ModelConfig.from_dict(
+            {
+                "model": "openai/gpt-4o",
+                "api_key": "sk-test",
+            }
+        )
         assert mc.provider == "openai"
         assert mc.api_model == "openai/gpt-4o"
         assert mc.ref == "openai/gpt-4o"
 
     def test_all_fields(self):
         """Full field set from dict."""
-        mc = ModelConfig.from_dict({
-            "model": "deepseek-v4-flash",
-            "provider": "deepseek",
-            "name": "DeepSeek V4 Flash",
-            "api_key": "sk-key",
-            "base_url": "https://custom.api/v1",
-            "api": "openai-completions",
-            "input": ["text", "image"],
-            "max_tokens": 8192,
-            "context_window": 200000,
-            "temperature": 0.5,
-            "top_p": 0.95,
-            "reasoning": True,
-            "reasoning_effort": "medium",
-        })
+        mc = ModelConfig.from_dict(
+            {
+                "model": "deepseek-v4-flash",
+                "provider": "deepseek",
+                "name": "DeepSeek V4 Flash",
+                "api_key": "sk-key",
+                "base_url": "https://custom.api/v1",
+                "api": "openai-completions",
+                "input": ["text", "image"],
+                "max_tokens": 8192,
+                "context_window": 200000,
+                "temperature": 0.5,
+                "top_p": 0.95,
+                "reasoning": True,
+                "reasoning_effort": "medium",
+            }
+        )
         assert mc.display_name == "DeepSeek V4 Flash"
         assert mc.base_url == "https://custom.api/v1"
         assert mc.supports_vision is True
@@ -75,37 +80,45 @@ class TestModelConfigFromDict:
 
     def test_reasoning_missing_disables_thinking(self):
         """Absent reasoning key → thinking disabled."""
-        mc = ModelConfig.from_dict({
-            "model": "test",
-            "api_key": "key",
-        })
+        mc = ModelConfig.from_dict(
+            {
+                "model": "test",
+                "api_key": "key",
+            }
+        )
         assert mc.thinking_enabled is False
 
     def test_supports_vision_from_input_list(self):
         """input: ['image'] sets supports_vision."""
-        mc = ModelConfig.from_dict({
-            "model": "test",
-            "api_key": "key",
-            "input": ["image"],
-        })
+        mc = ModelConfig.from_dict(
+            {
+                "model": "test",
+                "api_key": "key",
+                "input": ["image"],
+            }
+        )
         assert mc.supports_vision is True
 
     def test_supports_vision_text_only(self):
         """input: ['text'] does not set supports_vision."""
-        mc = ModelConfig.from_dict({
-            "model": "test",
-            "api_key": "key",
-            "input": ["text"],
-        })
+        mc = ModelConfig.from_dict(
+            {
+                "model": "test",
+                "api_key": "key",
+                "input": ["text"],
+            }
+        )
         assert mc.supports_vision is False
 
     def test_empty_input_list(self):
         """Empty input list → no vision."""
-        mc = ModelConfig.from_dict({
-            "model": "test",
-            "api_key": "key",
-            "input": [],
-        })
+        mc = ModelConfig.from_dict(
+            {
+                "model": "test",
+                "api_key": "key",
+                "input": [],
+            }
+        )
         assert mc.supports_vision is False
 
     @pytest.mark.parametrize("value", [0, -5, None, "abc"])
@@ -117,25 +130,33 @@ class TestModelConfigFromDict:
         after every save, and it zeroed the live tool-result cap — the model
         destroyed its own ongoing context with nothing said.
         """
-        mc = ModelConfig.from_dict({
-            "model": "test-model", "api_key": "test-key",
-            "context_window": value,
-        })
+        mc = ModelConfig.from_dict(
+            {
+                "model": "test-model",
+                "api_key": "test-key",
+                "context_window": value,
+            }
+        )
         assert mc.context_window == DEFAULT_CONTEXT_WINDOW
 
     def test_a_usable_window_is_kept(self):
-        mc = ModelConfig.from_dict({
-            "model": "test-model", "api_key": "test-key",
-            "context_window": 65536,
-        })
+        mc = ModelConfig.from_dict(
+            {
+                "model": "test-model",
+                "api_key": "test-key",
+                "context_window": 65536,
+            }
+        )
         assert mc.context_window == 65536
 
     def test_defaults_applied(self):
         """Missing optional fields get sensible defaults."""
-        mc = ModelConfig.from_dict({
-            "model": "test-model",
-            "api_key": "test-key",
-        })
+        mc = ModelConfig.from_dict(
+            {
+                "model": "test-model",
+                "api_key": "test-key",
+            }
+        )
         # A10: no implicit DeepSeek host — an entry that omits base_url gets
         # "" (unconfigured), never silently sent to api.deepseek.com.
         assert mc.base_url == ""
@@ -152,29 +173,35 @@ class TestModelConfigFromDict:
         """A10 regression: a non-DeepSeek model that omits base_url must NOT
         silently default to api.deepseek.com — its key would be sent to the
         wrong host.  It stays unconfigured ("") instead."""
-        mc = ModelConfig.from_dict({
-            "model": "gpt-4o-mini",  # e.g. an OpenAI-compatible gateway
-            "provider": "openai",
-            "api_key": "sk-mine",
-        })
+        mc = ModelConfig.from_dict(
+            {
+                "model": "gpt-4o-mini",  # e.g. an OpenAI-compatible gateway
+                "provider": "openai",
+                "api_key": "sk-mine",
+            }
+        )
         assert mc.base_url == ""  # never "https://api.deepseek.com"
 
     def test_reasoning_truthy_values(self):
         """Non-boolean truthy reasoning values become True."""
-        mc = ModelConfig.from_dict({
-            "model": "test",
-            "api_key": "key",
-            "reasoning": 1,
-        })
+        mc = ModelConfig.from_dict(
+            {
+                "model": "test",
+                "api_key": "key",
+                "reasoning": 1,
+            }
+        )
         assert mc.thinking_enabled is True
 
     def test_reasoning_falsy_values(self):
         """Falsy reasoning values become False."""
-        mc = ModelConfig.from_dict({
-            "model": "test",
-            "api_key": "key",
-            "reasoning": 0,
-        })
+        mc = ModelConfig.from_dict(
+            {
+                "model": "test",
+                "api_key": "key",
+                "reasoning": 0,
+            }
+        )
         assert mc.thinking_enabled is False
 
 
@@ -195,18 +222,22 @@ class TestConfigFromYAML:
         """Minimal valid YAML config with providers."""
         monkeypatch.setenv("DEEPSEEK_KEY", "env-key")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "deepseek": {
-                        "api_key": "${DEEPSEEK_KEY}",
-                        "models": [
-                            {"model": "deepseek-v4-flash", "name": "Dv4 Flash"}
-                        ],
-                    }
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "deepseek": {
+                                "api_key": "${DEEPSEEK_KEY}",
+                                "models": [
+                                    {"model": "deepseek-v4-flash", "name": "Dv4 Flash"}
+                                ],
+                            }
+                        }
+                    },
                 }
-            },
-        }))
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert len(config.models) == 1
         assert config.models[0].api_key == "env-key"
@@ -231,12 +262,20 @@ class TestConfigFromYAML:
     def test_list_style_models(self, tmp_path):
         """Config with models as a flat list."""
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": [
-                {"model": "gpt-4o", "api_key": "sk-key", "provider": "openai"},
-                {"model": "claude-3", "api_key": "sk-other", "provider": "anthropic"},
-            ],
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": [
+                        {"model": "gpt-4o", "api_key": "sk-key", "provider": "openai"},
+                        {
+                            "model": "claude-3",
+                            "api_key": "sk-other",
+                            "provider": "anthropic",
+                        },
+                    ],
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert len(config.models) == 2
         assert config.models[0].ref == "openai/gpt-4o"
@@ -250,13 +289,26 @@ class TestConfigFromYAML:
         """
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {"providers": {"d": {"api_key": "${KEY}", "models": [{"model": "m"}]}}},
-            "plugins": {
-                "required": ["memdb", "memfiles"],
-                "external": [{"name": "mcp", "module": "slife.plugins.mcp_gateway.server"}],
-            },
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "d": {"api_key": "${KEY}", "models": [{"model": "m"}]}
+                        }
+                    },
+                    "plugins": {
+                        "required": ["memdb", "memfiles"],
+                        "external": [
+                            {
+                                "name": "mcp",
+                                "module": "slife.plugins.mcp_gateway.server",
+                            }
+                        ],
+                    },
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert config.plugins_required == frozenset({"memdb", "memfiles"})
         # external is no longer parsed onto the Config.
@@ -266,9 +318,17 @@ class TestConfigFromYAML:
         """Absent plugins.required means every plugin is optional (default false)."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {"providers": {"d": {"api_key": "${KEY}", "models": [{"model": "m"}]}}},
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "d": {"api_key": "${KEY}", "models": [{"model": "m"}]}
+                        }
+                    },
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert config.plugins_required == frozenset()
 
@@ -276,17 +336,33 @@ class TestConfigFromYAML:
         """Non-list value and non-string entries degrade to an empty/safe set."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {"providers": {"d": {"api_key": "${KEY}", "models": [{"model": "m"}]}}},
-            "plugins": {"required": "memdb"},
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "d": {"api_key": "${KEY}", "models": [{"model": "m"}]}
+                        }
+                    },
+                    "plugins": {"required": "memdb"},
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert config.plugins_required == frozenset()
 
-        cfg_path.write_text(dump_config({
-            "models": {"providers": {"d": {"api_key": "${KEY}", "models": [{"model": "m"}]}}},
-            "plugins": {"required": ["memdb", 42, None]},
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "d": {"api_key": "${KEY}", "models": [{"model": "m"}]}
+                        }
+                    },
+                    "plugins": {"required": ["memdb", 42, None]},
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert config.plugins_required == frozenset({"memdb"})
 
@@ -316,18 +392,32 @@ class TestConfigFromYAML:
         schema that is under test, not today's field set.
         """
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {"providers": {"d": {
-                "api_key": "k",
-                "models": [{"model": "m", "input": ["text", "image"]}],
-            }}},
-            "embeddings": {"providers": {"local": {
-                "base_url": "http://127.0.0.1:1/v1", "api_key": "k",
-                "model": "bge-m3",
-            }}, "active_model": "local"},
-            "plugins": {"required": ["memdb"]},
-            "tools": {"job": [{"name": "j", "enabled": False}]},
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "d": {
+                                "api_key": "k",
+                                "models": [{"model": "m", "input": ["text", "image"]}],
+                            }
+                        }
+                    },
+                    "embeddings": {
+                        "providers": {
+                            "local": {
+                                "base_url": "http://127.0.0.1:1/v1",
+                                "api_key": "k",
+                                "model": "bge-m3",
+                            }
+                        },
+                        "active_model": "local",
+                    },
+                    "plugins": {"required": ["memdb"]},
+                    "tools": {"job": [{"name": "j", "enabled": False}]},
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
 
         # JSON is what actually rides the wire (a 0600 temp file of json.dumps).
@@ -337,8 +427,9 @@ class TestConfigFromYAML:
 
         # The facts that were lost before, asserted by name so a regression
         # reads as itself rather than as "some field differs".
-        assert inherited.embeddings_config.providers == ("local",) or \
-            set(inherited.embeddings_config.providers) == {"local"}
+        assert inherited.embeddings_config.providers == ("local",) or set(
+            inherited.embeddings_config.providers
+        ) == {"local"}
         assert inherited.embeddings_config.active_model == "local"
         assert inherited.memory_tool_result_chars == config.memory_tool_result_chars
         assert inherited.tool_load_threshold == config.tool_load_threshold
@@ -354,46 +445,54 @@ class TestConfigFromYAML:
     def test_active_model_selection(self, tmp_path):
         """active_model field selects which model is active."""
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "deepseek": {
-                        "api_key": "sk-key",
-                        "models": [
-                            {"model": "v4-flash", "name": "Flash"},
-                            {"model": "v4-pro", "name": "Pro"},
-                        ],
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "deepseek": {
+                                "api_key": "sk-key",
+                                "models": [
+                                    {"model": "v4-flash", "name": "Flash"},
+                                    {"model": "v4-pro", "name": "Pro"},
+                                ],
+                            },
+                            "openai": {
+                                "api_key": "sk-oai",
+                                "models": [
+                                    {"model": "gpt-4o", "name": "GPT-4o"},
+                                ],
+                            },
+                        }
                     },
-                    "openai": {
-                        "api_key": "sk-oai",
-                        "models": [
-                            {"model": "gpt-4o", "name": "GPT-4o"},
-                        ],
-                    },
+                    "active_model": "openai/gpt-4o",
                 }
-            },
-            "active_model": "openai/gpt-4o",
-        }))
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert config.active_model.ref == "openai/gpt-4o"
 
     def test_stale_active_model_falls_back(self, tmp_path, caplog):
         """Stale active_model ref falls back to first model, no crash."""
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "deepseek": {
-                        "api_key": "sk-key",
-                        "models": [
-                            {"model": "v4-flash", "name": "Flash"},
-                            {"model": "v4-pro", "name": "Pro"},
-                        ],
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "deepseek": {
+                                "api_key": "sk-key",
+                                "models": [
+                                    {"model": "v4-flash", "name": "Flash"},
+                                    {"model": "v4-pro", "name": "Pro"},
+                                ],
+                            },
+                        }
                     },
+                    "active_model": "removed-provider/gone-model",
                 }
-            },
-            "active_model": "removed-provider/gone-model",
-        }))
+            )
+        )
         with caplog.at_level(logging.WARNING, logger="slife.config"):
             config = Config.from_yaml(str(cfg_path))
         assert config.active_model_ref == "deepseek/v4-flash"
@@ -411,19 +510,23 @@ class TestConfigFromYAML:
         """Agent section configures max_iterations."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "d": {
-                        "api_key": "${KEY}",
-                        "models": [{"model": "m"}],
-                    }
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "d": {
+                                "api_key": "${KEY}",
+                                "models": [{"model": "m"}],
+                            }
+                        }
+                    },
+                    "agent": {
+                        "max_iterations": 5,
+                    },
                 }
-            },
-            "agent": {
-                "max_iterations": 5,
-            },
-        }))
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert config.max_iterations == 5
 
@@ -431,22 +534,30 @@ class TestConfigFromYAML:
         """tools.yaml ``builtin`` section is loaded into Config.tools."""
         monkeypatch.setenv("MY_KEY", "my-key-value")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "d": {
-                        "api_key": "sk-key",
-                        "models": [{"model": "m"}],
-                    }
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "d": {
+                                "api_key": "sk-key",
+                                "models": [{"model": "m"}],
+                            }
+                        }
+                    },
                 }
-            },
-        }))
-        (tmp_path / "tools.yaml").write_text(dump_config({
-            "builtin": [
-                {"name": "execute_shell", "timeout": 60},
-                {"name": "run_python_script"},
-            ],
-        }))
+            )
+        )
+        (tmp_path / "tools.yaml").write_text(
+            dump_config(
+                {
+                    "builtin": [
+                        {"name": "execute_shell", "timeout": 60},
+                        {"name": "run_python_script"},
+                    ],
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert len(config.tools) == 2
         assert config.tools[0] == {"name": "execute_shell", "timeout": 60}
@@ -456,19 +567,23 @@ class TestConfigFromYAML:
         """The same model ID listed twice in one provider raises ValueError."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "deepseek": {
-                        "api_key": "${KEY}",
-                        "models": [
-                            {"model": "same-name", "name": "First"},
-                            {"model": "same-name", "name": "Second"},
-                        ],
-                    }
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "deepseek": {
+                                "api_key": "${KEY}",
+                                "models": [
+                                    {"model": "same-name", "name": "First"},
+                                    {"model": "same-name", "name": "Second"},
+                                ],
+                            }
+                        }
+                    },
                 }
-            },
-        }))
+            )
+        )
         with pytest.raises(ValueError, match="Duplicate model"):
             Config.from_yaml(str(cfg_path))
 
@@ -482,19 +597,23 @@ class TestConfigFromYAML:
         """
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "gw": {
-                        "api_key": "${KEY}",
-                        "models": [
-                            {"model": "meta-llama/llama-3-70b"},
-                            {"model": "nousresearch/llama-3-70b"},
-                        ],
-                    }
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "gw": {
+                                "api_key": "${KEY}",
+                                "models": [
+                                    {"model": "meta-llama/llama-3-70b"},
+                                    {"model": "nousresearch/llama-3-70b"},
+                                ],
+                            }
+                        }
+                    },
                 }
-            },
-        }))
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert [m.ref for m in config.models] == [
             "gw/meta-llama/llama-3-70b",
@@ -505,20 +624,24 @@ class TestConfigFromYAML:
         """Models inherit base_url and api_key from provider."""
         monkeypatch.setenv("KEY", "parent-key")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "deepseek": {
-                        "base_url": "https://custom.deepseek.com",
-                        "api_key": "${KEY}",
-                        "api": "openai-completions",
-                        "models": [
-                            {"model": "v4-flash"},
-                        ],
-                    }
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "deepseek": {
+                                "base_url": "https://custom.deepseek.com",
+                                "api_key": "${KEY}",
+                                "api": "openai-completions",
+                                "models": [
+                                    {"model": "v4-flash"},
+                                ],
+                            }
+                        }
+                    },
                 }
-            },
-        }))
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         m = config.models[0]
         assert m.base_url == "https://custom.deepseek.com"
@@ -551,6 +674,7 @@ class TestEmbeddingsConfigFromDict:
 
     def test_non_dict_returns_default(self):
         from slife.config import EmbeddingsConfig
+
         result = EmbeddingsConfig.from_dict("not a dict")
         assert result.providers == {}
         assert result.active_model == ""
@@ -558,31 +682,40 @@ class TestEmbeddingsConfigFromDict:
 
     def test_parses_providers_and_active(self):
         from slife.config import EmbeddingsConfig
-        result = EmbeddingsConfig.from_dict({
-            "providers": {
-                "local-embed": {"base_url": "http://127.0.0.1:8000/v1"},
-                "openai": {"base_url": "https://api.openai.com/v1"},
-            },
-            "active_model": "local-embed",
-            "enabled": False,
-        })
+
+        result = EmbeddingsConfig.from_dict(
+            {
+                "providers": {
+                    "local-embed": {"base_url": "http://127.0.0.1:8000/v1"},
+                    "openai": {"base_url": "https://api.openai.com/v1"},
+                },
+                "active_model": "local-embed",
+                "enabled": False,
+            }
+        )
         assert result.active_model == "local-embed"
         assert set(result.providers) == {"local-embed", "openai"}
         assert result.enabled is False
 
     def test_active_falls_back_to_first_provider(self):
         from slife.config import EmbeddingsConfig
-        result = EmbeddingsConfig.from_dict({
-            "providers": {"p1": {}, "p2": {}},
-            "active_model": "nonexistent",
-        })
+
+        result = EmbeddingsConfig.from_dict(
+            {
+                "providers": {"p1": {}, "p2": {}},
+                "active_model": "nonexistent",
+            }
+        )
         assert result.active_model == "p1"
 
     def test_no_active_uses_first_provider(self):
         from slife.config import EmbeddingsConfig
-        result = EmbeddingsConfig.from_dict({
-            "providers": {"p1": {}, "p2": {}},
-        })
+
+        result = EmbeddingsConfig.from_dict(
+            {
+                "providers": {"p1": {}, "p2": {}},
+            }
+        )
         assert result.active_model == "p1"
 
 
@@ -592,16 +725,19 @@ class TestEmbeddingsConfigFromDict:
 class TestParseCLI:
     def test_parse_cli_agent_found(self):
         from slife.config import parse_cli_agent
+
         result = parse_cli_agent(["slife", "--agent", "bob"])
         assert result == "bob"
 
     def test_parse_cli_agent_default(self):
         from slife.config import parse_cli_agent
+
         result = parse_cli_agent(["slife"])
         assert result == "slife"
 
     def test_parse_cli_lang_found(self):
         from slife.config import parse_cli_lang
+
         assert parse_cli_lang(["slife", "--lang", "zh"]) == "zh"
         assert parse_cli_lang(["slife", "--lang", "en"]) == "en"
         # flag after a positional is still found
@@ -609,11 +745,13 @@ class TestParseCLI:
 
     def test_parse_cli_lang_default(self):
         from slife.config import parse_cli_lang
+
         assert parse_cli_lang(["slife"]) is None
         assert parse_cli_lang(["slife", "--agent", "bob"]) is None
 
     def test_parse_cli_headless(self):
         from slife.config import parse_cli_headless
+
         assert parse_cli_headless(["slife", "--headless"]) is True
         assert parse_cli_headless(["slife", "--headless", "--agent", "jack"]) is True
         assert parse_cli_headless(["slife", "--agent", "jack"]) is False
@@ -623,12 +761,17 @@ class TestParseCLI:
         """A switch, not an option: the scanner must not swallow the config
         path that follows it."""
         from slife.config import parse_cli_config_path
-        assert parse_cli_config_path(
-            ["slife", "--headless", "--agent", "jack", "myconf.yaml"],
-        ) == "myconf.yaml"
+
+        assert (
+            parse_cli_config_path(
+                ["slife", "--headless", "--agent", "jack", "myconf.yaml"],
+            )
+            == "myconf.yaml"
+        )
 
     def test_parse_cli_help(self):
         from slife.config import parse_cli_help
+
         assert parse_cli_help(["slife", "--help"]) is True
         assert parse_cli_help(["slife", "-h"]) is True
         assert parse_cli_help(["slife", "conf.yaml", "--help"]) is True
@@ -655,7 +798,10 @@ class TestParseCLI:
         )
 
         assert set(re.findall(r"--[a-z-]+", CLI_USAGE)) == {
-            "--agent", "--headless", "--lang", "--help",
+            "--agent",
+            "--headless",
+            "--lang",
+            "--help",
         }
         assert parse_cli_help(["slife", "--help"])
         assert parse_cli_agent(["slife", "--agent", "bob"]) == "bob"
@@ -667,20 +813,29 @@ class TestParseCLI:
 
     def test_parse_cli_lang_invalid_value(self):
         from slife.config import parse_cli_lang
+
         with pytest.raises(SystemExit):
             parse_cli_lang(["slife", "--lang", "fr"])
 
     def test_parse_cli_lang_missing_value(self):
         from slife.config import parse_cli_lang
+
         with pytest.raises(SystemExit):
             parse_cli_lang(["slife", "--lang"])
 
     def test_parse_cli_config_path_skips_lang(self):
         from slife.config import parse_cli_config_path
-        assert parse_cli_config_path(["slife", "--lang", "zh", "myconf.yaml"]) == "myconf.yaml"
-        assert parse_cli_config_path(
-            ["slife", "--agent", "bob", "--lang", "zh", "myconf.yaml"]
-        ) == "myconf.yaml"
+
+        assert (
+            parse_cli_config_path(["slife", "--lang", "zh", "myconf.yaml"])
+            == "myconf.yaml"
+        )
+        assert (
+            parse_cli_config_path(
+                ["slife", "--agent", "bob", "--lang", "zh", "myconf.yaml"]
+            )
+            == "myconf.yaml"
+        )
         assert parse_cli_config_path(["slife", "--lang", "zh"]) is None
 
 
@@ -693,27 +848,35 @@ class TestConfigSubagentDefault:
     def test_defaults_when_missing(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
-                },
-            },
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
+                        },
+                    },
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert config.subagent_config == {"max_subagents": 5}
 
     def test_custom_values(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
-                },
-            },
-            "subagent": {"max_subagents": 3, "task_timeout": 60},
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
+                        },
+                    },
+                    "subagent": {"max_subagents": 3, "task_timeout": 60},
+                }
+            )
+        )
         # task_timeout is developer-owned (registry work.task_budget) — the
         # user key is ignored, only max_subagents stays user-configurable.
         config = Config.from_yaml(str(cfg_path))
@@ -722,14 +885,18 @@ class TestConfigSubagentDefault:
     def test_non_dict_uses_defaults(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
-                },
-            },
-            "subagent": "not-a-dict",
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
+                        },
+                    },
+                    "subagent": "not-a-dict",
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert config.subagent_config == {"max_subagents": 5}
 
@@ -741,18 +908,24 @@ class TestConfigSubagentDefault:
         """
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
-                },
-            },
-            "agent": {"tool_timeout": 777},
-            "subagent": {"max_subagents": 7, "task_timeout": 999},
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
+                        },
+                    },
+                    "agent": {"tool_timeout": 777},
+                    "subagent": {"max_subagents": 7, "task_timeout": 999},
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert config.tool_timeout == 120.0
-        assert "task_timeout" not in config.subagent_config  # stale subagent key is ignored
+        assert (
+            "task_timeout" not in config.subagent_config
+        )  # stale subagent key is ignored
         assert config.subagent_config == {"max_subagents": 7}  # still user-configurable
 
     def test_bare_config_uses_direct_registry_no_defaults_shift(self):
@@ -767,16 +940,20 @@ class TestConfigA2A:
     def test_agent_name_from_user(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
-                },
-            },
-            "a2a": {
-                "broker": {"host": "mqtt.example.com", "port": 1883},
-            },
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
+                        },
+                    },
+                    "a2a": {
+                        "broker": {"host": "mqtt.example.com", "port": 1883},
+                    },
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path), agent_name="bob")
         assert config.a2a_config is not None
         assert config.a2a_config.agent_name == "bob"
@@ -786,16 +963,20 @@ class TestConfigA2A:
         """The old ``mqtt`` section key is not read — the section is ``a2a``."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
-                },
-            },
-            "mqtt": {
-                "broker": {"host": "mqtt.example.com", "port": 1883},
-            },
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "p": {"api_key": "${KEY}", "models": [{"model": "m"}]},
+                        },
+                    },
+                    "mqtt": {
+                        "broker": {"host": "mqtt.example.com", "port": 1883},
+                    },
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path), agent_name="bob")
         assert config.a2a_config is not None
         assert config.a2a_config.broker_host == "localhost"
@@ -815,19 +996,23 @@ class TestConfigEnvInjection:
         monkeypatch.delenv("MY_TOOL_KEY", raising=False)
 
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "p": {
-                        "api_key": "${PROV_KEY}",
-                        "models": [{"model": "m"}],
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "p": {
+                                "api_key": "${PROV_KEY}",
+                                "models": [{"model": "m"}],
+                            },
+                        },
                     },
-                },
-            },
-            "env": {
-                "MY_TOOL_KEY": "tool-secret-123",
-            },
-        }))
+                    "env": {
+                        "MY_TOOL_KEY": "tool-secret-123",
+                    },
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert config.env == {"MY_TOOL_KEY": "tool-secret-123"}
 
@@ -837,19 +1022,23 @@ class TestConfigEnvInjection:
         (It was previously dropped entirely, leaving the key absent.)"""
         monkeypatch.delenv("MY_FALLBACK_KEY", raising=False)
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "p": {
-                        "api_key": "sk-x",
-                        "models": [{"model": "m"}],
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "p": {
+                                "api_key": "sk-x",
+                                "models": [{"model": "m"}],
+                            },
+                        },
                     },
-                },
-            },
-            "env": {
-                "MY_FALLBACK_KEY": "${MY_FALLBACK_KEY:-fallback-value}",
-            },
-        }))
+                    "env": {
+                        "MY_FALLBACK_KEY": "${MY_FALLBACK_KEY:-fallback-value}",
+                    },
+                }
+            )
+        )
         Config.from_yaml(str(cfg_path))
         assert os.environ.get("MY_FALLBACK_KEY") == "fallback-value"
 
@@ -861,11 +1050,15 @@ class TestConfigFromYAMLEdgeCases:
         """Non-dict providers field is treated as empty."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": ["not", "a", "dict"],
-            },
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": ["not", "a", "dict"],
+                    },
+                }
+            )
+        )
         with pytest.raises(ValueError, match="No models defined"):
             Config.from_yaml(str(cfg_path))
 
@@ -873,17 +1066,21 @@ class TestConfigFromYAMLEdgeCases:
         """Non-dict provider entry is skipped."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "bad_provider": "not a dict",
-                    "good_provider": {
-                        "api_key": "${KEY}",
-                        "models": [{"model": "valid_model"}],
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "bad_provider": "not a dict",
+                            "good_provider": {
+                                "api_key": "${KEY}",
+                                "models": [{"model": "valid_model"}],
+                            },
+                        },
                     },
-                },
-            },
-        }))
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert len(config.models) == 1
         assert config.models[0].ref == "good_provider/valid_model"
@@ -892,20 +1089,24 @@ class TestConfigFromYAMLEdgeCases:
         """Non-list models field in provider is skipped."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "p1": {
-                        "api_key": "${KEY}",
-                        "models": "not-a-list",
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "p1": {
+                                "api_key": "${KEY}",
+                                "models": "not-a-list",
+                            },
+                            "p2": {
+                                "api_key": "${KEY}",
+                                "models": [{"model": "real_model"}],
+                            },
+                        },
                     },
-                    "p2": {
-                        "api_key": "${KEY}",
-                        "models": [{"model": "real_model"}],
-                    },
-                },
-            },
-        }))
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert len(config.models) == 1
         assert config.models[0].ref == "p2/real_model"
@@ -914,19 +1115,23 @@ class TestConfigFromYAMLEdgeCases:
         """Non-dict model entry in list is skipped."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "p1": {
-                        "api_key": "${KEY}",
-                        "models": [
-                            "not-a-dict",
-                            {"model": "good_model"},
-                        ],
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "p1": {
+                                "api_key": "${KEY}",
+                                "models": [
+                                    "not-a-dict",
+                                    {"model": "good_model"},
+                                ],
+                            },
+                        },
                     },
-                },
-            },
-        }))
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert len(config.models) == 1
         assert config.models[0].ref == "p1/good_model"
@@ -934,12 +1139,16 @@ class TestConfigFromYAMLEdgeCases:
     def test_list_style_non_dict_entry(self, tmp_path):
         """Non-dict entry in list-style models section is skipped."""
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": [
-                "not-a-dict",
-                {"model": "gpt-4o", "api_key": "sk-key"},
-            ],
-        }))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": [
+                        "not-a-dict",
+                        {"model": "gpt-4o", "api_key": "sk-key"},
+                    ],
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert len(config.models) == 1
         assert config.models[0].ref == "unknown/gpt-4o"
@@ -948,17 +1157,21 @@ class TestConfigFromYAMLEdgeCases:
         """Non-dict agent section uses defaults."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "p": {
-                        "api_key": "${KEY}",
-                        "models": [{"model": "m"}],
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "p": {
+                                "api_key": "${KEY}",
+                                "models": [{"model": "m"}],
+                            },
+                        },
                     },
-                },
-            },
-            "agent": "not-a-dict",
-        }))
+                    "agent": "not-a-dict",
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert config.max_iterations == 30
 
@@ -966,17 +1179,21 @@ class TestConfigFromYAMLEdgeCases:
         """Non-dict env section uses empty dict."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "p": {
-                        "api_key": "${KEY}",
-                        "models": [{"model": "m"}],
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "p": {
+                                "api_key": "${KEY}",
+                                "models": [{"model": "m"}],
+                            },
+                        },
                     },
-                },
-            },
-            "env": "not-a-dict",
-        }))
+                    "env": "not-a-dict",
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert config.env == {}
 
@@ -984,16 +1201,20 @@ class TestConfigFromYAMLEdgeCases:
         """Non-list builtin section uses empty list."""
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "p": {
-                        "api_key": "${KEY}",
-                        "models": [{"model": "m"}],
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "p": {
+                                "api_key": "${KEY}",
+                                "models": [{"model": "m"}],
+                            },
+                        },
                     },
-                },
-            },
-        }))
+                }
+            )
+        )
         (tmp_path / "tools.yaml").write_text('{ builtin: "not-a-list" }')
         config = Config.from_yaml(str(cfg_path))
         assert config.tools == []
@@ -1003,20 +1224,24 @@ class TestConfigFromYAMLEdgeCases:
         monkeypatch.setenv("KEY", "sk-test")
         cfg_path = tmp_path / "slife.yaml"
         # Only provider with real model so it's collected
-        cfg_path.write_text(dump_config({
-            "models": {
-                "providers": {
-                    "p1": {
-                        "api_key": "${KEY}",
-                        "models": [],
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "p1": {
+                                "api_key": "${KEY}",
+                                "models": [],
+                            },
+                            "p2": {
+                                "api_key": "${KEY}",
+                                "models": [{"model": "solo"}],
+                            },
+                        },
                     },
-                    "p2": {
-                        "api_key": "${KEY}",
-                        "models": [{"model": "solo"}],
-                    },
-                },
-            },
-        }))
+                }
+            )
+        )
         config = Config.from_yaml(str(cfg_path))
         assert len(config.models) == 1
         assert config.models[0].ref == "p2/solo"
@@ -1043,25 +1268,34 @@ class TestModelConfigStrictKeys:
         assert mc.base_url == ""  # camelCase baseUrl ignored → unconfigured
 
     def test_snake_case_keys_read(self):
-        mc = ModelConfig.from_dict({
-            "model": "test", "api_key": "sk-snake",
-            "context_window": 99999, "max_tokens": 666,
-            "base_url": "https://snake.api/v1",
-        })
+        mc = ModelConfig.from_dict(
+            {
+                "model": "test",
+                "api_key": "sk-snake",
+                "context_window": 99999,
+                "max_tokens": 666,
+                "base_url": "https://snake.api/v1",
+            }
+        )
         assert mc.api_key == "sk-snake"
         assert mc.context_window == 99999
         assert mc.max_tokens == 666
         assert mc.base_url == "https://snake.api/v1"
 
     def test_compat_field(self):
-        mc = ModelConfig.from_dict({
-            "model": "test", "api_key": "key",
-            "compat": {"thinkingFormat": "openai"},
-        })
+        mc = ModelConfig.from_dict(
+            {
+                "model": "test",
+                "api_key": "key",
+                "compat": {"thinkingFormat": "openai"},
+            }
+        )
         assert mc.compat == {"thinkingFormat": "openai"}
 
     def test_non_dict_compat_is_none(self):
-        mc = ModelConfig.from_dict({"model": "test", "api_key": "key", "compat": "not-a-dict"})
+        mc = ModelConfig.from_dict(
+            {"model": "test", "api_key": "key", "compat": "not-a-dict"}
+        )
         assert mc.compat is None
 
     def test_missing_compat_is_none(self):
@@ -1080,16 +1314,26 @@ class TestSeedFirstRunConfig:
     def _pkg_dir(tmp_path):
         pkg = tmp_path / "pkg"
         pkg.mkdir()
-        (pkg / "slife.yaml").write_text(dump_config({
-            "active_model": "d/m",  # so the fresh-seed key check can pass
-            "models": {"providers": {"d": {
-                "api_key": "${KEY}",
-                "base_url": "https://example.com",
-                "models": [{"model": "m", "name": "M"}],
-            }}},
-        }))
+        (pkg / "slife.yaml").write_text(
+            dump_config(
+                {
+                    "active_model": "d/m",  # so the fresh-seed key check can pass
+                    "models": {
+                        "providers": {
+                            "d": {
+                                "api_key": "${KEY}",
+                                "base_url": "https://example.com",
+                                "models": [{"model": "m", "name": "M"}],
+                            }
+                        }
+                    },
+                }
+            )
+        )
+        # Present on purpose: slife must ignore it (local-embed owns that
+        # config now), so the tests below assert it is never seeded.
         (pkg / "local_embed.yaml").write_text('{ active_model: "x" }')
-        (pkg / "tools.yaml").write_text('{ mcp: { servers: {} }, cli: {} }')
+        (pkg / "tools.yaml").write_text("{ mcp: { servers: {} }, cli: {} }")
         return pkg
 
     @staticmethod
@@ -1105,28 +1349,44 @@ class TestSeedFirstRunConfig:
         home = self._home(tmp_path, monkeypatch)
         data = tmp_path / "data"
         Config.from_yaml(str(data / "slife.yaml"))
-        # slife.yaml + tools.yaml seed into the data dir; local_embed
-        # keeps its own ~/.local-embed (separate standalone app).
+        # slife.yaml + tools.yaml seed into the data dir; local_embed keeps
+        # its own ~/.local-embed and slife does not seed it.
         assert (data / "slife.yaml").exists()
         assert (data / "tools.yaml").exists()
-        assert (home / ".local-embed" / "local_embed.yaml").exists()
+        # local-embed owns its own config now — slife must not write into
+        # ~/.local-embed at all, even though the fixture ships a stray copy.
+        assert not (home / ".local-embed" / "local_embed.yaml").exists()
 
     def test_existing_slife_config_not_overwritten_siblings_seeded(
-            self, tmp_path, monkeypatch):
+        self, tmp_path, monkeypatch
+    ):
         monkeypatch.setenv("KEY", "sk-test")
         monkeypatch.setattr("slife.config._PKG_DIR", self._pkg_dir(tmp_path))
         home = self._home(tmp_path, monkeypatch)
         data = tmp_path / "data"
         cfg_path = data / "slife.yaml"
         cfg_path.parent.mkdir()
-        cfg_path.write_text(dump_config({"models": {"providers": {"d": {
-            "api_key": "${KEY}", "base_url": "https://example.com",
-            "models": [{"model": "keepme", "name": "Keep"}],
-        }}}}))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "d": {
+                                "api_key": "${KEY}",
+                                "base_url": "https://example.com",
+                                "models": [{"model": "keepme", "name": "Keep"}],
+                            }
+                        }
+                    }
+                }
+            )
+        )
         Config.from_yaml(str(cfg_path))
         raw = load_config_text(cfg_path.read_text(encoding="utf-8"))
         assert raw["models"]["providers"]["d"]["models"][0]["model"] == "keepme"
-        assert (home / ".local-embed" / "local_embed.yaml").exists()
+        # local-embed owns its own config now — slife must not write into
+        # ~/.local-embed at all, even though the fixture ships a stray copy.
+        assert not (home / ".local-embed" / "local_embed.yaml").exists()
         assert (data / "tools.yaml").exists()
 
     def test_existing_data_dir_config_not_overwritten(self, tmp_path, monkeypatch):
@@ -1136,10 +1396,21 @@ class TestSeedFirstRunConfig:
         data = tmp_path / "data"
         cfg_path = data / "slife.yaml"
         cfg_path.parent.mkdir()
-        cfg_path.write_text(dump_config({"models": {"providers": {"d": {
-            "api_key": "${KEY}", "base_url": "https://example.com",
-            "models": [{"model": "m", "name": "M"}],
-        }}}}))
+        cfg_path.write_text(
+            dump_config(
+                {
+                    "models": {
+                        "providers": {
+                            "d": {
+                                "api_key": "${KEY}",
+                                "base_url": "https://example.com",
+                                "models": [{"model": "m", "name": "M"}],
+                            }
+                        }
+                    }
+                }
+            )
+        )
         mcp = data / "tools.yaml"
         mcp.write_text('{ servers: {"mine": {}} }')
         Config.from_yaml(str(cfg_path))
@@ -1155,4 +1426,6 @@ class TestSeedFirstRunConfig:
         Config.from_yaml(str(data / "slife.yaml"))
         assert (data / "slife.yaml").exists()
         assert not (data / "tools.yaml").exists()
-        assert (home / ".local-embed" / "local_embed.yaml").exists()
+        # local-embed owns its own config now — slife must not write into
+        # ~/.local-embed at all, even though the fixture ships a stray copy.
+        assert not (home / ".local-embed" / "local_embed.yaml").exists()

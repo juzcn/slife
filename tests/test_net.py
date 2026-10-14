@@ -22,9 +22,11 @@ reads slife.yaml, so those tests point the data dir at a throwaway file.
 import ipaddress
 import socket
 
-import pytest; pytestmark = pytest.mark.unit
+import pytest
 
 from slife import net
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
@@ -48,15 +50,22 @@ def honest_resolver(monkeypatch):
 #: are unroutable, so they hold no destination, and they are exactly what the
 #: pools are made of; they belong to the wider refusal set below.
 _RANGES_A_PERMISSION_MUST_NOT_COVER = (
-    "127.0.0.1", "::1",                          # loopback
-    "10.0.0.1", "172.16.0.1", "192.168.1.1",     # LAN
-    "169.254.169.254", "fe80::1",                # link-local, cloud metadata
-    "fd00::1", "fd00:ec2::254", "fd20:ce::254",  # a ULA LAN host, the metadata pair
-    "::ffff:127.0.0.1",                          # loopback, IPv6 spelling
-    "100.64.0.1",                                # CGNAT (what Tailscale uses)
+    "127.0.0.1",
+    "::1",  # loopback
+    "10.0.0.1",
+    "172.16.0.1",
+    "192.168.1.1",  # LAN
+    "169.254.169.254",
+    "fe80::1",  # link-local, cloud metadata
+    "fd00::1",
+    "fd00:ec2::254",
+    "fd20:ce::254",  # a ULA LAN host, the metadata pair
+    "::ffff:127.0.0.1",  # loopback, IPv6 spelling
+    "100.64.0.1",  # CGNAT (what Tailscale uses)
     # multicast: Python's is_global counts it as global, and no fetch
     # can reach a multicast address, so it is excluded by hand
-    "224.0.0.1", "ff02::1",
+    "224.0.0.1",
+    "ff02::1",
 )
 
 #: Everything ``is_public_address`` must refuse — the set above plus the
@@ -65,8 +74,10 @@ _RANGES_A_PERMISSION_MUST_NOT_COVER = (
 #: is the one the two predicates are allowed to have.
 _RANGES_A_FETCH_MUST_NOT_REACH = (
     *_RANGES_A_PERMISSION_MUST_NOT_COVER,
-    "198.18.0.1", "2001:2::127",                 # benchmarking space
-    "2001:db8::1", "0.0.0.0",
+    "198.18.0.1",
+    "2001:2::127",  # benchmarking space
+    "2001:db8::1",
+    "0.0.0.0",
 )
 
 
@@ -74,7 +85,7 @@ class TestIsPublicAddress:
     def test_public_addresses(self):
         assert net.is_public_address("8.8.8.8")
         assert net.is_public_address("1.1.1.1")
-        assert net.is_public_address("104.16.0.1")      # a cloudflared edge
+        assert net.is_public_address("104.16.0.1")  # a cloudflared edge
         assert net.is_public_address("2606:4700::1")
         assert net.is_public_address(ipaddress.ip_address("93.184.216.34"))
 
@@ -99,7 +110,7 @@ class TestIsFakeIpAnswer:
         RFC 2544 pool, the cloudflared edge from the live log, mihomo's
         per-profile RFC 5180 pool, sing-box's ULA default."""
         assert net.is_fake_ip_answer("198.18.0.32")
-        assert net.is_fake_ip_answer("198.19.255.254")   # the top of the /15
+        assert net.is_fake_ip_answer("198.19.255.254")  # the top of the /15
         assert net.is_fake_ip_answer("2001:2::127")
         assert net.is_fake_ip_answer("fdfe:dcba:9876::20")
 
@@ -117,7 +128,6 @@ class TestIsFakeIpAnswer:
         LAN host — a different problem, and not this one."""
         assert not net.is_fake_ip_answer("198.18.0.32")
         assert not net.is_fake_ip_answer("192.168.1.1")
-
 
     def test_the_accusation_is_coarse_on_purpose(self, fake_ip_machine):
         """A lying resolver makes every non-public address read as one —
@@ -143,9 +153,12 @@ class TestIsFakeIpAddress:
 
     def test_the_pools_proxies_synthesise_from(self):
         for address in (
-            "198.18.0.1", "198.18.0.104", "198.19.255.255",   # RFC 2544, v4
-            "2001:2::127",                                    # RFC 5180, v6
-            "fdfe:dcba:9876::20", "fc00::1",                  # the ULA pools
+            "198.18.0.1",
+            "198.18.0.104",
+            "198.19.255.255",  # RFC 2544, v4
+            "2001:2::127",  # RFC 5180, v6
+            "fdfe:dcba:9876::20",
+            "fc00::1",  # the ULA pools
         ):
             assert net.is_fake_ip_address(address), address
 
@@ -160,10 +173,11 @@ class TestIsFakeIpAddress:
         """The ends matter: a permission that is one bit too wide covers a
         neighbour of the pool."""
         for address in (
-            "198.17.255.255", "198.20.0.1",      # either side of 198.18.0.0/15
-            "2001:3::1",                         # the next /48 after 2001:2::/48
-            "fdfe:dcba:9877::1",                 # the next /48 after the ULA pool
-            "fc40::1",                           # just above fc00::/18
+            "198.17.255.255",
+            "198.20.0.1",  # either side of 198.18.0.0/15
+            "2001:3::1",  # the next /48 after 2001:2::/48
+            "fdfe:dcba:9877::1",  # the next /48 after the ULA pool
+            "fc40::1",  # just above fc00::/18
         ):
             assert not net.is_fake_ip_address(address), address
 
@@ -317,4 +331,4 @@ class TestResolverUsesFakeIp:
         net.resolver_uses_fake_ip()
         assert len(asked) == 1
         assert asked[0].endswith(".com")
-        assert len(asked[0].removesuffix(".com")) == 32   # a fresh uuid4 hex
+        assert len(asked[0].removesuffix(".com")) == 32  # a fresh uuid4 hex

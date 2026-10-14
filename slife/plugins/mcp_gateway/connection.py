@@ -43,23 +43,26 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx2
-
 from mcp import ClientSession
-from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.sse import sse_client
+from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
+
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.mcp.content import format_content_blocks
 from slife.mcp.era import negotiate_era, peer_era, watch_tools_changed
+from slife.platform import resolve_command
+from slife.plugins.mcp_gateway import __version__
 from slife.plugins.mcp_gateway.client import (
     _is_link_down,
     close_exit_stack_bounded,
     make_local_http_client,
 )
-from slife.mcp.content import format_content_blocks
-
-from slife.plugins.mcp_gateway import __version__
-from slife.plugins.mcp_gateway.config import _is_env_ref, _resolve_embedded_refs, _resolve_secret
-from slife.platform import resolve_command
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.plugins.mcp_gateway.config import (
+    _is_env_ref,
+    _resolve_embedded_refs,
+    _resolve_secret,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,11 +107,11 @@ class NeedsUserAuthError(RuntimeError):
 @dataclass
 class ServerConfig:
     name: str
-    command: str = ""                       # stdio: executable to spawn
+    command: str = ""  # stdio: executable to spawn
     args: list[str] = field(default_factory=list)
     env: dict[str, str] | None = None
-    url: str = ""                           # http: MCP endpoint URL
-    headers: dict[str, str] | None = None   # http: extra request headers
+    url: str = ""  # http: MCP endpoint URL
+    headers: dict[str, str] | None = None  # http: extra request headers
     enabled: bool = True  # False = don't auto-connect at startup
     description: str = ""
     auth: dict | None = None  # OAuth config for device code flow
@@ -155,7 +158,7 @@ class MCPServerConnection:
         self._session: ClientSession | None = None
         self._exit_stack: AsyncExitStack | None = None
         #: Supervisor for that listen stream (modern peers only).
-        self._watch_task: "asyncio.Task | None" = None
+        self._watch_task: asyncio.Task | None = None
         self._http_client: httpx2.AsyncClient | None = None
         # stdio stderr capture: a real temp file passed as the SDK's errlog
         # (the child writes straight to disk), drained by _drain_stderr into
@@ -163,14 +166,14 @@ class MCPServerConnection:
         # truth on every platform — an in-memory TextIO cannot be a child's
         # stderr (the subprocess machinery needs a real fd).
         self._stderr_dump: Any | None = None
-        self._stderr_task: "asyncio.Task | None" = None
+        self._stderr_task: asyncio.Task | None = None
         self._stderr_buffer: list[str] = []
         # ── The tool snapshot: the live state this class publishes ──────
         self._tools: list[dict] = []
-        self._tools_fetched_at: float | None = None   # monotonic; None = never listed
-        self._tools_ttl_ms: int = 0                   # the peer's cache hint (0 = none)
-        self._tools_stale: bool = False               # the peer said the list changed
-        self._last_error: str | None = None           # last failed read/call
+        self._tools_fetched_at: float | None = None  # monotonic; None = never listed
+        self._tools_ttl_ms: int = 0  # the peer's cache hint (0 = none)
+        self._tools_stale: bool = False  # the peer said the list changed
+        self._last_error: str | None = None  # last failed read/call
         self._connect_lock = asyncio.Lock()  # serializes session establishment
         # Set by disconnect() so an in-flight attempt aborts at its next check
         # point instead of resuming after cleanup and leaving an orphaned
@@ -184,7 +187,7 @@ class MCPServerConnection:
         self._link_dead = False
         # Background re-list — see _refresh_until_listed.  Started only while
         # no working tool list is held; cancelled by disconnect().
-        self._refresh_task: "asyncio.Task | None" = None
+        self._refresh_task: asyncio.Task | None = None
         # OAuth: the refresh token was revoked / never granted and the device
         # flow needs a human.  While set, nothing auto-repairs the server (a
         # device-flow prompt must never be raised by a background retry, F5).
@@ -242,7 +245,8 @@ class MCPServerConnection:
             "tools_ok": self.tools_ok,
             "tool_count": len(self._tools),
             "tools_age_s": (
-                None if self._tools_fetched_at is None
+                None
+                if self._tools_fetched_at is None
                 else round(_time.monotonic() - self._tools_fetched_at, 1)
             ),
             "last_error": self._last_error,
@@ -313,8 +317,8 @@ class MCPServerConnection:
         """
         from slife.plugins.mcp_gateway.oauth import (
             get_valid_token,
-            run_device_code_flow,
             refresh_access_token,
+            run_device_code_flow,
         )
         from slife.threads import run_daemon
 
@@ -333,7 +337,7 @@ class MCPServerConnection:
             try:
                 tokens = await refresh_access_token(auth, name)
                 self._needs_user_auth = False
-            except Exception:
+            except Exception:  # noqa: BLE001 — any refresh failure falls back to the device flow
                 if self._needs_user_auth:
                     # The user was already asked and the flow did not complete —
                     # do NOT re-run it (a retry would otherwise pop a fresh
@@ -386,17 +390,19 @@ class MCPServerConnection:
 
         # Resolve ${VAR} references in args (e.g. "Authorization: Bearer ${GITHUB_TOKEN}")
         resolved_args = [
-            _resolve_secret(arg) if _is_env_ref(arg)
-            else _resolve_embedded_refs(arg)
+            _resolve_secret(arg) if _is_env_ref(arg) else _resolve_embedded_refs(arg)
             for arg in self.config.args
         ]
         if self.config.os_paths:
             from slife.os_detect import get_os_accessible_paths
+
             for p in get_os_accessible_paths():
                 resolved_args += ["--allow-path", p]
 
         return StdioServerParameters(
-            command=exe, args=resolved_args, env=env or None,
+            command=exe,
+            args=resolved_args,
+            env=env or None,
         )
 
     async def _connect_stdio(self) -> None:
@@ -404,7 +410,8 @@ class MCPServerConnection:
         from slife.threads import run_daemon
 
         params = await run_daemon(
-            self._stdio_launch_params, name="mcp-stdio-launch",
+            self._stdio_launch_params,
+            name="mcp-stdio-launch",
         )
         if self._exit_stack is None:
             self._exit_stack = AsyncExitStack()
@@ -415,7 +422,7 @@ class MCPServerConnection:
         # ``io.UnsupportedOperation`` on Windows and POSIX alike).  A temp
         # file also means a stalled drain can never wedge the child on a full
         # pipe — it writes straight to disk, we poll the appended bytes.
-        self._stderr_dump = tempfile.TemporaryFile(mode="w+b")
+        self._stderr_dump = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115 — closed in _cleanup_resources
         self._stderr_task = asyncio.create_task(self._drain_stderr())
         read_stream, write_stream = await self._exit_stack.enter_async_context(
             # SDK types errlog as TextIO; a real (binary) file is what it
@@ -442,6 +449,7 @@ class MCPServerConnection:
         raw = getattr(dump, "raw", dump)
         position = 0
         from slife.logfmt import sanitize_secrets
+
         try:
             while True:
                 await asyncio.sleep(_timeouts.timeouts.pacing.mcp_stderr_poll)
@@ -465,9 +473,13 @@ class MCPServerConnection:
                 text = sanitize_secrets(text)
                 self._stderr_buffer.append(text + "\n")
                 if len(self._stderr_buffer) > _STDERR_BUFFER_LIMIT:
-                    del self._stderr_buffer[: len(self._stderr_buffer) - _STDERR_BUFFER_LIMIT]
+                    del self._stderr_buffer[
+                        : len(self._stderr_buffer) - _STDERR_BUFFER_LIMIT
+                    ]
                 logger.debug(
-                    "mcp_stderr server=%s line=%s", self.config.name, text,
+                    "mcp_stderr server=%s line=%s",
+                    self.config.name,
+                    text,
                 )
         except asyncio.CancelledError:
             pass
@@ -527,7 +539,7 @@ class MCPServerConnection:
                     sse_client(url, headers=headers),
                 )
             logger.info("mcp_sse_connected server=%s url=%s", self.config.name, url)
-        except Exception:
+        except Exception:  # noqa: BLE001 — any SSE failure retries as Streamable HTTP
             # SSE not supported — release anything the failed enter opened and
             # retry as Streamable HTTP.  The SDK reuses a pre-built httpx2
             # client, so build one lazily here (with the OAuth/resolved
@@ -539,7 +551,9 @@ class MCPServerConnection:
                 # strict helper already swallows timeout/cancel-scope/
                 # ExceptionGroup; a remaining RuntimeError is swallowed here.
                 try:
-                    await close_exit_stack_bounded(self._exit_stack, label="sse_fallback")
+                    await close_exit_stack_bounded(
+                        self._exit_stack, label="sse_fallback"
+                    )
                 except RuntimeError:
                     pass
                 self._exit_stack = AsyncExitStack()
@@ -565,12 +579,17 @@ class MCPServerConnection:
         # exception on the running loop — install the demoting handler before
         # any transport that could trigger it is created (client.py does the
         # same for plugin connections).
-        from slife.plugins.mcp_gateway.client import _install_cancel_scope_exception_handler
+        from slife.plugins.mcp_gateway.client import (
+            _install_cancel_scope_exception_handler,
+        )
+
         _install_cancel_scope_exception_handler()
 
         from mcp.types import Implementation as _Impl
+
         return ClientSession(
-            read_stream, write_stream,
+            read_stream,
+            write_stream,
             message_handler=self._handle_notification,
             client_info=_Impl(name="mcp-gateway", version=__version__),
         )
@@ -610,7 +629,8 @@ class MCPServerConnection:
             self._record_error(message)
             logger.warning(
                 "mcp_transport_fault server=%s err=%s action=rebuild",
-                self.config.name, message,
+                self.config.name,
+                message,
             )
             await self._notify_tools_changed()
             self._start_refresh_task()
@@ -628,10 +648,11 @@ class MCPServerConnection:
             return
         try:
             await self._on_tools_changed(self.config.name)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — a re-list failure is logged, not propagated
             logger.warning(
                 "mcp_tools_changed_handler_failed server=%s err=%s",
-                self.config.name, exc,
+                self.config.name,
+                exc,
             )
 
     def _start_tools_watch(self) -> None:
@@ -646,8 +667,9 @@ class MCPServerConnection:
         if self._session is None:
             return
         self._watch_task = asyncio.create_task(
-            watch_tools_changed(self._session, self._on_listen_event,
-                                link=self.config.name),
+            watch_tools_changed(
+                self._session, self._on_listen_event, link=self.config.name
+            ),
             name=f"mcp-listen:{self.config.name}",
         )
 
@@ -691,7 +713,8 @@ class MCPServerConnection:
                 t0 = _time.monotonic()
                 logger.info(
                     "mcp_connect server=%s transport=%s",
-                    self.config.name, self.config.transport,
+                    self.config.name,
+                    self.config.transport,
                 )
                 self._exit_stack = AsyncExitStack()
                 # Transport establishment is the one client-owned wait (spawn
@@ -720,7 +743,7 @@ class MCPServerConnection:
             except NeedsUserAuthError:
                 await self._cleanup_resources()
                 raise
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — establishment boundary records and returns False
                 # ``asyncio.timeout`` raises a BARE TimeoutError, whose str() is
                 # empty — so a failed establishment was recorded as a blank
                 # fact, and __check showed a 120s deadline without ever naming
@@ -733,7 +756,9 @@ class MCPServerConnection:
                         f"(transport={self.config.transport})"
                     )
                 self._record_error(e)
-                logger.warning("mcp_connect_failed server=%s err=%s", self.config.name, e)
+                logger.warning(
+                    "mcp_connect_failed server=%s err=%s", self.config.name, e
+                )
                 await self._cleanup_resources()
                 return False
 
@@ -741,7 +766,9 @@ class MCPServerConnection:
             # (the process may have restarted with a different surface).
             self._mark_tools_stale("new session")
             elapsed = (_time.monotonic() - t0) * 1000
-            logger.info("mcp_session_ready server=%s took_ms=%.0f", self.config.name, elapsed)
+            logger.info(
+                "mcp_session_ready server=%s took_ms=%.0f", self.config.name, elapsed
+            )
 
             # A modern peer pushes later changes ONLY on a listen stream; a
             # legacy one keeps the session channel (_handle_notification).
@@ -792,10 +819,17 @@ class MCPServerConnection:
         # Locate readabilipy inside the uvx-managed environment
         result = _subprocess.run(
             [
-                "uvx", "--from", "mcp-server-fetch", "python", "-c",
+                "uvx",
+                "--from",
+                "mcp-server-fetch",
+                "python",
+                "-c",
                 "import readabilipy, os; print(os.path.dirname(readabilipy.__file__))",
             ],
-            capture_output=True, text=True, timeout=30,  # noqa-timeout — one-off dep bring-up (sync subprocess, not asyncio)
+            capture_output=True,
+            text=True,
+            timeout=30,  # noqa-timeout — one-off dep bring-up (sync subprocess, not asyncio)
+            check=False,
         )
         if result.returncode != 0:
             return
@@ -814,15 +848,20 @@ class MCPServerConnection:
         logger.info("fetch_npm_install jsdir=%s", jsdir)
         npm_cmd = ["cmd", "/c", "npm", "install"]
         install = _subprocess.run(
-            npm_cmd, cwd=jsdir,
-            capture_output=True, text=True, timeout=60,  # noqa-timeout — one-off dep bring-up (sync subprocess, not asyncio)
+            npm_cmd,
+            cwd=jsdir,
+            capture_output=True,
+            text=True,
+            timeout=60,  # noqa-timeout — one-off dep bring-up (sync subprocess, not asyncio)
+            check=False,
         )
         if install.returncode == 0:
             logger.info("fetch_npm_installed jsdir=%s", jsdir)
         else:
             logger.warning(
                 "fetch_npm_install_failed jsdir=%s err=%s",
-                jsdir, (install.stderr or "")[-500:],
+                jsdir,
+                (install.stderr or "")[-500:],
             )
 
     # ── The tool list: the health check, and its record ─────────────────
@@ -853,7 +892,8 @@ class MCPServerConnection:
             logger.warning(
                 "mcp_tools_list_truncated server=%s tools=%d — the peer "
                 "returned next_cursor; the remainder of its listing is not read",
-                self.config.name, len(self._tools),
+                self.config.name,
+                len(self._tools),
             )
 
     async def refresh_tools(self, *, force: bool = False) -> bool:
@@ -898,7 +938,7 @@ class MCPServerConnection:
                 raise
             except NeedsUserAuthError:
                 raise
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — tools-list failure records and returns False
                 if attempt == 1 and _is_link_down(e):
                     # The dispatcher refused a send on a transport already
                     # gone — the request never reached the peer, which is what
@@ -908,7 +948,9 @@ class MCPServerConnection:
                     continue
                 self._record_error(e)
                 logger.warning(
-                    "mcp_tools_list_failed server=%s err=%s", self.config.name, e,
+                    "mcp_tools_list_failed server=%s err=%s",
+                    self.config.name,
+                    e,
                 )
                 self._start_refresh_task()
                 return False
@@ -916,7 +958,9 @@ class MCPServerConnection:
             self._absorb(result)
             logger.info(
                 "mcp_tools_listed server=%s tools=%d ttl_ms=%d",
-                self.config.name, len(self._tools), self._tools_ttl_ms,
+                self.config.name,
+                len(self._tools),
+                self._tools_ttl_ms,
             )
             # A list is the moment the catalog's rows are known stale: tell
             # the host to re-read (it owns the catalog, not this process).
@@ -946,7 +990,8 @@ class MCPServerConnection:
         if self._disconnecting or not self.config.enabled or self._needs_user_auth:
             return
         self._refresh_task = asyncio.create_task(
-            self._refresh_until_listed(), name=f"mcp-refresh:{self.config.name}",
+            self._refresh_until_listed(),
+            name=f"mcp-refresh:{self.config.name}",
         )
 
     async def _refresh_until_listed(self) -> None:
@@ -965,12 +1010,18 @@ class MCPServerConnection:
         wait = _timeouts.timeouts.pacing.mcp_relist_initial
         try:
             while True:
-                if self._disconnecting or not self.config.enabled or self._needs_user_auth:
+                if (
+                    self._disconnecting
+                    or not self.config.enabled
+                    or self._needs_user_auth
+                ):
                     return
                 if await self.refresh_tools(force=True):
                     return
                 logger.debug(
-                    "mcp_refresh_retry server=%s in=%.1fs", self.config.name, wait,
+                    "mcp_refresh_retry server=%s in=%.1fs",
+                    self.config.name,
+                    wait,
                 )
                 await asyncio.sleep(wait)
                 wait = min(
@@ -982,7 +1033,8 @@ class MCPServerConnection:
             # (a device flow that did not complete).  The flag is set, nothing
             # may retry it (F5), and the state surfaces through __check.
             logger.info(
-                "mcp_refresh_paused server=%s reason=needs_user_auth", self.config.name,
+                "mcp_refresh_paused server=%s reason=needs_user_auth",
+                self.config.name,
             )
         except asyncio.CancelledError:
             pass
@@ -1022,18 +1074,22 @@ class MCPServerConnection:
             # the LIST path (refresh_tools) and never fired here.
             logger.warning(
                 "mcp_tool_call_transport_error server=%s tool=%s action=rebuild",
-                self.config.name, tool_name,
+                self.config.name,
+                tool_name,
             )
             self._link_dead = True
             try:
                 if not await self.ensure_session():
-                    raise ConnectionError(self._last_error or "rebuild produced no session")
+                    raise ConnectionError(
+                        self._last_error or "rebuild produced no session"
+                    )
                 result = await self._call_on_session(tool_name, arguments)
             except Exception as rebuild_error:
                 self._record_error(rebuild_error)
                 logger.warning(
                     "mcp_tool_call_rebuild_failed server=%s err=%s",
-                    self.config.name, rebuild_error,
+                    self.config.name,
+                    rebuild_error,
                 )
                 self._start_refresh_task()
                 raise ConnectionError(
@@ -1041,7 +1097,9 @@ class MCPServerConnection:
                     f"rebuild failed: {rebuild_error}"
                 ) from rebuild_error
             logger.info(
-                "mcp_tool_call_rebuild_ok server=%s tool=%s", self.config.name, tool_name,
+                "mcp_tool_call_rebuild_ok server=%s tool=%s",
+                self.config.name,
+                tool_name,
             )
             # The peer is a new process/instance — its tool surface may differ.
             self._mark_tools_stale("rebuild after link loss")
@@ -1059,9 +1117,7 @@ class MCPServerConnection:
     async def _call_on_session(self, tool_name: str, arguments: dict) -> Any:
         session = self._session
         if session is None:
-            raise ConnectionError(
-                f"Server '{self.config.name}' has no live session"
-            )
+            raise ConnectionError(f"Server '{self.config.name}' has no live session")
         return await session.call_tool(tool_name, arguments or {})
 
     # ── Teardown ────────────────────────────────────────────────────────
@@ -1103,7 +1159,9 @@ class MCPServerConnection:
             except asyncio.CancelledError:
                 pass
             except Exception:
-                logger.debug("mcp_listen_stop_failed server=%s", self.config.name, exc_info=True)
+                logger.debug(
+                    "mcp_listen_stop_failed server=%s", self.config.name, exc_info=True
+                )
         self._watch_task = None
         if self._exit_stack is not None:
             await close_exit_stack_bounded(self._exit_stack)
@@ -1128,7 +1186,7 @@ class MCPServerConnection:
         if self._http_client is not None:
             try:
                 await self._http_client.aclose()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — cleanup must never raise
                 pass
             self._http_client = None
 
@@ -1137,7 +1195,8 @@ class ConnectionPool:
     """Manages a collection of MCP server connections."""
 
     def __init__(
-        self, on_tools_changed: Callable[[str], Awaitable[None]] | None = None,
+        self,
+        on_tools_changed: Callable[[str], Awaitable[None]] | None = None,
     ):
         self._connections: dict[str, MCPServerConnection] = {}
         # Fired whenever a server's tool surface may have changed — a fresh
@@ -1147,7 +1206,10 @@ class ConnectionPool:
         self._on_tools_changed = on_tools_changed
 
     async def add_server(
-        self, config: ServerConfig, *, connect: bool | None = None,
+        self,
+        config: ServerConfig,
+        *,
+        connect: bool | None = None,
         read_tools: bool = True,
     ) -> MCPServerConnection:
         """Register a server; ``connect`` brings its transport up.
@@ -1162,7 +1224,9 @@ class ConnectionPool:
         if config.name in self._connections:
             logger.info("mcp_replace server=%s", config.name)
             await self.remove_server(config.name)
-        conn = MCPServerConnection(config=config, on_tools_changed=self._on_tools_changed)
+        conn = MCPServerConnection(
+            config=config, on_tools_changed=self._on_tools_changed
+        )
         self._connections[config.name] = conn
         # ``connect`` overrides the config default: the host's startup
         # eager-connect set registers enabled-but-skipped servers without an
@@ -1180,7 +1244,11 @@ class ConnectionPool:
                 # so arm the same background repair a failed read arms.
                 conn.arm_refresh()
         else:
-            logger.info("mcp_server_not_connected name=%s enabled=%s", config.name, config.enabled)
+            logger.info(
+                "mcp_server_not_connected name=%s enabled=%s",
+                config.name,
+                config.enabled,
+            )
         return conn
 
     async def remove_server(self, name: str) -> None:
@@ -1245,7 +1313,11 @@ class ConnectionPool:
         if conn is None or not conn.has_tools():
             return []
         return [
-            {**tool, "server": server_name, "full_name": f"{server_name}__{tool['name']}"}
+            {
+                **tool,
+                "server": server_name,
+                "full_name": f"{server_name}__{tool['name']}",
+            }
             for tool in conn.list_tools()
         ]
 
@@ -1256,7 +1328,9 @@ class ConnectionPool:
         try:
             return await conn.call_tool(tool_name, arguments)
         except Exception as e:
-            logger.exception("mcp_tool_call_failed server=%s tool=%s err=%s", server_name, tool_name, e)
+            logger.exception(
+                "mcp_tool_call_failed server=%s tool=%s", server_name, tool_name
+            )
             return f"Error calling '{tool_name}' on '{server_name}': {e}"
 
     async def shutdown(self) -> None:

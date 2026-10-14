@@ -1,17 +1,15 @@
 """Tests for Slife.ui.chat — chat view widgets (pure logic tests)."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from textual.app import App, ComposeResult
 
 from slife.agent.llm_client import TokenUsage
 from slife.ui.app import HistoryInput
 from slife.ui.chat import ChatView
 
+pytestmark = pytest.mark.unit
 
 # ── UserMessage logic ─────────────────────────────────────────────────
 
@@ -22,18 +20,21 @@ class TestUserMessage:
     def test_basic_message_format(self):
         """UserMessage formats text with the '>' prefix."""
         from slife.ui.chat import UserMessage
+
         msg = UserMessage("hello world", prefix="> ")
         assert msg.render().plain == "> hello world"
 
     def test_custom_prefix(self):
         """A custom prefix (e.g. 'You> ') is used verbatim."""
         from slife.ui.chat import UserMessage
+
         msg = UserMessage("hi", prefix="You> ")
         assert msg.render().plain == "You> hi"
 
     def test_timestamp_is_prefixed(self):
         """A timestamp is rendered as a dim [HH:MM] before the prefix."""
         from slife.ui.chat import UserMessage
+
         msg = UserMessage("hi", prefix="> ", timestamp="2026-08-16T10:00:00")
         plain = msg.render().plain
         assert plain.startswith("[") and "> hi" in plain
@@ -44,6 +45,7 @@ class TestUserMessage:
         thinking style) inline, right after the user's words: readable,
         but clearly machine metadata, not part of the message."""
         from slife.ui.chat import UserMessage
+
         text = 'switch model [INFO: {"turn_id": 30, "begin": "2026-08-18 17:24", "end": "17:25"}]'
         payload = '{"turn_id": 30, "begin": "2026-08-18 17:24", "end": "17:25"}'
         rendered = UserMessage(text, prefix="> ").render()
@@ -58,9 +60,9 @@ class TestUserMessage:
     def test_no_footnote_plain_message(self):
         """A message without a turn footnote gets no dim/italic styling."""
         from slife.ui.chat import UserMessage
+
         rendered = UserMessage("just a message", prefix="> ").render()
-        styled = [s for s in rendered.spans
-                  if "dim" in s.style or "italic" in s.style]
+        styled = [s for s in rendered.spans if "dim" in s.style or "italic" in s.style]
         assert styled == []
 
     def test_rendered_content(self):
@@ -90,6 +92,7 @@ class TestAssistantMessage:
         """Make a bare AssistantMessage with necessary attrs set."""
         with patch("slife.ui.chat.Static.__init__", return_value=None):
             from slife.ui.chat import AssistantMessage
+
             msg = AssistantMessage.__new__(AssistantMessage)
             msg._buffer = ""
             msg._thinking = ""
@@ -166,7 +169,9 @@ class TestAssistantMessage:
     def test_refresh_display_with_usage(self):
         msg = self._make_msg()
         msg._buffer = "OK"
-        msg._usage = TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
+        msg._usage = TokenUsage(
+            prompt_tokens=100, completion_tokens=50, total_tokens=150
+        )
         msg.update = MagicMock()
         msg._refresh_display()
         content = msg.update.call_args[0][0]
@@ -331,7 +336,9 @@ class TestAssistantMessage:
         msg._trim_marker = ""
         msg.set_trim_marker(2)
         assert msg._buffer == "The answer"
-        assert msg._trim_marker == "[INFO: 2 oldest turns have been removed from context]"
+        assert (
+            msg._trim_marker == "[INFO: 2 oldest turns have been removed from context]"
+        )
         msg.update.assert_called_once()
 
 
@@ -345,6 +352,7 @@ class TestChatView:
         """ChatView needs focus to receive keyboard scroll bindings."""
         with patch("slife.ui.chat.VerticalScroll.__init__", return_value=None):
             from slife.ui.chat import ChatView
+
             view = ChatView()
             assert view.can_focus is True
 
@@ -422,8 +430,18 @@ def _wheel_over(widget, *, up: bool):
     x, y = widget.region.x + 1, widget.region.y + 1
     cls = events.MouseScrollUp if up else events.MouseScrollDown
     return cls(
-        widget=None, x=x, y=y, delta_x=0, delta_y=0, button=0,
-        shift=False, meta=False, ctrl=False, screen_x=x, screen_y=y, style=None,
+        widget=None,
+        x=x,
+        y=y,
+        delta_x=0,
+        delta_y=0,
+        button=0,
+        shift=False,
+        meta=False,
+        ctrl=False,
+        screen_x=x,
+        screen_y=y,
+        style=None,
     )
 
 
@@ -509,8 +527,9 @@ class TestScrollFollowing:
             assert view._at_tail is True
             shown = await _repainted(app, pilot, sent_from)
 
-            assert await _settled(pilot,
-                                  lambda: view.scroll_offset.y == view.max_scroll_y)
+            assert await _settled(
+                pilot, lambda: view.scroll_offset.y == view.max_scroll_y
+            )
             assert any("hello from up here" in line for line in shown)
 
     @pytest.mark.asyncio
@@ -533,8 +552,9 @@ class TestScrollFollowing:
             # Armed now, not a refresh later when the jump's own scroll lands:
             # the reply is already on its way.
             assert view._at_tail is True
-            assert await _settled(pilot,
-                                  lambda: view.scroll_offset.y == view.max_scroll_y)
+            assert await _settled(
+                pilot, lambda: view.scroll_offset.y == view.max_scroll_y
+            )
             before = view.scroll_offset.y
 
             # exactly what on_text_chunk does for every streamed token
@@ -551,8 +571,9 @@ class TestScrollFollowing:
             view.scroll_to(y=0, animate=False)
             assert await _settled(pilot, lambda: view.scroll_offset.y == 0)
             view.scroll_to(y=view.max_scroll_y, animate=False)
-            assert await _settled(pilot,
-                                  lambda: view.scroll_offset.y == view.max_scroll_y)
+            assert await _settled(
+                pilot, lambda: view.scroll_offset.y == view.max_scroll_y
+            )
 
             before = view.scroll_offset.y
             view.add_user_message("[new] after coming back")
@@ -578,8 +599,9 @@ class TestScrollFollowing:
             assert await _settled(pilot, lambda: view.scroll_offset.y < before)
 
             await pilot.press("pagedown")
-            assert await _settled(pilot,
-                                  lambda: view.scroll_offset.y == view.max_scroll_y)
+            assert await _settled(
+                pilot, lambda: view.scroll_offset.y == view.max_scroll_y
+            )
             # The reader keeps their cursor: paging must not move focus.
             assert isinstance(app.focused, HistoryInput)
 
@@ -607,7 +629,7 @@ class TestScrollFollowing:
             for step in range(1, 6):
                 await pilot.press("up")
                 assert await _settled(
-                    pilot, lambda: view.scroll_offset.y == before - step
+                    pilot, lambda step=step: view.scroll_offset.y == before - step
                 ), "the one-line step never landed"
 
                 view.add_assistant_message()
@@ -716,24 +738,32 @@ class TestTimestamp:
 
     def test_none_and_garbage(self):
         from slife.ui.chat import _format_timestamp
+
         assert _format_timestamp(None) is None
         assert _format_timestamp("not-a-time") is None
 
     def test_same_day_time_only(self):
         from datetime import datetime
+
         from slife.ui.chat import _format_timestamp
+
         now = datetime.now().astimezone()
         assert _format_timestamp(now) == now.strftime("%H:%M")
 
     def test_iso_string_same_day(self):
         from datetime import datetime
+
         from slife.ui.chat import _format_timestamp
+
         now = datetime.now().astimezone().replace(second=0, microsecond=0)
-        assert _format_timestamp(now.isoformat(timespec="seconds")) == now.strftime("%H:%M")
+        assert _format_timestamp(now.isoformat(timespec="seconds")) == now.strftime(
+            "%H:%M"
+        )
 
     def test_other_day_same_year(self, monkeypatch):
         from datetime import datetime
-        import slife.ui.chat as chat
+
+        from slife.ui import chat
 
         class _FixedNow(datetime):
             @classmethod
@@ -745,7 +775,8 @@ class TestTimestamp:
 
     def test_previous_year_full_date(self, monkeypatch):
         from datetime import datetime
-        import slife.ui.chat as chat
+
+        from slife.ui import chat
 
         class _FixedNow(datetime):
             @classmethod
@@ -753,13 +784,16 @@ class TestTimestamp:
                 return datetime(2026, 8, 12, 10, 0, tzinfo=tz).astimezone()
 
         monkeypatch.setattr(chat, "datetime", _FixedNow)
-        assert chat._format_timestamp(datetime(2025, 12, 31, 23, 59)) == "2025-12-31 23:59"
+        assert (
+            chat._format_timestamp(datetime(2025, 12, 31, 23, 59)) == "2025-12-31 23:59"
+        )
 
     def test_user_message_with_timestamp(self, monkeypatch):
         """User messages show [HH:MM] before the prefix (Enter-press time)."""
         from datetime import datetime
+
+        from slife.ui import chat
         from slife.ui.chat import UserMessage
-        import slife.ui.chat as chat
 
         class _FixedNow(datetime):
             @classmethod
@@ -768,21 +802,25 @@ class TestTimestamp:
 
         monkeypatch.setattr(chat, "datetime", _FixedNow)
         m = UserMessage(
-            "hello", prefix="You> ", timestamp=datetime(2026, 8, 12, 14, 32),
+            "hello",
+            prefix="You> ",
+            timestamp=datetime(2026, 8, 12, 14, 32),
         )
         assert m.render().plain == "[14:32] You> hello"
 
     def test_user_message_no_timestamp_no_time(self):
         """Without a timestamp the user message is unchanged."""
         from slife.ui.chat import UserMessage
+
         m = UserMessage("hello", prefix="You> ")
         assert m.render().plain == "You> hello"
 
     def test_assistant_message_renders_timestamp(self, monkeypatch):
         """Assistant messages show [HH:MM] before the content."""
         from datetime import datetime
+
+        from slife.ui import chat
         from slife.ui.chat import AssistantMessage
-        import slife.ui.chat as chat
 
         class _FixedNow(datetime):
             @classmethod
@@ -798,8 +836,9 @@ class TestTimestamp:
         """The timestamp goes on the response text, NOT before the thinking
         block — a thinking-only message shows no time."""
         from datetime import datetime
+
+        from slife.ui import chat
         from slife.ui.chat import AssistantMessage
-        import slife.ui.chat as chat
 
         class _FixedNow(datetime):
             @classmethod
@@ -819,6 +858,7 @@ class TestTimestamp:
 
     def test_assistant_no_timestamp_unchanged(self):
         from slife.ui.chat import AssistantMessage
+
         m = AssistantMessage()
         m.append_text("hi")
         assert m.render().plain == "hi"

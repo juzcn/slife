@@ -4,28 +4,27 @@ import asyncio
 import logging
 import re
 from datetime import datetime
+from typing import TYPE_CHECKING, ClassVar
 
 from textual import events
 from textual.app import App, ComposeResult
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.message import Message
 from textual.widgets import Static, TextArea
 
-from slife.config import Config
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.a2a.card import _safe_name, format_presence_line
 from slife.agent.message_history import a2a_message_type
+from slife.agent.plugins import PluginStartStatus
 from slife.agent.service import AgentService, MemoryDatabaseError
 from slife.agent.session import shutdown_session
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
-from slife.agent.plugins import PluginStartStatus
-from slife.ui.chat import ChatView
+from slife.config import Config
 from slife.ui.approval_prompt import ApprovalPrompt
+from slife.ui.chat import ChatView
 from slife.ui.handler import TUIHandler
 from slife.ui.i18n import t
 from slife.ui.restore import restore_session
 from slife.ui.tool_display import ToolCallWidget
-
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from slife.ui.model_picker import ModelPicker
@@ -79,15 +78,11 @@ class StatusBar(Static):
 
         if context_window > 0:
             pct = context_tokens / context_window * 100 if context_tokens else 0.0
-            parts.append(
-                f"[#6e7681]↑ {context_tokens:,} ({pct:.1f}%)[/#6e7681]"
-            )
+            parts.append(f"[#6e7681]↑ {context_tokens:,} ({pct:.1f}%)[/#6e7681]")
         elif context_tokens > 0:
             parts.append(f"[#6e7681]↑ {context_tokens:,} tokens[/#6e7681]")
 
-        parts.append(
-            f"[#484f58]{t('status_keybinds')}[/#484f58]"
-        )
+        parts.append(f"[#484f58]{t('status_keybinds')}[/#484f58]")
 
         self.update("  ".join(parts))
 
@@ -104,7 +99,7 @@ class HistoryInput(TextArea):
     so pasted / composed text can span lines.
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("shift+enter", "insert_newline", "Insert newline", show=False),
         Binding("up", "up_or_history", show=False),
         Binding("down", "down_or_history", show=False),
@@ -136,8 +131,8 @@ class HistoryInput(TextArea):
             **kwargs,
         )
         self._input_history: list[str] = []
-        self._history_idx: int = -1    # -1 = not navigating; 0+ = offset from newest
-        self._saved_draft: str = ""    # what was typed before pressing ↑
+        self._history_idx: int = -1  # -1 = not navigating; 0+ = offset from newest
+        self._saved_draft: str = ""  # what was typed before pressing ↑
 
     def add_history(self, text: str) -> None:
         """Record a submitted entry.  Consecutive duplicates are deduplicated."""
@@ -148,7 +143,7 @@ class HistoryInput(TextArea):
             return
         self._input_history.append(text)
         if len(self._input_history) > self._MAX_HISTORY:
-            self._input_history = self._input_history[-self._MAX_HISTORY:]
+            self._input_history = self._input_history[-self._MAX_HISTORY :]
         self._history_idx = -1
 
     def action_insert_newline(self) -> bool:
@@ -200,6 +195,7 @@ class HistoryInput(TextArea):
         there is no transcript to page.
         """
         from textual.css.query import NoMatches
+
         try:
             return self.app.query_one("#chat-view", ChatView)
         except NoMatches:
@@ -323,8 +319,17 @@ _URL_END = _TOKEN_END + ","
 # @someone is skipped.  URLs / data URIs are self-identifying via their
 # scheme and need no extension gate.
 _IMAGE_EXTS = (
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
-    ".svg", ".ico", ".avif", ".tiff", ".heic",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".svg",
+    ".ico",
+    ".avif",
+    ".tiff",
+    ".heic",
 )
 _EXT_ALT = "|".join(re.escape(e.lstrip(".")) for e in _IMAGE_EXTS)
 
@@ -336,15 +341,18 @@ _EXT_ALT = "|".join(re.escape(e.lstrip(".")) for e in _IMAGE_EXTS)
 #   [...]/ {...} /(…)  → bracketed, may contain spaces
 #   bare               → token-end run ending in an image extension —
 #                        "@a.png@b.png" cuts cleanly at each '@'.
-_SOURCE_RE = re.compile(r"""
-    (?: data: [^%s]+ | https?:// [^%s]+ )          # data URI / URL
+_SOURCE_RE = re.compile(
+    rf"""
+    (?: data: [^{_TOKEN_END}]+ | https?:// [^{_URL_END}]+ )          # data URI / URL
   | "(?P<dq>[^"]+)"                                # @"path with spaces"
   | '(?P<sq>[^']+)'                                # @'path'
   | \[(?P<br>[^\]\s]+)\]                           # @[path]
-  | \{(?P<bc>[^}\s]+)\}                            # @{path}
+  | \{{(?P<bc>[^}}\s]+)\}}                            # @{{path}}
   | \((?P<bp>[^)\s]+)\)                            # @(path)
-  | (?P<bare>[^%s]*\.(?:%s))                       # bare path w/ img ext
-""" % (_TOKEN_END, _URL_END, _TOKEN_END, _EXT_ALT), re.VERBOSE)
+  | (?P<bare>[^{_TOKEN_END}]*\.(?:{_EXT_ALT}))                       # bare path w/ img ext
+""",
+    re.VERBOSE,
+)
 
 
 def _parse_images_from_input(raw: str) -> list[str]:
@@ -376,9 +384,14 @@ def _parse_images_from_input(raw: str) -> list[str]:
             break
         m = _SOURCE_RE.match(raw, at.end())
         if m:
-            value = m.group("dq") or m.group("sq") or \
-                m.group("br") or m.group("bc") or m.group("bp") \
+            value = (
+                m.group("dq")
+                or m.group("sq")
+                or m.group("br")
+                or m.group("bc")
+                or m.group("bp")
                 or m.group(0)
+            )
             if value:
                 sources.append(value)
             i = m.end()
@@ -396,7 +409,7 @@ class SlifeApp(App):
 
     CSS_PATH = "slife.tcss"
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("ctrl+c", "quit", "Quit"),
         # NOTE: NOT priority — Textual's priority pass checks the App before
         # the focused widget (reversed binding chain), so a priority escape
@@ -431,12 +444,11 @@ class SlifeApp(App):
         self._heartbeat_color: str = ""
         self._heartbeat_beat: int = 0
 
-
         # Model picker re-entry guard — a second Ctrl+S while one is open
         # would stack a second picker and leak the first's await-task.
         self._model_picker_open = False
-        self._model_picker_future: "asyncio.Future | None" = None
-        self._model_picker_widget: "ModelPicker | None" = None  # for dismissal styling
+        self._model_picker_future: asyncio.Future | None = None
+        self._model_picker_widget: ModelPicker | None = None  # for dismissal styling
 
         # Fatal startup failure (memory DB broken, required plugin failed).
         # Stored so main() can surface it to the terminal AFTER the TUI has
@@ -475,7 +487,7 @@ class SlifeApp(App):
             starting=self._status_starting,
         )
 
-    # Focus input on startup
+        # Focus input on startup
         self.query_one("#user-input").focus()
 
         # ★ Step 0: Start the unified message queue first.
@@ -495,7 +507,8 @@ class SlifeApp(App):
         missing = self.service.config.plugins_required - {n for n, _ in plugins}
         if missing:
             await self._abort_required_plugin(
-                next(iter(missing)), "plugin not discovered",
+                next(iter(missing)),
+                "plugin not discovered",
             )
             return
 
@@ -510,7 +523,7 @@ class SlifeApp(App):
             # Memory is core — a broken memory DB must not start a
             # memory-less session.  Surface the error and abort startup.
             await self._fatal_exit(t("memdb_unavailable", err=e))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — startup restore failure must not abort startup; the transcript must settle
             # A restore that dies part-way leaves the transcript mid-rebuild, and
             # `_restore_session` suppresses ChatView auto-scroll for its mount
             # loop — the flag is cleared on its success path only.  Put it back
@@ -526,9 +539,11 @@ class SlifeApp(App):
         for name, module in plugins:
             self.run_worker(
                 self._start_plugin_safe(
-                    name, self.service.start_plugin_server(name, module),
+                    name,
+                    self.service.start_plugin_server(name, module),
                 ),
-                exclusive=False, group="plugin-startup",
+                exclusive=False,
+                group="plugin-startup",
             )
 
         # ── Step 3: A2A + Subagent + callbacks (unchanged) ────────────
@@ -555,7 +570,8 @@ class SlifeApp(App):
         # (start_plugin_server("a2a") → start_a2a, idempotent).
         self.run_worker(
             self.service.start_subagent(),
-            exclusive=False, group="subagent-startup",
+            exclusive=False,
+            group="subagent-startup",
         )
 
         # ── Step 4: open the service for input ──────────────────────
@@ -564,7 +580,8 @@ class SlifeApp(App):
         # status bar shows "⏳ starting…" and Enter does nothing.
         self.run_worker(
             self._open_service_when_ready(),
-            exclusive=False, group="startup-gate",
+            exclusive=False,
+            group="startup-gate",
         )
 
     async def _open_service_when_ready(self) -> None:
@@ -577,10 +594,12 @@ class SlifeApp(App):
         normal processing indicator.
         """
         await self.service.wait_startup_settled()
+        from textual.css.query import NoMatches
+
         try:
             self.query_one("#user-input").disabled = False
             self.query_one("#user-input").focus()
-        except Exception:
+        except NoMatches:
             pass
         self._update_status()
 
@@ -597,7 +616,7 @@ class SlifeApp(App):
         for worker in list(self.workers):
             try:
                 worker.cancel()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — quit path: a worker cancel must never block shutdown
                 pass
 
         await self._stop_plugins()
@@ -707,7 +726,7 @@ class SlifeApp(App):
             for row in self.query(".approval-prompt"):
                 if isinstance(row, ApprovalPrompt) and row.pending:
                     row.action_deny()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — defensive approval-dismiss sweep in the model-switch handler
             pass
 
         models = list(self.service.config.models)
@@ -777,7 +796,7 @@ class SlifeApp(App):
                 isinstance(row, ApprovalPrompt) and row.pending
                 for row in self.query(".approval-prompt")
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 — best-effort pending-approval probe; False when the DOM isn't ready
             return False
 
     async def _finish_model_switch(self, chat_view, future) -> None:
@@ -890,7 +909,7 @@ class SlifeApp(App):
         """
         try:
             status = await coro
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — plugin isolation: every plugin can raise (the spawn hang-guard surfaces as a bare TimeoutError)
             # The spawn hang-guard surfaces as a bare ``TimeoutError`` whose
             # ``str()`` is empty, and EVERY plugin can hit it — the guard wraps
             # the whole spawn (MCP handshake included), not just a required
@@ -904,7 +923,8 @@ class SlifeApp(App):
                 await self._abort_required_plugin(name, reason)
                 return
             self._show_system_message(
-                t("plugin_start_failed", name=name, err=reason), color="#d29922",
+                t("plugin_start_failed", name=name, err=reason),
+                color="#d29922",
             )
             return
         if status is PluginStartStatus.STARTED:
@@ -912,19 +932,22 @@ class SlifeApp(App):
             # plugin is ready (its serving requirement was encoded in the
             # server's lifespan, not probed afterwards).
             self._show_system_message(
-                t("plugin_ready", name=name), color="#3fb950",
+                t("plugin_ready", name=name),
+                color="#3fb950",
             )
         elif status is PluginStartStatus.SKIPPED:
             logger.debug("plugin_skipped name=%s", name)
             self._show_system_message(
-                t("plugin_skipped", name=name), color="#8b949e",
+                t("plugin_skipped", name=name),
+                color="#8b949e",
             )
         else:
             if name in self.service.config.plugins_required:
                 await self._abort_required_plugin(name, "plugin never became ready")
                 return
             self._show_system_message(
-                t("plugin_ready_failed", name=name), color="#d29922",
+                t("plugin_ready_failed", name=name),
+                color="#d29922",
             )
 
     async def _abort_required_plugin(self, name: str, reason: str) -> None:
@@ -941,7 +964,6 @@ class SlifeApp(App):
         """
         msg = t("required_failed", name=name, reason=reason)
         await self._fatal_exit(msg)
-
 
     # ── Input handling ────────────────────────────────────────────
 
@@ -976,7 +998,9 @@ class SlifeApp(App):
         # assistant reply (and restore) show the same time.
         now = datetime.now().astimezone()
         chat_view.add_user_message(
-            raw, prefix="You> ", timestamp=now,
+            raw,
+            prefix="You> ",
+            timestamp=now,
         )
         # The reader's own message owns the view: sending it goes to the end
         # and re-arms following, however far up they had read.  The helper
@@ -989,7 +1013,10 @@ class SlifeApp(App):
         # (handler is attached to the message, inbox streams later).
         self.run_worker(
             self._process_message(
-                raw, image_paths or None, chat_view, turn_time=now,
+                raw,
+                image_paths or None,
+                chat_view,
+                turn_time=now,
             ),
             exclusive=False,
         )
@@ -1012,9 +1039,7 @@ class SlifeApp(App):
             line = format_presence_line(card, event)
             if line is None:
                 return  # status_change (heartbeat) etc. — not user-visible
-            color = {"online": "#7c3aed", "offline": "#6e7681"}.get(
-                event, "#6e7681"
-            )
+            color = {"online": "#7c3aed", "offline": "#6e7681"}.get(event, "#6e7681")
             chat_view.add_system_message(line, color=color)
 
         elif kind == "task_received":
@@ -1051,8 +1076,7 @@ class SlifeApp(App):
                 prefix = (
                     t("scheduled_task_prefix", name=scheduled_task)
                     if scheduled_task
-                    else t("subagent_prefix",
-                           name=kwargs.get("name") or "subagent")
+                    else t("subagent_prefix", name=kwargs.get("name") or "subagent")
                 )
                 chat_view.add_user_message(
                     content,
@@ -1074,7 +1098,8 @@ class SlifeApp(App):
             # that is no longer in the context.
             if kwargs.get("dropped"):
                 key = (
-                    "turn_dropped_images" if kwargs.get("images_dropped")
+                    "turn_dropped_images"
+                    if kwargs.get("images_dropped")
                     else "turn_dropped"
                 )
             elif kwargs.get("images_dropped"):
@@ -1143,7 +1168,8 @@ class SlifeApp(App):
                 # still owes the clause.
                 unanswered = kwargs.get("unanswered", 0)
                 key = (
-                    "tools_synced_corrected" if kwargs.get("corrected")
+                    "tools_synced_corrected"
+                    if kwargs.get("corrected")
                     else "tools_synced"
                 )
                 text = t(
@@ -1220,7 +1246,9 @@ class SlifeApp(App):
     ) -> None:
         """Run the agent loop and stream results to the TUI."""
         handler = TUIHandler(
-            self, assistant_prefix=self._assistant_prefix, timestamp=turn_time,
+            self,
+            assistant_prefix=self._assistant_prefix,
+            timestamp=turn_time,
         )
 
         try:
@@ -1230,7 +1258,7 @@ class SlifeApp(App):
                 handler=handler,
             )
             handler.finalize_current()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — a turn must never crash the app; surface the error in the transcript
             handler.finalize_current()
             chat_view.add_system_message(t("turn_error", err=e), color="#f85149")
         # NOTE: _process_message only enqueues and returns immediately — the

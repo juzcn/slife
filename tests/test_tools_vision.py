@@ -1,12 +1,13 @@
 """Tests for AttachImageTool (slife.tools.models)."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from slife.config import Config, ModelConfig
 from slife.tools.models import AttachImageTool
+
+pytestmark = pytest.mark.unit
 
 
 class TestAttachImageTool:

@@ -1,14 +1,12 @@
 """Tests for slife.paths — canonical filesystem paths."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 from pathlib import Path
 
 import pytest
 
 from slife import paths
 
+pytestmark = pytest.mark.unit
 
 # ── is_dev ──────────────────────────────────────────────────────────────
 
@@ -31,7 +29,8 @@ class TestIsDev:
             monkeypatch.setitem(sys.modules, "slife", None)
         else:
             monkeypatch.setitem(
-                sys.modules, "slife",
+                sys.modules,
+                "slife",
                 types.SimpleNamespace(__file__=module_file),
             )
 
@@ -57,7 +56,8 @@ class TestIsDev:
         self._write_project_toml(tmp_path)
         monkeypatch.chdir(tmp_path)
         self._fake_slife(
-            monkeypatch, "/opt/venv/site-packages/slife/__init__.py",
+            monkeypatch,
+            "/opt/venv/site-packages/slife/__init__.py",
         )
         assert paths.is_dev() is False
 

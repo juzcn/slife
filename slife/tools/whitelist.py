@@ -32,11 +32,13 @@ configurable.
 from __future__ import annotations
 
 #: Harness auto-invoked tool pairs — always injected (the loop's mechanism).
-HARNESS_WHITELIST: frozenset[str] = frozenset({
-    "_turn_prompt",
-    "_check_new_input",
-    "attach_image",
-})
+HARNESS_WHITELIST: frozenset[str] = frozenset(
+    {
+        "_turn_prompt",
+        "_check_new_input",
+        "attach_image",
+    }
+)
 
 #: The tool-system meta surface — DESIGN.md §4.4, minus the retired
 #: connect/disconnect pairs and `mcp_search`: server management (mcp AND
@@ -45,13 +47,15 @@ HARNESS_WHITELIST: frozenset[str] = frozenset({
 #: establish once the modern protocol removed the session, and a server-level
 #: search lost its subject once the server registry went away — see
 #: DESIGN.md §4.
-META_WHITELIST: frozenset[str] = frozenset({
-    "mcp_set_enabled",
-    "rest_api_set_enabled",
-    "tool_search",
-    "func_tool_load",
-    "_func_tool_unload",
-})
+META_WHITELIST: frozenset[str] = frozenset(
+    {
+        "mcp_set_enabled",
+        "rest_api_set_enabled",
+        "tool_search",
+        "func_tool_load",
+        "_func_tool_unload",
+    }
+)
 
 #: Pinned always-loaded — not tool-system machinery, but one call each for two
 #: things every session does: ``skill_use`` reads the playbook a skill exists
@@ -59,15 +63,15 @@ META_WHITELIST: frozenset[str] = frozenset({
 #: and ``system_health`` is the single health report over every subsystem
 #: check.  Losing either to the threshold squeeze costs a search+load round
 #: trip to re-learn what the session always needs.
-PINNED_WHITELIST: frozenset[str] = frozenset({
-    "skill_use",
-    "system_health",
-})
+PINNED_WHITELIST: frozenset[str] = frozenset(
+    {
+        "skill_use",
+        "system_health",
+    }
+)
 
 #: Everything that must always be injected / never evicted / not unloadable.
-ALWAYS_LOADED: frozenset[str] = (
-    HARNESS_WHITELIST | META_WHITELIST | PINNED_WHITELIST
-)
+ALWAYS_LOADED: frozenset[str] = HARNESS_WHITELIST | META_WHITELIST | PINNED_WHITELIST
 
 
 def is_meta_tool(name: str) -> bool:

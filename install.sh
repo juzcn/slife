@@ -548,9 +548,9 @@ if [ -f "$PYPROJECT" ]; then
 fi
 
 #
-# uv tool install creates an isolated venv, installs slife + credstore
-# (workspace member), and places the executables in ~/.local/bin.
-# Python 3.13 is managed automatically by uv.
+# uv tool install creates an isolated venv, installs slife plus its PyPI
+# dependencies (credstore / local-embed), and places the executables in
+# ~/.local/bin.  Python 3.13 is managed automatically by uv.
 # User data (~/.slife/) is never touched.
 echo -e "${YELLOW}[4/5] Installing slife v${VERSION}…${NC}"
 
@@ -641,20 +641,20 @@ fi
 
 TOOL_INSTALL_LOG="$TMP_DIR/tool-install.log"
 
-# Build local wheels for the whole workspace (slife + credstore + cc-switch +
-# local-embed) and install slife from them.
+# Build a wheel for slife (the repo's only package) and install slife from it,
+# so the tool venv gets THIS main snapshot rather than the last slife release
+# on PyPI.  credstore / local-embed are ordinary PyPI dependencies now —
+# --find-links only ADDS the local wheel to the candidate set, it does not
+# exclude the index, so they still resolve normally.
 #
-# Why wheels and not `--from "$TMP_DIR/slife-main"`: `uv tool install --from`
-# materialises the workspace members (local-embed / credstore) as EDITABLE
-# installs pointing at the extracted source dir — which the installer deletes
-# at the end — so those packages break after a fresh install (they are
-# declared deps; they belong inside slife's venv, as real copies).  Local
-# wheels install them as non-editable copies: self-contained, survives the
-# temp-dir cleanup, still 100 % from source, no PyPI.
+# Why a wheel and not `--from "$TMP_DIR/slife-main"`: `--from` points the
+# install at the extracted source dir, which the installer deletes at the
+# end (and can materialise it as an editable install).  A local wheel is a
+# self-contained, non-editable copy that survives the temp-dir cleanup.
 WHEELHOUSE="$TMP_DIR/wheelhouse"
 mkdir -p "$WHEELHOUSE"
 set +eo pipefail
-uv build --all-packages --out-dir "$WHEELHOUSE" "$TMP_DIR/slife-main" >> "$TOOL_INSTALL_LOG" 2>&1
+uv build --out-dir "$WHEELHOUSE" "$TMP_DIR/slife-main" >> "$TOOL_INSTALL_LOG" 2>&1
 BUILD_EXIT=$?
 set -eo pipefail
 if [ $BUILD_EXIT -ne 0 ]; then
@@ -669,7 +669,14 @@ set +eo pipefail
 # --force: a failed install can leave stale executables (credstore) in
 # uv's tool bin dir even after env/shims are cleaned — location varies by
 # UV_TOOL_BIN_DIR, so uv itself suggests --force to overwrite them.
-uv tool install --python 3.13 --find-links "$WHEELHOUSE" --force slife > "$TOOL_INSTALL_LOG" 2>&1
+#
+# The built wheel is named BY PATH, not by name.  `uv tool install
+# --find-links "$WHEELHOUSE" slife` is ambiguous the moment PyPI carries a
+# slife of the same version: uv is free to take the release instead of this
+# freshly built snapshot — the one thing this installer exists to avoid, since
+# it promises the newest `main`.  A path is unambiguous.  credstore /
+# local-embed are ordinary PyPI dependencies and resolve from the index.
+uv tool install --python 3.13 --force "$WHEELHOUSE"/slife-*.whl > "$TOOL_INSTALL_LOG" 2>&1
 INSTALL_EXIT=$?
 set -eo pipefail
 if [ $INSTALL_EXIT -ne 0 ]; then
@@ -824,24 +831,23 @@ else
 fi
 
 # ── Configs: seed the git-tracked defaults out-of-the-box ───────────────
-# slife.yaml / local_embed.yaml / tools.yaml / sharefile.yaml come
-# from the downloaded source tree (now git-tracked).  slife.yaml,
-# tools.yaml and sharefile.yaml (the last two belong to built-in
-# plugins) live in ~/.slife; local_embed.yaml is local-embed's own
-# (~/.local-embed).  Missing ones are copied silently; when an existing one
+# slife.yaml / tools.yaml / sharefile.yaml come from the downloaded source
+# tree (now git-tracked) and all live in ~/.slife (the last two belong to
+# built-in plugins).  Missing ones are copied silently; when an existing one
 # differs from the bundled default, the NEW default is seeded into ~/.slife/
 # as a versioned copy (<name>.<version>.<ext>) — never prompted, never
 # overwritten; the user applies or discards it.  A reinstall of the same
 # version simply refreshes the copy.
+#
+# credstore and local-embed are separate applications now, and each owns its
+# own config — slife no longer writes into ~/.local-embed (or ~/.credstore).
+# Configure local-embed with its own CLI (`local-embed set …`).
 echo -e "${YELLOW}[4c] Setting up configs (out-of-the-box defaults)…${NC}"
 SEED_DIR="$TMP_DIR/slife-main"
-for _name in slife.yaml local_embed.yaml tools.yaml sharefile.yaml; do
+for _name in slife.yaml tools.yaml sharefile.yaml; do
     _src="$SEED_DIR/$_name"
     [ -f "$_src" ] || continue   # older main snapshots may lack the seeds
-    # slife.yaml, tools.yaml and sharefile.yaml sit in ~/.slife;
-    # local_embed.yaml in local-embed's own folder.
     case "$_name" in
-        local_embed.yaml) _target="$HOME/.local-embed/local_embed.yaml" ;;
         tools.yaml)       _target="$HOME/.slife/tools.yaml" ;;
         sharefile.yaml)   _target="$HOME/.slife/sharefile.yaml" ;;
         *)                 _target="$HOME/.slife/slife.yaml" ;;

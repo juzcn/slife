@@ -1,27 +1,26 @@
 """Tests for Slife.platform — platform detection and Python script runner."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import signal
 import sys
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from slife.platform import (
-    resolve_command,
     IS_WINDOWS,
-    get_os_info,
-    detect_current_shell,
-    _taskkill_tree_sync,
-    assign_to_job_object,
-    terminate_process,
-    terminate_process_sync,
-    _windows_job,
     _descendant_pids,
     _signal_pids_sync,
+    _taskkill_tree_sync,
+    _windows_job,
+    assign_to_job_object,
+    detect_current_shell,
+    get_os_info,
+    resolve_command,
+    terminate_process,
+    terminate_process_sync,
 )
 
+pytestmark = pytest.mark.unit
 
 # ── Platform detection ──────────────────────────────────────────────────
 
@@ -36,11 +35,20 @@ class TestPlatformDetection:
     def test_get_os_info_returns_known_os(self):
         """get_os_info returns one of the expected OS names."""
         os_name = get_os_info()
-        assert os_name in ("Windows", "Linux", "macOS", "FreeBSD", "OpenBSD", "NetBSD", "SunOS")
+        assert os_name in (
+            "Windows",
+            "Linux",
+            "macOS",
+            "FreeBSD",
+            "OpenBSD",
+            "NetBSD",
+            "SunOS",
+        )
 
     def test_get_os_info_matches_platform_system(self):
         """get_os_info derives from platform.system()."""
         import platform as _platform
+
         system = _platform.system()
         os_name = get_os_info()
         if system == "Darwin":
@@ -60,6 +68,7 @@ class TestRunPythonScriptTool:
     async def test_execute_runs_script(self):
         """Tool executes a simple Python one-liner and returns output."""
         from slife.tools.exec import RunPythonScriptTool
+
         tool = RunPythonScriptTool()
         result = await tool.execute(script="-c print('hello')")
         assert "hello" in result
@@ -135,6 +144,7 @@ class TestTerminateProcess:
     async def test_none_process_noop(self):
         """Terminating None is a no-op."""
         from slife.platform import terminate_process
+
         await terminate_process(None, label="test")  # type: ignore[arg-type]
         # Should not raise
 
@@ -143,6 +153,7 @@ class TestTerminateProcess:
         """Process with returncode set needs no termination."""
         import asyncio
         from unittest.mock import MagicMock
+
         from slife.platform import terminate_process
 
         proc = MagicMock(spec=asyncio.subprocess.Process)
@@ -156,7 +167,8 @@ class TestTerminateProcess:
     async def test_closes_stdin(self):
         """Stdin is closed to signal the process."""
         import asyncio
-        from unittest.mock import MagicMock, AsyncMock
+        from unittest.mock import AsyncMock, MagicMock
+
         from slife.platform import terminate_process
 
         proc = MagicMock(spec=asyncio.subprocess.Process)
@@ -174,6 +186,7 @@ class TestTerminateProcess:
         """ProcessLookupError (process already gone) is swallowed."""
         import asyncio
         from unittest.mock import MagicMock
+
         from slife.platform import terminate_process
 
         proc = MagicMock(spec=asyncio.subprocess.Process)
@@ -189,7 +202,8 @@ class TestTerminateProcess:
     async def test_stdin_close_error_swallowed(self):
         """Errors closing stdin are swallowed gracefully."""
         import asyncio
-        from unittest.mock import MagicMock, AsyncMock
+        from unittest.mock import AsyncMock, MagicMock
+
         from slife.platform import terminate_process
 
         proc = MagicMock(spec=asyncio.subprocess.Process)
@@ -206,6 +220,7 @@ class TestTerminateProcess:
         """General exceptions during termination are swallowed."""
         import asyncio
         from unittest.mock import MagicMock
+
         from slife.platform import terminate_process
 
         proc = MagicMock(spec=asyncio.subprocess.Process)
@@ -244,8 +259,10 @@ class TestTreeKill:
         """A hung taskkill is bounded by its timeout and swallowed."""
         import subprocess as _sp
 
-        with patch("slife.platform._subprocess.run",
-                   side_effect=_sp.TimeoutExpired("taskkill", 1)):
+        with patch(
+            "slife.platform._subprocess.run",
+            side_effect=_sp.TimeoutExpired("taskkill", 1),
+        ):
             _taskkill_tree_sync(4242)  # must not raise
 
     @pytest.mark.skipif(not IS_WINDOWS, reason="Windows-only branch")
@@ -294,26 +311,34 @@ class TestPosixTreeSweep:
     _PS = "  100       1\n  200     100\n  201     100\n  300     200\n  999       1\n"
 
     def test_walks_the_whole_subtree_not_just_the_children(self):
-        with patch("slife.platform.IS_WINDOWS", False), \
-             patch("slife.platform._subprocess.run") as run:
+        with (
+            patch("slife.platform.IS_WINDOWS", False),
+            patch("slife.platform._subprocess.run") as run,
+        ):
             run.return_value = MagicMock(stdout=self._PS)
             assert sorted(_descendant_pids(100)) == [200, 201, 300]
 
     def test_ignores_unrelated_processes(self):
-        with patch("slife.platform.IS_WINDOWS", False), \
-             patch("slife.platform._subprocess.run") as run:
+        with (
+            patch("slife.platform.IS_WINDOWS", False),
+            patch("slife.platform._subprocess.run") as run,
+        ):
             run.return_value = MagicMock(stdout=self._PS)
             assert 999 not in _descendant_pids(100)
             assert _descendant_pids(999) == []
 
     def test_a_missing_ps_costs_the_sweep_not_the_stop(self):
-        with patch("slife.platform.IS_WINDOWS", False), \
-             patch("slife.platform._subprocess.run", side_effect=OSError("no ps")):
+        with (
+            patch("slife.platform.IS_WINDOWS", False),
+            patch("slife.platform._subprocess.run", side_effect=OSError("no ps")),
+        ):
             assert _descendant_pids(100) == []  # must not raise
 
     def test_malformed_ps_output_is_skipped(self):
-        with patch("slife.platform.IS_WINDOWS", False), \
-             patch("slife.platform._subprocess.run") as run:
+        with (
+            patch("slife.platform.IS_WINDOWS", False),
+            patch("slife.platform._subprocess.run") as run,
+        ):
             run.return_value = MagicMock(stdout="garbage\n  200     100\n  x  y\n")
             assert _descendant_pids(100) == [200]
 
@@ -362,7 +387,8 @@ class TestKillOnCloseJob:
 
         proc = _sp.Popen(
             [sys.executable, "-c", "import time; time.sleep(30)"],
-            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+            stdout=_sp.DEVNULL,
+            stderr=_sp.DEVNULL,
         )
         try:
             assert assign_to_job_object(proc.pid, label="test-child") is True
@@ -425,15 +451,16 @@ class TestTerminateProcessForceKill:
     @pytest.mark.asyncio
     async def test_force_kill_after_timeout(self):
         """After terminate times out, kill is called."""
-        import asyncio
         from unittest.mock import MagicMock
+
         from slife.platform import terminate_process
+
         mock_proc = MagicMock()
         mock_proc.returncode = None
         # terminate succeeds
         mock_proc.terminate.return_value = None
         # wait raises TimeoutError twice
-        mock_proc.wait = MagicMock(side_effect=[asyncio.TimeoutError(), asyncio.TimeoutError()])
+        mock_proc.wait = MagicMock(side_effect=[TimeoutError(), TimeoutError()])
 
         with patch("slife.platform.IS_WINDOWS", True):
             await terminate_process(mock_proc, label="test_kill")
@@ -451,6 +478,7 @@ class TestDesktopNotify:
     @patch("slife.platform._platform.system", return_value="Windows")
     def test_windows_notification(self, _mock_system, mock_run):
         from slife.platform import desktop_notify
+
         desktop_notify("Test", "Hello World")
         mock_run.assert_called_once()
         assert "powershell" in mock_run.call_args[0][0][0]
@@ -459,6 +487,7 @@ class TestDesktopNotify:
     @patch("slife.platform._platform.system", return_value="Darwin")
     def test_macos_notification(self, _mock_system, mock_run):
         from slife.platform import desktop_notify
+
         desktop_notify("Test", "Hello")
         mock_run.assert_called_once()
         assert "osascript" in mock_run.call_args[0][0][0]
@@ -467,6 +496,7 @@ class TestDesktopNotify:
     @patch("slife.platform._platform.system", return_value="Linux")
     def test_linux_notification(self, _mock_system, mock_run):
         from slife.platform import desktop_notify
+
         desktop_notify("Test", "Hello")
         mock_run.assert_called_once()
 
@@ -474,6 +504,7 @@ class TestDesktopNotify:
     @patch("slife.platform._platform.system", return_value="Windows")
     def test_notification_exception_swallowed(self, _mock_system, _mock_run):
         from slife.platform import desktop_notify
+
         # Should not raise
         desktop_notify("Test", "Hello")
 

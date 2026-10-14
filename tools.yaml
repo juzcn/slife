@@ -260,6 +260,10 @@ mcp:
 # `uvx mcp-openapi-proxy` invocation — belonging to this section is what makes
 # it a REST API, and every endpoint in its spec becomes a `{name}__{endpoint}`
 # tool.
+    srv:
+      command: echo
+      args:
+        - hello
 rest-api:
   github:
     command: uvx

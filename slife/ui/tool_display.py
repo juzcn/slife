@@ -12,9 +12,12 @@ eliminating MarkupError crashes from search results containing URLs, JSON, etc.
 import os
 import subprocess
 import sys
+from typing import ClassVar
+
 from textual.actions import SkipAction
-from textual.content import Content
+from textual.binding import BindingType
 from textual.containers import VerticalScroll
+from textual.content import Content
 from textual.widgets import Static
 
 from slife.platform import IS_WINDOWS
@@ -24,7 +27,9 @@ from slife.ui.content import mc as _mc
 from slife.ui.i18n import t
 
 # WSL: Linux kernel with Windows interop — clip.exe is the native clipboard.
-_IS_WSL = sys.platform == "linux" and os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop")
+_IS_WSL = sys.platform == "linux" and os.path.exists(
+    "/proc/sys/fs/binfmt_misc/WSLInterop"
+)
 
 # ── Tool display helpers ─────────────────────────────────────────────
 
@@ -57,14 +62,14 @@ def _primary_arg_value(tool_args: dict) -> str | None:
 
 _STATUS_ICON: dict[str, str] = {
     "running": "◌",
-    "done":    "●",
-    "error":   "●",
+    "done": "●",
+    "error": "●",
 }
 
 _STATUS_COLOR: dict[str, str] = {
     "running": "#d29922",
-    "done":    "#3fb950",
-    "error":   "#f85149",
+    "done": "#3fb950",
+    "error": "#f85149",
 }
 
 # Status → i18n key.  Resolved through t() at render time so the label
@@ -73,8 +78,8 @@ _STATUS_COLOR: dict[str, str] = {
 # next render without rebuilding the table.
 _STATUS_LABEL_KEY: dict[str, str] = {
     "running": "td_running",
-    "done":    "td_done",
-    "error":   "td_error_label",
+    "done": "td_done",
+    "error": "td_error_label",
 }
 
 
@@ -109,7 +114,7 @@ class ToolCallWidget(VerticalScroll):
 
     can_focus = True
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         ("enter,space", "toggle", "Toggle detail"),
         ("ctrl+y", "copy_result", "Copy result"),
     ]
@@ -157,7 +162,7 @@ class ToolCallWidget(VerticalScroll):
         """
         try:
             n = self.max_scroll_y
-        except Exception:
+        except Exception:  # noqa: BLE001 — max_scroll_y only exists after layout; bare/unit-test instances are guarded
             n = 0
         if n <= 0:
             return None
@@ -308,6 +313,7 @@ class ToolCallWidget(VerticalScroll):
         primary = _primary_arg_value(self.tool_args)
         if primary:
             from slife.logfmt import sanitize_secrets
+
             primary = sanitize_secrets(primary)
             short = primary[:_PRIMARY_ARG_MAX]
             if len(primary) > _PRIMARY_ARG_MAX:
@@ -341,7 +347,9 @@ class ToolCallWidget(VerticalScroll):
 
         # ── Arguments ────────────────────────────────────────────
         if self.tool_args:
-            content = content + _mc(f"[bold #8b949e]{t('td_arguments')}[/bold #8b949e]\n")
+            content = content + _mc(
+                f"[bold #8b949e]{t('td_arguments')}[/bold #8b949e]\n"
+            )
             for key, value in self.tool_args.items():
                 val_str = str(value)
                 if len(val_str) > 500:
@@ -356,11 +364,15 @@ class ToolCallWidget(VerticalScroll):
         if self._result:
             content = content + _mc("\n")
             if self._result_is_error:
-                content = content + _mc(f"[bold #f85149]{t('td_error')}[/bold #f85149]\n")
+                content = content + _mc(
+                    f"[bold #f85149]{t('td_error')}[/bold #f85149]\n"
+                )
                 content = content + _lit(self._result, style="#f85149")
             else:
                 result_lines = self._result.split("\n")
-                content = content + _mc(f"[bold #8b949e]{t('td_result')}[/bold #8b949e]\n")
+                content = content + _mc(
+                    f"[bold #8b949e]{t('td_result')}[/bold #8b949e]\n"
+                )
                 if len(result_lines) > _MAX_RESULT_LINES:
                     result_display = "\n".join(result_lines[:_MAX_RESULT_LINES])
                     content = content + _lit(result_display, style="#c9d1d9")
@@ -403,7 +415,7 @@ def _copy_to_clipboard(text: str) -> None:
                     break
                 except FileNotFoundError:
                     continue
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         pass
 
 
@@ -423,15 +435,20 @@ def _copy_via_powershell(text: str) -> None:
     path: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", suffix=".txt", delete=False,
+            "w",
+            encoding="utf-8",
+            suffix=".txt",
+            delete=False,
         ) as f:
             f.write(text)
             path = f.name
         subprocess.run(
             [
-                "powershell", "-NoProfile", "-NonInteractive", "-Command",
-                f"Set-Clipboard -Value (Get-Content -Raw -Encoding UTF8 "
-                f"'{path}')",
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                (f"Set-Clipboard -Value (Get-Content -Raw -Encoding UTF8 '{path}')"),
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -439,7 +456,7 @@ def _copy_via_powershell(text: str) -> None:
             check=False,
             timeout=_tmo.timeouts.grace.force,
         )
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         # Best-effort — a clipboard failure must never break Ctrl+Y.
         pass
     finally:

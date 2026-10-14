@@ -1,12 +1,12 @@
 """Tests for slife.a2a.broker — probe_broker function."""
 
-import pytest; pytestmark = pytest.mark.unit
-
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
 
 from slife.a2a.broker import probe_broker
+
+pytestmark = pytest.mark.unit
 
 
 class TestProbeBroker:
@@ -19,9 +19,12 @@ class TestProbeBroker:
         mock_writer.close = MagicMock()
         mock_writer.wait_closed = AsyncMock()
 
-        with patch("asyncio.open_connection", AsyncMock(
-            return_value=(MagicMock(), mock_writer),
-        )):
+        with patch(
+            "asyncio.open_connection",
+            AsyncMock(
+                return_value=(MagicMock(), mock_writer),
+            ),
+        ):
             result = await probe_broker("localhost", 1883)
             assert result is True
             mock_writer.close.assert_called_once()
@@ -73,11 +76,15 @@ class TestProbeBroker:
         # resolver would hold open at exit (slife/threads.py).  Patching
         # ``asyncio.get_running_loop`` here instead only breaks ``run_daemon``:
         # it calls that to get the loop it delivers the result on.
-        with patch("socket.getaddrinfo", return_value=infos), \
-             patch("asyncio.open_connection", _open):
+        with (
+            patch("socket.getaddrinfo", return_value=infos),
+            patch("asyncio.open_connection", _open),
+        ):
             assert await probe_broker("localhost", 1883) is True
 
         # The dead family was tried first, the live one second — and it was
         # pinned to its own family rather than re-resolved by name.
-        assert calls == [("::1", 1883, socket.AF_INET6),
-                         ("127.0.0.1", 1883, socket.AF_INET)]
+        assert calls == [
+            ("::1", 1883, socket.AF_INET6),
+            ("127.0.0.1", 1883, socket.AF_INET),
+        ]

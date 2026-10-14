@@ -122,10 +122,10 @@ _STRINGS: dict[str, dict[str, str]] = {
     },
     "memory_broken": {
         "en": "✗ Memory save failed: {err}\n"
-              "Memory is a core feature — new messages are paused. "
-              "Fix the database and restart.",
+        "Memory is a core feature — new messages are paused. "
+        "Fix the database and restart.",
         "zh": "✗ 记忆保存失败: {err}\n"
-              "记忆是核心功能 — 已停止处理新消息,请修复数据库后重启。",
+        "记忆是核心功能 — 已停止处理新消息,请修复数据库后重启。",
     },
     "plugin_start_failed": {
         "en": "⚠ Plugin start failed ({name}): {err}",
@@ -145,16 +145,16 @@ _STRINGS: dict[str, dict[str, str]] = {
     },
     "required_failed": {
         "en": "✗ Required component failed: {name} ({reason})\n"
-              "{name} is a core system component — cannot run without it. "
-              "Fix and restart.",
+        "{name} is a core system component — cannot run without it. "
+        "Fix and restart.",
         "zh": "✗ 必要组件加载失败: {name}（{reason}）\n"
-              "{name} 是系统核心组件 — 无法在缺少它的状态下运行，请修复后重启。",
+        "{name} 是系统核心组件 — 无法在缺少它的状态下运行，请修复后重启。",
     },
     "memdb_unavailable": {
         "en": "✗ Memory database unavailable: {err}\n"
-              "Memory is a core feature — fix the database and restart.",
+        "Memory is a core feature — fix the database and restart.",
         "zh": "✗ 必要组件加载失败: memdb（{err}）\n"
-              "memdb 是系统核心组件 — 无法在缺少它的状态下运行，请修复后重启。",
+        "memdb 是系统核心组件 — 无法在缺少它的状态下运行，请修复后重启。",
     },
     # ── memory-save failures (service.py → loop_error) ──
     # Memory writes are mandatory: each of these reaches the TUI as the {err}
@@ -173,10 +173,9 @@ _STRINGS: dict[str, dict[str, str]] = {
     },
     "memory_save_unconfirmed": {
         "en": "Memory save unconfirmed — unparsable response; this turn may not "
-              "have been saved",
+        "have been saved",
         "zh": "记忆保存未能确认：返回了无法解析的响应，本轮可能未写入记忆",
     },
-
     # sharefile tunnel down.  The provider is named and its own reason quoted
     # (a missing NGROK_AUTHTOKEN, an absent ssh/cloudflared binary) — the cause
     # is provider-specific, so it must not be restated generically here.
@@ -186,10 +185,9 @@ _STRINGS: dict[str, dict[str, str]] = {
     },
     "tunnel_down_bare": {
         "en": "⚠ File-sharing tunnel unavailable ({provider}) — ask "
-              "system_health for details",
+        "system_health for details",
         "zh": "⚠ 文件分享隧道不可用（{provider}）— 可问 system_health 查看详情",
     },
-
     # ── approval_prompt.py ──
     "approval_requests": {
         "en": " requests approval",
@@ -215,7 +213,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "✗ Denied",
         "zh": "✗ 已拒绝",
     },
-
     # ── model_picker.py ──
     "picker_title": {
         "en": "Switch model",
@@ -245,7 +242,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "No models configured.",
         "zh": "未配置任何模型。",
     },
-
     # ── tool_display.py ──
     "td_arguments": {
         "en": "Arguments",
@@ -283,7 +279,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "error",
         "zh": "错误",
     },
-
     # ── chat.py ──
     "thinking_collapsed": {
         "en": "Thinking ({n} chars)",
@@ -293,7 +288,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Thinking…",
         "zh": "思考…",
     },
-
     # ── status bar / input placeholder (app.py) ──
     "status_starting": {
         "en": "⏳ starting…",
@@ -318,13 +312,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "│ Ctrl+C quit  Esc cancel  Ctrl+S model",
         "zh": "│ Ctrl+C 退出  Esc 取消  Ctrl+S 模型",
     },
-
     # ── handler.py ──
     "max_iterations": {
         "en": "✗ Agent exceeded maximum of {n} iterations",
         "zh": "✗ 已达最大迭代次数 {n}",
     },
-
     # ── Activity feed (app.py) ──
     # The turn-end line for an inbound message.  {type} is the wire type off
     # the message's own [A2A:…] marker — task_request / task_response /
@@ -414,7 +406,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "✗ Error: {err}",
         "zh": "✗ 错误: {err}",
     },
-
     # ── notify_user tool + OAuth desktop notification ──
     # The notification *body* is LLM-/system-supplied, not localized.  Only
     # the fixed framing strings are translated.

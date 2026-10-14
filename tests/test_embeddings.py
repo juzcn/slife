@@ -23,8 +23,11 @@ def _make_transport(models=None, embeddings_dim=3):
             body = json.loads(request.content or b"{}")
             n = len(body.get("input", []))
             data = [
-                {"object": "embedding", "index": i,
-                 "embedding": [float(i + 1)] + [0.0] * (embeddings_dim - 1)}
+                {
+                    "object": "embedding",
+                    "index": i,
+                    "embedding": [float(i + 1)] + [0.0] * (embeddings_dim - 1),
+                }
                 for i in range(n)
             ]
             return httpx2.Response(200, json={"data": data})
@@ -36,7 +39,9 @@ def _make_transport(models=None, embeddings_dim=3):
 @pytest_asyncio.fixture
 async def client():
     c = EmbeddingClient(
-        model="bge-m3", api_key="local", base_url="http://127.0.0.1:17347/v1",
+        model="bge-m3",
+        api_key="local",
+        base_url="http://127.0.0.1:17347/v1",
         transport=_make_transport(),
     )
     yield c
@@ -90,8 +95,8 @@ def test_from_endpoint_api_key_placeholder_unresolved_is_empty(tmp_path, monkeyp
     c = EmbeddingClient.from_endpoint(
         _override(api_key="${NO_SUCH_EMBED_KEY_EVER}"),
     )
-    assert c.available is True          # base_url real → client available
-    assert c.api_key == ""              # placeholder ⇒ no auth header
+    assert c.available is True  # base_url real → client available
+    assert c.api_key == ""  # placeholder ⇒ no auth header
 
 
 @pytest.mark.asyncio
@@ -102,11 +107,15 @@ async def test_api_key_placeholder_resolved_value_sent_as_bearer(tmp_path, monke
     def handler(request: httpx2.Request) -> httpx2.Response:
         seen["authorization"] = request.headers.get("authorization")
         if request.url.path.endswith("/models"):
-            return httpx2.Response(200, json={"data": [{"id": "bge-m3", "dimension": 3}]})
+            return httpx2.Response(
+                200, json={"data": [{"id": "bge-m3", "dimension": 3}]}
+            )
         return httpx2.Response(404, json={"error": "not found"})
 
     c = EmbeddingClient.from_endpoint(_override(api_key="${EMBED_API_KEY}"))
-    c._transport = httpx2.MockTransport(handler)  # test hook, see EmbeddingClient.__init__
+    c._transport = httpx2.MockTransport(
+        handler
+    )  # test hook, see EmbeddingClient.__init__
     assert await c.load() is True
     assert seen["authorization"] == "Bearer sk-test"
     await c.close()
@@ -139,7 +148,9 @@ async def test_max_tokens_guessed_when_list_missing_it(client):
 @pytest.mark.asyncio
 async def test_max_tokens_captured_from_models_list():
     c = EmbeddingClient(
-        model="bge-m3", api_key="local", base_url="http://127.0.0.1:17347/v1",
+        model="bge-m3",
+        api_key="local",
+        base_url="http://127.0.0.1:17347/v1",
         transport=_make_transport(
             models=[{"id": "bge-m3", "dimension": 3, "max_tokens": 2048}],
         ),
@@ -188,7 +199,8 @@ async def test_probe_available_false_when_endpoint_unreachable():
     # Point at a port nothing listens on — probe must return False quickly
     # (short timeout, no hang), so build can auto-degrade.
     c = EmbeddingClient(
-        model="bge-m3", base_url="http://127.0.0.1:1/v1",
+        model="bge-m3",
+        base_url="http://127.0.0.1:1/v1",
     )
     try:
         assert await c.probe_available(timeout=1.0) is False  # noqa-timeout
@@ -197,7 +209,9 @@ async def test_probe_available_false_when_endpoint_unreachable():
 
 
 def test_resolve_server_config_auto_load():
-    cfg = plugin_config.resolve_server_config("svcA", {"command": "npx", "autoload": True})
+    cfg = plugin_config.resolve_server_config(
+        "svcA", {"command": "npx", "autoload": True}
+    )
     assert cfg.auto_load is True
     cfg2 = plugin_config.resolve_server_config("svcB", {"command": "npx"})
     assert cfg2.auto_load is False
@@ -209,8 +223,7 @@ def test_resolve_server_config_auto_load():
 def test_from_endpoint_override_wins(tmp_path):
     """The host's active endpoint configures the client."""
     c = EmbeddingClient.from_endpoint(
-        {"base_url": "http://host.example/v1",
-         "model": "bge-m3", "api_key": "k"},
+        {"base_url": "http://host.example/v1", "model": "bge-m3", "api_key": "k"},
     )
     assert c.available
     assert c.base_url == "http://host.example/v1"
@@ -222,5 +235,3 @@ def test_from_endpoint_placeholder_disabled(tmp_path):
     """A placeholder base_url is never "passed" — disabled."""
     c = EmbeddingClient.from_endpoint({"base_url": "${UNRESOLVED_EMB}"})
     assert not c.available
-
-

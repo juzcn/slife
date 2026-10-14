@@ -119,6 +119,7 @@ def make_check_report() -> dict:
     # Probe the actual endpoint — same config path the rest of this module
     # uses so the availability probe and the section read can't disagree.
     from slife.plugins.memdb.embeddings import EmbeddingClient
+
     client = EmbeddingClient.from_config(config_path=str(_CONFIG_PATH), quiet=True)
 
     result: dict = {

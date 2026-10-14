@@ -45,12 +45,18 @@ def _transport(dim=3, fail: bool = False):
         if fail:
             return httpx2.Response(500, json={"error": "boom"})
         if request.url.path.endswith("/models"):
-            return httpx2.Response(200, json={"data": [{"id": "bge-m3", "dimension": dim}]})
+            return httpx2.Response(
+                200, json={"data": [{"id": "bge-m3", "dimension": dim}]}
+            )
         if request.url.path.endswith("/embeddings"):
-            return httpx2.Response(200, json={
-                "data": [{"object": "embedding", "index": 0,
-                          "embedding": [0.25] * dim}],
-            })
+            return httpx2.Response(
+                200,
+                json={
+                    "data": [
+                        {"object": "embedding", "index": 0, "embedding": [0.25] * dim}
+                    ],
+                },
+            )
         return httpx2.Response(404, json={"error": "not found"})
 
     return httpx2.MockTransport(handler)
@@ -70,8 +76,13 @@ async def _store(tmp_path) -> CatalogStore:
 async def _publish(store, **facts) -> None:
     """Write the state row the index's owner publishes (as the drainer does)."""
     state = {
-        "configured": True, "available": True, "semantic_ready": True,
-        "state": "ready", "reason": "", "model": "bge-m3", "dimension": 3,
+        "configured": True,
+        "available": True,
+        "semantic_ready": True,
+        "state": "ready",
+        "reason": "",
+        "model": "bge-m3",
+        "dimension": 3,
     }
     state.update(facts)
     await store.set_meta(SEMANTIC_STATE_KEY, json.dumps(state))
@@ -82,7 +93,8 @@ async def _publish(store, **facts) -> None:
 
 @pytest.mark.asyncio
 async def test_a_ready_index_is_queryable_from_a_process_that_owns_no_drainer(
-    tmp_path, config,
+    tmp_path,
+    config,
 ):
     store = await _store(tmp_path)
     try:
@@ -99,7 +111,8 @@ async def test_a_ready_index_is_queryable_from_a_process_that_owns_no_drainer(
 
 @pytest.mark.asyncio
 async def test_the_model_that_built_the_index_is_what_makes_it_comparable(
-    tmp_path, config,
+    tmp_path,
+    config,
 ):
     """Same width is not the same vector space — identity is the check.
 
@@ -128,7 +141,9 @@ async def test_an_index_still_filling_is_not_a_result_set(tmp_path, config):
     store = await _store(tmp_path)
     try:
         await _publish(
-            store, semantic_ready=False, state="indexing",
+            store,
+            semantic_ready=False,
+            state="indexing",
             reason="indexing 12/40 tools",
         )
         reader = SemanticReader(store, config, transport=_transport())
@@ -191,7 +206,8 @@ async def test_a_disabled_embeddings_section_disables_the_reader(tmp_path, confi
 
 @pytest.mark.asyncio
 async def test_a_dead_endpoint_is_probed_once_not_once_per_search(
-    tmp_path, config,
+    tmp_path,
+    config,
 ):
     """A worker is long-lived: a per-search retry would stall every task.
 
@@ -217,7 +233,8 @@ async def test_a_dead_endpoint_is_probed_once_not_once_per_search(
 
 @pytest.mark.asyncio
 async def test_a_cold_batch_does_not_sacrifice_the_calls_that_lose_the_race(
-    tmp_path, config,
+    tmp_path,
+    config,
 ):
     """The reported bug: parallel first queries, only ONE of them semantic.
 
@@ -306,7 +323,8 @@ async def test_read_published_state_is_the_one_parser(tmp_path):
 
 @pytest.mark.asyncio
 async def test_the_manager_reports_the_gate_before_the_index_is_ready(
-    tmp_path, config,
+    tmp_path,
+    config,
 ):
     """The drainer's manager is not "ready" merely because it exists.
 
@@ -328,7 +346,8 @@ async def test_the_manager_reports_the_gate_before_the_index_is_ready(
 
 @pytest.mark.asyncio
 async def test_reload_repoints_the_index_at_a_freshly_written_section(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """Switching providers must move the index with it, in-process.
 
@@ -355,13 +374,20 @@ async def test_reload_repoints_the_index_at_a_freshly_written_section(
 
         # The provider the index was built with is recorded in the store.
         await store.set_meta("embedding_model", "api:old-model")
-        await manager.reload(EmbeddingsConfig.from_dict({
-            "providers": {"remote": {
-                "base_url": "https://api.example/v1", "api_key": "k",
-                "model": "bge-m3",
-            }},
-            "active_model": "remote",
-        }))
+        await manager.reload(
+            EmbeddingsConfig.from_dict(
+                {
+                    "providers": {
+                        "remote": {
+                            "base_url": "https://api.example/v1",
+                            "api_key": "k",
+                            "model": "bge-m3",
+                        }
+                    },
+                    "active_model": "remote",
+                }
+            )
+        )
         assert manager._new_embedder().base_url == "https://api.example/v1"
         # A different model identity drops the old vectors (the store's meta
         # is the record of what the index holds).
@@ -374,7 +400,8 @@ async def test_reload_repoints_the_index_at_a_freshly_written_section(
 
 @pytest.mark.asyncio
 async def test_reloading_onto_an_unusable_section_disables_the_index(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """Removing the last provider must degrade the index, not leave it running
     against a section that no longer names an endpoint."""
@@ -382,6 +409,7 @@ async def test_reloading_onto_an_unusable_section_disables_the_index(
 
     store = await _store(tmp_path)
     try:
+
         async def _fake_load(self):
             self._loaded = True
             return True

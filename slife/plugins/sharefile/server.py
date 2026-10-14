@@ -30,11 +30,10 @@ import re
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
-
-from urllib.parse import quote
 
 from slife.plugins.sharefile.config import load_sharefile_config
 from slife.plugins.sharefile.providers import create_provider
@@ -80,11 +79,13 @@ async def _sharefile_lifespan(_app):
     the app is ready either way, so this is a startup-speed optimization.
     """
     if _PLUGIN_PORT:
+
         async def _eager_tunnel() -> None:
             try:
                 from slife.threads import run_daemon
+
                 await run_daemon(_tunnel.start, _PLUGIN_PORT, name="ngrok-tunnel")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — background eager start must not crash the task
                 logger.warning("sharefile_tunnel_eager_failed err=%s", e)
 
         asyncio.create_task(_eager_tunnel())
@@ -117,11 +118,21 @@ mcp, _log_path, logger = create_plugin_server(
 #: Credential file basenames / path fragments that share_file refuses to
 #: publish (a share URL is public while the tunnel is up — a leaked key would
 #: be world-readable).
-_CREDENTIAL_FRAGMENTS = frozenset({
-    ".env", "credentials", "known_hosts",
-    "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
-    ".npmrc", ".pypirc", "netrc", ".netrc",
-})
+_CREDENTIAL_FRAGMENTS = frozenset(
+    {
+        ".env",
+        "credentials",
+        "known_hosts",
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+        "id_dsa",
+        ".npmrc",
+        ".pypirc",
+        "netrc",
+        ".netrc",
+    }
+)
 
 
 def _is_credential_path(path: Path) -> bool:
@@ -151,14 +162,23 @@ def _stat_pin(file_path: str) -> dict:
     symlink to something else, then has a different inode/mtime and is refused
     — a share never silently starts serving new content (D4).
     """
-    entry: dict = {"path": file_path, "dev": None, "ino": None,
-                   "size": None, "mtime_ns": None}
+    entry: dict = {
+        "path": file_path,
+        "dev": None,
+        "ino": None,
+        "size": None,
+        "mtime_ns": None,
+    }
     try:
         st = Path(file_path).stat()
-        entry.update({
-            "dev": st.st_dev, "ino": st.st_ino,
-            "size": st.st_size, "mtime_ns": st.st_mtime_ns,
-        })
+        entry.update(
+            {
+                "dev": st.st_dev,
+                "ino": st.st_ino,
+                "size": st.st_size,
+                "mtime_ns": st.st_mtime_ns,
+            }
+        )
     except OSError:
         pass  # not present yet — serve path will 404; nothing to pin
     return entry
@@ -217,12 +237,11 @@ def _content_disposition(filename: str) -> str:
     try:
         filename.encode("latin-1")
     except UnicodeEncodeError:
-        ascii_fallback = re.sub(r'[^ -~]', "_", filename)
+        ascii_fallback = re.sub(r"[^ -~]", "_", filename)
         ascii_fallback = ascii_fallback.replace('"', "_").replace("\\", "_")
         ascii_fallback = ascii_fallback[:80] or "file"
         return (
-            f'inline; filename="{ascii_fallback}"; '
-            f"filename*=UTF-8''{quote(filename)}"
+            f"inline; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
         )
     safe = filename.replace('"', "_").replace("\\", "_")
     return f'inline; filename="{safe}"'
@@ -236,9 +255,10 @@ async def _ensure_tunnel() -> bool:
         return False
     try:
         from slife.threads import run_daemon
+
         await run_daemon(_tunnel.start, _PLUGIN_PORT, name="ngrok-tunnel-on-demand")
         return _tunnel.is_active
-    except Exception:
+    except Exception:  # noqa: BLE001 — a failed on-demand start reports unavailable
         return False
 
 
@@ -272,12 +292,15 @@ async def handle_share(request: Request) -> Response:
     # A path that was later replaced — deleted, or a symlink put in its place —
     # must NOT serve the new content to every holder of the old token.
     if entry.get("ino") is not None and (
-        st.st_dev != entry["dev"] or st.st_ino != entry["ino"]
-        or st.st_size != entry["size"] or st.st_mtime_ns != entry["mtime_ns"]
+        st.st_dev != entry["dev"]
+        or st.st_ino != entry["ino"]
+        or st.st_size != entry["size"]
+        or st.st_mtime_ns != entry["mtime_ns"]
     ):
         logger.warning(
             "share_changed_since_registered file_id=%s path=%s — refusing",
-            file_id, file_path,
+            file_id,
+            file_path,
         )
         return Response(
             "Shared file changed since the link was created; share it again.",
@@ -290,7 +313,9 @@ async def handle_share(request: Request) -> Response:
     mime_type, _ = mimetypes.guess_type(str(file_path))
     content_type = mime_type or "application/octet-stream"
 
-    logger.info("share_served path=%s mime=%s size=%s", file_path, content_type, file_size)
+    logger.info(
+        "share_served path=%s mime=%s size=%s", file_path, content_type, file_size
+    )
 
     def _iter_chunks():
         with open(file_path, "rb") as f:
@@ -313,7 +338,10 @@ async def handle_share(request: Request) -> Response:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(name="__check", description="File-sharing tunnel live state as JSON facts. Internal — probed by the harness's system_health.")
+@mcp.tool(
+    name="__check",
+    description="File-sharing tunnel live state as JSON facts. Internal — probed by the harness's system_health.",
+)
 async def __check() -> str:
     """Return ``{active, reachable, state, url, reason, provider}`` live facts.
 
@@ -377,9 +405,7 @@ def _credential_error(path: Path) -> str | None:
 
 @mcp.tool(
     name="share_file",
-    description=(
-        "Share a local file as a public HTTPS URL for multimodal LLMs."
-    ),
+    description=("Share a local file as a public HTTPS URL for multimodal LLMs."),
 )
 async def share_file(path: str) -> str:
     """Share a local file as a public HTTPS URL.
@@ -471,6 +497,7 @@ def main() -> None:
     sock, port = bind_free_port()
     _PLUGIN_PORT = port
     from slife.agent.plugins import plugin_port_env
+
     os.environ[plugin_port_env("sharefile")] = str(port)
 
     logger.info("sharefile_start log=%s port=%s", _log_path, port)

@@ -24,9 +24,16 @@ dependencies = [
     "aiohttp>=3.14.1",
     "starlette>=0.37.0",
     "qrcode>=8.0",
-    "credstore",
+    # Both are released from their own repos now (github.com/juzcn/credstore,
+    # github.com/juzcn/local-embed) with no version constraint before this.
+    # The cap is not decoration: tests/test_wechat_config.py monkeypatches
+    # credstore's private _store/_backend, and tests/test_embedding_table.py
+    # reads local-embed's model table — both 0.x packages, so a MINOR bump is
+    # the breaking axis.  A floor alone would let an unlocked `uv sync` pull a
+    # generation that breaks the suite with no runtime symptom.
+    "credstore>=0.10.6,<0.11",
     # Out-of-process only — spawned as `python -m local_embed.server`, never imported.
-    "local-embed",
+    "local-embed>=0.3.0,<0.4",
     "ngrok",
     "croniter>=6.2.4",
     # Calendar arithmetic for search time bounds (relativedelta — stdlib's
@@ -72,7 +79,6 @@ packages = ["slife"]
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "slife/skills"
 "slife.yaml" = "slife/slife.yaml"
-"local_embed.yaml" = "slife/local_embed.yaml"
 "tools.yaml" = "slife/tools.yaml"
 "sharefile.yaml" = "slife/sharefile.yaml"
 
@@ -86,7 +92,6 @@ include = [
     "/LICENSE",
     "/pyproject.toml",
     "/slife.yaml",
-    "/local_embed.yaml",
     "/tools.yaml",
     "/sharefile.yaml",
 ]
@@ -105,20 +110,25 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-    "cc-switch",
+    # dev-only: slife never imports cc-switch, it generates Claude Code's
+    # settings file.  See github.com/juzcn/cc-switch.
+    "cc-switch>=0.9.11",
+    "pyright>=1.1.414",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
+    "ruff>=0.17.0",
 ]
 
-[tool.uv.workspace]
-members = ["credstore", "cc-switch", "local-embed"]
+[tool.ruff]
+target-version = "py313"
+line-length = 88
 
-[tool.uv.sources]
-credstore = { workspace = true }
-local-embed = { workspace = true }
-cc-switch = { workspace = true }
+[tool.ruff.format]
+# README code fences hold illustrative snippets, not code this repo runs —
+# leave them alone so doc edits never show up as formatting churn.
+exclude = ["*.md"]
 
 [tool.pytest.ini_options]
 minversion = "9.1"
@@ -142,9 +152,9 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["slife", "credstore", "cc_switch", "local_embed"]
+source = ["slife"]
 branch = true
-omit = ["tests/*", "credstore/tests/*", "cc-switch/tests/*", "local-embed/tests/*"]
+omit = ["tests/*"]
 
 [tool.coverage.report]
 exclude_also = [
@@ -159,9 +169,14 @@ skip_covered = false
 [tool.pyright]
 pythonVersion = "3.13"
 typeCheckingMode = "standard"
-include = ["slife", "credstore", "cc-switch", "local-embed"]
-exclude = ["**/__pycache__/**", "**/.venv/**", ".venv/**", "tests/**", "credstore/tests/**", "cc-switch/tests/**", "local-embed/tests/**", "**/node_modules", "**/.*"]
-extraPaths = ["credstore", "cc-switch", "local-embed"]
+# Analyse against Windows: slife reaches ctypes.windll in bootstrap.py and
+# ui/i18n.py, which only resolves under Windows stdlib semantics.  It imports
+# no Unix-only modules, and no dependency is win32-only, so this is the only
+# platform-specific axis.  Pinning it keeps local runs and CI identical
+# regardless of host OS.
+pythonPlatform = "Windows"
+include = ["slife"]
+exclude = ["**/__pycache__/**", "**/.venv/**", ".venv/**", "tests/**", "**/node_modules", "**/.*"]
 reportMissingImports = true
 reportMissingTypeStubs = false
 reportOptionalSubscript = true

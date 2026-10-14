@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ruamel.yaml import YAMLError
@@ -49,7 +49,7 @@ _MAX_ENTRIES = 200
 
 def _iso_now() -> str:
     """Current UTC time as an ISO-8601 string (official A2A timestamps)."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def default_path() -> Path:

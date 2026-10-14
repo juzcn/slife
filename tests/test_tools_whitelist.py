@@ -16,28 +16,34 @@ from slife.tools.whitelist import (
 
 
 def test_meta_whitelist_is_exactly_the_5_tools():
-    assert META_WHITELIST == frozenset({
-        "mcp_set_enabled",
-        "rest_api_set_enabled",
-        "tool_search",
-        "func_tool_load",
-        "_func_tool_unload",
-    })
+    assert META_WHITELIST == frozenset(
+        {
+            "mcp_set_enabled",
+            "rest_api_set_enabled",
+            "tool_search",
+            "func_tool_load",
+            "_func_tool_unload",
+        }
+    )
 
 
 def test_harness_whitelist_is_the_loop_pairs():
-    assert HARNESS_WHITELIST == frozenset({
-        "_turn_prompt",
-        "_check_new_input",
-        "attach_image",
-    })
+    assert HARNESS_WHITELIST == frozenset(
+        {
+            "_turn_prompt",
+            "_check_new_input",
+            "attach_image",
+        }
+    )
 
 
 def test_pinned_whitelist_is_the_two_workflow_tools():
-    assert PINNED_WHITELIST == frozenset({
-        "skill_use",
-        "system_health",
-    })
+    assert PINNED_WHITELIST == frozenset(
+        {
+            "skill_use",
+            "system_health",
+        }
+    )
 
 
 def test_disjoint_and_covered():

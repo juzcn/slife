@@ -1,20 +1,17 @@
 """Tests for Slife.mcp.client — MCPClient (SSE transport)."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from mcp import MCPError
 from mcp.types import CallToolResult, TextContent
 from mcp_types import REQUEST_TIMEOUT
 
-from slife.plugins.mcp_gateway.client import MCPClient, _LINK_DOWN_CODE
+from slife.plugins.mcp_gateway.client import _LINK_DOWN_CODE, MCPClient
 
+pytestmark = pytest.mark.unit
 
 # ── MCPClient ───────────────────────────────────────────────────────────────
 
@@ -197,9 +194,12 @@ class TestMCPClientCallTool:
         client._connected = True
 
         client._session = MagicMock()
-        client._session.call_tool = AsyncMock(return_value=CallToolResult(
-            content=[TextContent(text="boom")], is_error=True,
-        ))
+        client._session.call_tool = AsyncMock(
+            return_value=CallToolResult(
+                content=[TextContent(text="boom")],
+                is_error=True,
+            )
+        )
 
         result = await client.call_tool("echo", {"message": "Hello"})
         assert result.startswith("Error")
@@ -387,7 +387,8 @@ class TestMCPClientLinkRecovery:
         monkeypatch.setattr(client, "_teardown_session", _teardown)
 
         results = await asyncio.gather(
-            client.call_tool("a"), client.call_tool("b"),
+            client.call_tool("a"),
+            client.call_tool("b"),
         )
 
         assert results == ["ok", "ok"]
@@ -433,7 +434,9 @@ class TestMCPClientConnect:
         mock_session = MagicMock()
         mock_session.initialize = AsyncMock()
 
-        with patch("slife.plugins.mcp_gateway.client.streamable_http_client") as mock_transport:
+        with patch(
+            "slife.plugins.mcp_gateway.client.streamable_http_client"
+        ) as mock_transport:
             mock_read = MagicMock()
             mock_write = MagicMock()
             mock_transport_ctx = MagicMock()
@@ -443,7 +446,9 @@ class TestMCPClientConnect:
             mock_transport_ctx.__aexit__ = AsyncMock(return_value=None)
             mock_transport.return_value = mock_transport_ctx
 
-            with patch("slife.plugins.mcp_gateway.client.ClientSession") as mock_session_cls:
+            with patch(
+                "slife.plugins.mcp_gateway.client.ClientSession"
+            ) as mock_session_cls:
                 mock_session_ctx = MagicMock()
                 mock_session_ctx.__aenter__ = AsyncMock(
                     return_value=mock_session,
@@ -475,14 +480,18 @@ class TestMCPClientConnect:
         mock_session = MagicMock()
         mock_session.initialize = AsyncMock()
 
-        with patch("slife.plugins.mcp_gateway.client.streamable_http_client") as mock_transport:
+        with patch(
+            "slife.plugins.mcp_gateway.client.streamable_http_client"
+        ) as mock_transport:
             mock_read, mock_write, _ = MagicMock(), MagicMock(), MagicMock()
             mock_ctx = MagicMock()
             mock_ctx.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
             mock_ctx.__aexit__ = AsyncMock(return_value=None)
             mock_transport.return_value = mock_ctx
 
-            with patch("slife.plugins.mcp_gateway.client.ClientSession") as mock_session_cls:
+            with patch(
+                "slife.plugins.mcp_gateway.client.ClientSession"
+            ) as mock_session_cls:
                 mock_sc = MagicMock()
                 mock_sc.__aenter__ = AsyncMock(return_value=mock_session)
                 mock_sc.__aexit__ = AsyncMock(return_value=None)
@@ -513,7 +522,10 @@ class TestMCPClientConnect:
         mock_session = MagicMock()
         mock_session.initialize = AsyncMock()
 
-        with patch("slife.plugins.mcp_gateway.client.streamable_http_client") as mock_transport:
+        with patch(
+            "slife.plugins.mcp_gateway.client.streamable_http_client"
+        ) as mock_transport:
+
             def _make_ctx():
                 mock_read = MagicMock()
                 mock_write = MagicMock()
@@ -540,7 +552,9 @@ class TestMCPClientConnect:
                 mock_sc_ctx.__aexit__ = AsyncMock(return_value=None)
                 mock_sc.return_value = mock_sc_ctx
 
-                with patch("slife.plugins.mcp_gateway.client.asyncio.sleep", AsyncMock()):
+                with patch(
+                    "slife.plugins.mcp_gateway.client.asyncio.sleep", AsyncMock()
+                ):
                     await client.connect("http://127.0.0.1:1234/mcp")
 
                 assert client.is_connected is True
@@ -578,7 +592,9 @@ class TestMCPClientConnect:
             mock_ctx.__aexit__ = AsyncMock(return_value=None)
             return mock_ctx
 
-        with patch("slife.plugins.mcp_gateway.client.streamable_http_client") as mock_transport:
+        with patch(
+            "slife.plugins.mcp_gateway.client.streamable_http_client"
+        ) as mock_transport:
             mock_transport.side_effect = [hang_ctx, _make_ctx()]
 
             with patch("slife.plugins.mcp_gateway.client.ClientSession") as mock_sc:
@@ -590,7 +606,9 @@ class TestMCPClientConnect:
                 with (
                     patch("slife.timeouts.timeouts.ready.connect_attempt", 0.2),
                     patch("slife.timeouts.timeouts.ready.connect_retry_delay", 0.01),
-                    patch("slife.plugins.mcp_gateway.client.asyncio.sleep", AsyncMock()),
+                    patch(
+                        "slife.plugins.mcp_gateway.client.asyncio.sleep", AsyncMock()
+                    ),
                 ):
                     await client.connect("http://127.0.0.1:1234/mcp")
 
@@ -631,13 +649,15 @@ class TestMCPClientConnect:
             mock_ctx = MagicMock()
             mock_ctx.__aenter__ = AsyncMock(
                 side_effect=asyncio.CancelledError(
-                    "Cancelled via cancel scope deadbeef",  # noqa: S106
+                    "Cancelled via cancel scope deadbeef",
                 ),
             )
             mock_ctx.__aexit__ = AsyncMock(return_value=None)
             return mock_ctx
 
-        with patch("slife.plugins.mcp_gateway.client.streamable_http_client") as mock_transport:
+        with patch(
+            "slife.plugins.mcp_gateway.client.streamable_http_client"
+        ) as mock_transport:
             mock_transport.side_effect = [
                 _make_cancel_ctx(),
                 _make_cancel_ctx(),
@@ -650,7 +670,9 @@ class TestMCPClientConnect:
                 mock_sc_ctx.__aexit__ = AsyncMock(return_value=None)
                 mock_sc.return_value = mock_sc_ctx
 
-                with patch("slife.plugins.mcp_gateway.client.asyncio.sleep", AsyncMock()):
+                with patch(
+                    "slife.plugins.mcp_gateway.client.asyncio.sleep", AsyncMock()
+                ):
                     await client.connect("http://127.0.0.1:1234/mcp")
 
                 # The scoped-cancel attempts were retried, not fatal.
@@ -676,7 +698,9 @@ class TestMCPClientConnect:
         hang_ctx.__aenter__ = _hang_enter
         hang_ctx.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("slife.plugins.mcp_gateway.client.streamable_http_client") as mock_transport:
+        with patch(
+            "slife.plugins.mcp_gateway.client.streamable_http_client"
+        ) as mock_transport:
             mock_transport.return_value = hang_ctx
 
             task = asyncio.ensure_future(

@@ -60,7 +60,7 @@ def resolve_job_model() -> Any:
     # raw file, then resolve it through the same model list.
     try:
         raw = read_config(get_config_path())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort: an unreadable config falls back to {}
         logger.warning("job_config_unreadable err=%s", e)
         raw = {}
     if isinstance(raw, dict):
@@ -68,12 +68,12 @@ def resolve_job_model() -> Any:
         if isinstance(ref, str) and ref.strip():
             try:
                 return resolve_model_ref(ref.strip())
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort: fall through to the active model
                 logger.warning("job_coding_model_resolve_failed ref=%s err=%s", ref, e)
 
     try:
         return _get_config().active_model
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort: unresolved model just returns None
         logger.warning("job_active_model_fallback_failed err=%s", e)
     return None
 
@@ -112,6 +112,7 @@ class _LLMClientRef:
             self._resolved = True
         return self._client
 
+
 #: Cached main Config for per-call model lookups (``llm.chat(model=...)``).
 _config: Any = None
 
@@ -121,6 +122,7 @@ def _get_config() -> Any:
     global _config
     if _config is None:
         from slife.config import Config
+
         _config = Config.from_yaml(get_config_path())
     return _config
 
@@ -162,6 +164,7 @@ class _LLMProxy:
         client = _current_client.get()
         if model:
             from slife.agent.llm_client import LLMClient
+
             client = LLMClient(resolve_model_ref(model))
         elif client is None:
             raise RuntimeError(
@@ -217,12 +220,14 @@ llm = _LLMProxy()
 # ``mcp.call`` is one short-lived client, which is also why no reconnect
 # bookkeeping lives here.
 
+
 #: Host env var the generic spawn publishes for a plugin's port
 #: (via ``plugin_port_env("mcp-gateway")`` — uppercase, dashes→underscores).
 def _gateway_port_env() -> str:
     from slife.agent.plugins import plugin_port_env
 
     return plugin_port_env("mcp-gateway")
+
 
 #: Connect attempts for one ``mcp.call`` — a count, so it stays local.  The
 #: default startup window (~10 s) exists to outlast a plugin still coming up;
@@ -231,8 +236,8 @@ def _gateway_port_env() -> str:
 #: ride out a watchdog restart.
 _CALL_CONNECT_ATTEMPTS = 3
 
-_gateway_port: str | None = None     # last known port ("push" or "env")
-_gateway_port_source: str = ""       # "push" | "env" | "" — diagnostic only
+_gateway_port: str | None = None  # last known port ("push" or "env")
+_gateway_port_source: str = ""  # "push" | "env" | "" — diagnostic only
 
 
 class _GatewayProxy:
@@ -288,7 +293,7 @@ class _GatewayProxy:
         self,
         server: str,
         tool: str,
-        args: "dict | None" = None,
+        args: dict | None = None,
     ) -> str:
         """Call *tool* on external MCP server *server* (bare MCP, one-shot).
 
@@ -315,13 +320,13 @@ class _GatewayProxy:
         client = MCPClient()
         try:
             await client.connect(
-                f"http://127.0.0.1:{port}/mcp", attempts=_CALL_CONNECT_ATTEMPTS,
+                f"http://127.0.0.1:{port}/mcp",
+                attempts=_CALL_CONNECT_ATTEMPTS,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — mcp.call returns an error result, never raises
             logger.warning("job_mcp_connect_failed port=%s err=%s", port, e)
             return (
-                f"Error: mcp.call('{server}', '{tool}') failed: "
-                f"{type(e).__name__}: {e}"
+                f"Error: mcp.call('{server}', '{tool}') failed: {type(e).__name__}: {e}"
             )
         try:
             return await client.call_tool(
@@ -332,14 +337,15 @@ class _GatewayProxy:
                     "arguments": json.dumps(args, ensure_ascii=False) if args else "{}",
                 },
             )
-        except Exception as e:  # call_tool returns its own errors; belt and braces
+        except Exception as e:  # noqa: BLE001 — call_tool returns its own errors; belt and braces
             logger.warning(
                 "job_mcp_call_failed server=%s tool=%s err=%s",
-                server, tool, e,
+                server,
+                tool,
+                e,
             )
             return (
-                f"Error: mcp.call('{server}', '{tool}') failed: "
-                f"{type(e).__name__}: {e}"
+                f"Error: mcp.call('{server}', '{tool}') failed: {type(e).__name__}: {e}"
             )
         finally:
             try:
@@ -408,7 +414,7 @@ def wrap(fn, client) -> Any:
 
                 result = await run_daemon(_run_sync, name=f"job-{name}")
             return _to_text(result)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — a failing job returns an error result, never a crash
             logger.warning("job_exec_failed name=%s err=%s", name, e)
             return f"Error: {type(e).__name__}: {e}"
         finally:

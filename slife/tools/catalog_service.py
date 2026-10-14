@@ -57,9 +57,11 @@ def plugin_category(plugin: str, tool_name: str) -> str:
     job-coding's four management tools included.  Both are function tools
     (they carry a load state) owned by the plugin named in ``source_id``.
     """
-    if (plugin == JOB_PLUGIN_NAME
-            and tool_name.startswith(JOB_TOOL_PREFIX)
-            and tool_name not in JOB_PLUGIN_OWN_TOOLS):
+    if (
+        plugin == JOB_PLUGIN_NAME
+        and tool_name.startswith(JOB_TOOL_PREFIX)
+        and tool_name not in JOB_PLUGIN_OWN_TOOLS
+    ):
         return "job"
     return "plugin"
 
@@ -83,7 +85,7 @@ def descriptor_json(name: str, description: str, input_schema) -> str:
     )
 
 
-def tool_descriptor(tool: "Tool") -> str:
+def tool_descriptor(tool: Tool) -> str:
     """Compact JSON of a tool's full descriptor (the catalog ``schema`` column)."""
     return descriptor_json(
         getattr(tool, "name", ""),
@@ -92,7 +94,7 @@ def tool_descriptor(tool: "Tool") -> str:
     )
 
 
-def catalog_category(tool: "Tool") -> str:
+def catalog_category(tool: Tool) -> str:
     """Catalog category of a registered tool instance.
 
     - builtin tools → ``builtin``;
@@ -107,7 +109,8 @@ def catalog_category(tool: "Tool") -> str:
         if getattr(tool, "_route", None) == ProxyRoute.EXTERNAL:
             return "mcp"
         return plugin_category(
-            getattr(tool, "server", "") or "", getattr(tool, "name", "") or "",
+            getattr(tool, "server", "") or "",
+            getattr(tool, "name", "") or "",
         )
     return "builtin"
 
@@ -187,15 +190,15 @@ class ToolCatalogService:
         #: The host's semantic DRAINER (set by AgentService after startup) — the
         #: process that owns the catalog's vectors.  ``None`` in a process that
         #: owns no index (a subagent worker).
-        self.semantic_manager: "SemanticManager | None" = None
+        self.semantic_manager: SemanticManager | None = None
         #: The query-side reader over that same index, for a process that owns
         #: no drainer.  Set by AgentService in place of the manager; the index
         #: and its published state are in this shared db, so reading needs no
         #: ownership.
-        self.semantic_reader: "SemanticReader | None" = None
+        self.semantic_reader: SemanticReader | None = None
 
     @property
-    def semantic_query(self) -> "SemanticManager | SemanticReader | None":
+    def semantic_query(self) -> SemanticManager | SemanticReader | None:
         """This process's semantic query surface — the ONE resolution point.
 
         The drainer's own manager where this process runs it, otherwise the
@@ -215,9 +218,9 @@ class ToolCatalogService:
     def reload_disabled(
         self,
         *,
-        builtins: "frozenset[str] | set[str] | None" = None,
-        jobs: "frozenset[str] | set[str] | None" = None,
-        plugin: "frozenset[str] | set[str] | None" = None,
+        builtins: frozenset[str] | set[str] | None = None,
+        jobs: frozenset[str] | set[str] | None = None,
+        plugin: frozenset[str] | set[str] | None = None,
     ) -> None:
         """Re-read the per-entry ``enabled: false`` sets from a fresh config.
 
@@ -252,7 +255,10 @@ class ToolCatalogService:
     # ── Session lifecycle ──────────────────────────────────────────
 
     def _row_for(
-        self, tool: "Tool", *, disabled_servers: frozenset[str] = frozenset(),
+        self,
+        tool: Tool,
+        *,
+        disabled_servers: frozenset[str] = frozenset(),
     ) -> dict:
         """The catalog row for one registered tool — the ONE row builder.
 
@@ -280,7 +286,9 @@ class ToolCatalogService:
         }
 
     def _row_status(
-        self, tool: "Tool", disabled_servers: frozenset[str] = frozenset(),
+        self,
+        tool: Tool,
+        disabled_servers: frozenset[str] = frozenset(),
     ) -> str | None:
         """The row's ``status`` — always tools.yaml's answer, never a verdict.
 
@@ -317,16 +325,22 @@ class ToolCatalogService:
         """Servers switched OFF in ``tools.yaml`` — one read per sync pass."""
         try:
             from slife.plugins.mcp_gateway import config as _cfg
+
             return frozenset(
-                name for name, entry in _cfg.servers().items()
+                name
+                for name, entry in _cfg.servers().items()
                 if isinstance(entry, dict) and entry.get("enabled") is False
             )
-        except Exception:
+        except (ImportError, OSError, ValueError):
             # An unreadable config is not a reason to call every server off.
             return frozenset()
 
     async def sync_system_tools(
-        self, tools: Sequence["Tool"], *, source: str = "", own_builtins: bool = False,
+        self,
+        tools: Sequence[Tool],
+        *,
+        source: str = "",
+        own_builtins: bool = False,
     ) -> list[str]:
         """Mirror registered system tools into the catalog. Returns schema movers.
 
@@ -365,7 +379,8 @@ class ToolCatalogService:
         disabled_servers = self._disabled_servers()
         rows = [
             self._row_for(t, disabled_servers=disabled_servers)
-            for t in tools if _tool_name(t)
+            for t in tools
+            if _tool_name(t)
         ]
         result = await self._store.reconcile(rows)
         changed = list(result["schema_changed"])
@@ -381,7 +396,8 @@ class ToolCatalogService:
             if vanished:
                 logger.info(
                     "catalog_system_tools_purged source=%s tools=%d",
-                    source, len(vanished),
+                    source,
+                    len(vanished),
                 )
             changed += vanished
         elif own_builtins:
@@ -399,7 +415,8 @@ class ToolCatalogService:
                 await self._store.remove_tools(vanished)
                 logger.info(
                     "catalog_builtin_tools_purged tools=%d names=%r",
-                    len(vanished), vanished,
+                    len(vanished),
+                    vanished,
                 )
             changed += vanished
         self.wake_indexer(changed)
@@ -412,7 +429,11 @@ class ToolCatalogService:
         server marked ``autoload: true`` has its whole tool set born loaded
         (its tool names are not knowable in the config).
         """
-        if is_meta_tool(name) or name in self.autoload or server in self.autoload_servers:
+        if (
+            is_meta_tool(name)
+            or name in self.autoload
+            or server in self.autoload_servers
+        ):
             return STATUS_LOADED
         return STATUS_UNLOADED
 
@@ -489,7 +510,9 @@ class ToolCatalogService:
         if result["purged"]:
             logger.info(
                 "catalog_category_mirrored category=%s rows=%d purged=%d",
-                category, len(rows), len(result["purged"]),
+                category,
+                len(rows),
+                len(result["purged"]),
             )
         self.wake_indexer(result["schema_changed"])
         return result["purged"]
@@ -598,7 +621,9 @@ class ToolCatalogService:
         if evicted:
             logger.info(
                 "catalog_evict_to_threshold threshold=%d evicted=%d/%d",
-                self.threshold, len(evicted), excess,
+                self.threshold,
+                len(evicted),
+                excess,
             )
         return evicted
 
@@ -607,7 +632,7 @@ class ToolCatalogService:
     async def mirror_external_tools(
         self,
         server: str,
-        tools: "list[dict]",
+        tools: list[dict],
         *,
         category: str = "mcp",
         enabled: bool | None = None,
@@ -646,22 +671,25 @@ class ToolCatalogService:
                 continue
             description = t.get("description", "") or ""
             full_name = t.get("full_name") or f"{server}__{tname}"
-            rows.append({
-                "name": full_name,
-                "description": description,
-                "category": category,
-                "source_id": server,
-                "schema": descriptor_json(
-                    tname, description,
-                    t.get("inputSchema", {"type": "object", "properties": {}}),
-                ),
-                "status": config_status(enabled),
-                "load_status": self.default_status(full_name, server=server),
-                # The autoload flag lives on the SERVER entry (mcp/rest-api
-                # have no per-tool one), so it is one decision over the whole
-                # set: every row of such a server owns its status.
-                "override_status": server in self.autoload_servers,
-            })
+            rows.append(
+                {
+                    "name": full_name,
+                    "description": description,
+                    "category": category,
+                    "source_id": server,
+                    "schema": descriptor_json(
+                        tname,
+                        description,
+                        t.get("inputSchema", {"type": "object", "properties": {}}),
+                    ),
+                    "status": config_status(enabled),
+                    "load_status": self.default_status(full_name, server=server),
+                    # The autoload flag lives on the SERVER entry (mcp/rest-api
+                    # have no per-tool one), so it is one decision over the whole
+                    # set: every row of such a server owns its status.
+                    "override_status": server in self.autoload_servers,
+                }
+            )
         if not rows:
             return []
         result = await self._store.reconcile(rows)
@@ -670,11 +698,14 @@ class ToolCatalogService:
         # stopped publishing loses its row" contract every other family's
         # mirror keeps.
         gone = await self._store.purge_source_except(
-            server, {r["name"] for r in rows},
+            server,
+            {r["name"] for r in rows},
         )
         if gone:
             logger.info(
-                "catalog_external_tools_purged server=%s tools=%d", server, len(gone),
+                "catalog_external_tools_purged server=%s tools=%d",
+                server,
+                len(gone),
             )
         self.wake_indexer([*result["schema_changed"], *gone])
         return gone
@@ -754,7 +785,7 @@ class ToolCatalogService:
             return 0
         return await self._store.purge_source(source)
 
-    async def purge_unconfigured_sources(self, configured: "set[str]") -> "set[str]":
+    async def purge_unconfigured_sources(self, configured: set[str]) -> set[str]:
         """Purge the rows of every server NOT in *configured* (main-owner only).
 
         The mirror image of the removed ``sync_config_servers``: tools.yaml
@@ -769,17 +800,20 @@ class ToolCatalogService:
         return purged
 
 
-def _tool_name(tool: "Tool") -> str:
+def _tool_name(tool: Tool) -> str:
     return getattr(tool, "name", "") or ""
 
 
-def _is_external(tool: "Tool") -> bool:
+def _is_external(tool: Tool) -> bool:
     from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 
-    return isinstance(tool, MCPProxyTool) and getattr(tool, "_route", None) == ProxyRoute.EXTERNAL
+    return (
+        isinstance(tool, MCPProxyTool)
+        and getattr(tool, "_route", None) == ProxyRoute.EXTERNAL
+    )
 
 
-def _own_description(tool: "Tool") -> str:
+def _own_description(tool: Tool) -> str:
     """A tool's own description, without the ``[<owner>] `` prefix a proxy stamps.
 
     Provenance is already the row's ``source_id`` and ``category``; leaving the
@@ -791,11 +825,11 @@ def _own_description(tool: "Tool") -> str:
     if source:
         prefix = f"[{source}] "
         if desc.startswith(prefix):
-            return desc[len(prefix):]
+            return desc[len(prefix) :]
     return desc
 
 
-def _source_id(tool: "Tool") -> str | None:
+def _source_id(tool: Tool) -> str | None:
     """The owning source of a tool row — a server name, a plugin name, or None.
 
     Every ``MCPProxyTool`` carries the name it came from in ``server``: an
@@ -823,5 +857,5 @@ async def mirror_source_rows(ctx, category: str, rows: dict) -> None:
         return
     try:
         await catalog.sync_category(category, rows)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort mirror by contract; a failing mirror must not break the calling tool
         logger.debug("catalog_mirror_failed category=%s err=%s", category, e)

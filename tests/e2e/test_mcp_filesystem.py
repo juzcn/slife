@@ -12,15 +12,16 @@ Usage:
     uv run python tests/e2e/test_mcp_filesystem.py [allowed_dir]
 """
 
-import pytest; pytestmark = pytest.mark.e2e
-
 import asyncio
 import sys
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.e2e
+
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
 
 
 def _normalize_path(p: str) -> str:
@@ -41,6 +42,7 @@ async def main(allowed_dir: str | None = None):
     # ── 1. Connect to slife-mcp wrapper via MCPWrapperProcess ────
     print("1. Starting slife-mcp wrapper...")
     from slife.plugins.mcp_gateway.process import MCPWrapperProcess
+
     wrapper = MCPWrapperProcess(
         command="uv",
         args=["run", "python", "-m", "slife.plugins.mcp_gateway.server"],

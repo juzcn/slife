@@ -58,6 +58,7 @@ import json
 import logging
 import math
 import re
+import sqlite3
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +66,7 @@ from typing import Any
 
 import aiosqlite
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.plugins.memdb.search import _clamp_limit
 from slife.plugins.memdb.store import (
     _contains_cjk,
@@ -76,7 +78,6 @@ from slife.plugins.memdb.store import (
     in_placeholders,
 )
 from slife.timeutil import now_local_seconds
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -172,18 +173,27 @@ _now = now_local_seconds
 #: a missing column cannot answer a query, and an unknown one is a leftover
 #: from a schema this code no longer writes (the derived ``type`` column, for
 #: one), which would otherwise sit there unmaintained forever.
-_REQUIRED_COLUMNS = frozenset({
-    "name", "description", "category", "source_id", "schema",
-    "status", "load_status", "last_loaded",
-})
+_REQUIRED_COLUMNS = frozenset(
+    {
+        "name",
+        "description",
+        "category",
+        "source_id",
+        "schema",
+        "status",
+        "load_status",
+        "last_loaded",
+    }
+)
 
 #: The ``tool`` table's category constraint, parsed rather than substring-matched.
 _CATEGORY_CHECK_RE = re.compile(
-    r"check\s*\(\s*category\s+in\s*\(([^)]*)\)", re.IGNORECASE,
+    r"check\s*\(\s*category\s+in\s*\(([^)]*)\)",
+    re.IGNORECASE,
 )
 
 
-def _category_check_values(ddl: str) -> "set[str] | None":
+def _category_check_values(ddl: str) -> set[str] | None:
     """The category values a ``tool`` DDL accepts; ``None`` when it has no CHECK.
 
     Scoped to the ``category`` clause rather than the whole statement on
@@ -221,7 +231,7 @@ def _config_status_move(incoming: str) -> tuple[str, tuple[str, ...]]:
     return STATUS_ENABLED, (STATUS_DISABLED,)
 
 
-def config_status(enabled: "bool | None") -> "str | None":
+def config_status(enabled: bool | None) -> str | None:
     """The ``status`` a config switch value stands for.
 
     Config speaks booleans (``enabled: false`` in ``tools.yaml``) and the
@@ -269,6 +279,7 @@ def _cosine_distance(a: list[float], b: list[float]) -> float:
 
 
 # ── Schema → text (semantic doc source) ─────────────────────────────
+
 
 def _fold_children(spec: dict) -> str:
     """One level of nested parameter text (object properties / array items)."""
@@ -341,7 +352,8 @@ def _flatten_schema(schema_text: str) -> str:
     if isinstance(props, dict):
         params = [
             _param_line(pname, spec, pname in required)
-            for pname, spec in props.items() if isinstance(spec, dict)
+            for pname, spec in props.items()
+            if isinstance(spec, dict)
         ]
         if params:
             lines.append("params: " + "; ".join(params))
@@ -372,9 +384,7 @@ def _flatten_schema(schema_text: str) -> str:
 #:
 #: It is ``_effective_status``'s rule and MUST move with it.
 _INJECTABLE_SQL = (
-    f"{_FUNC_CATEGORY_SQL}"
-    " AND load_status = 'loaded'"
-    " AND status = 'enabled'"
+    f"{_FUNC_CATEGORY_SQL} AND load_status = 'loaded' AND status = 'enabled'"
 )
 
 
@@ -420,7 +430,7 @@ def effective_from_row(row: dict) -> str:
 FILTER_COLUMNS = ("category", "source_id", "status", "load_status")
 
 
-def column_filters(filters: "dict | None") -> tuple[list[str], list]:
+def column_filters(filters: dict | None) -> tuple[list[str], list]:
     """``(clauses, params)`` for a column filter dict — AND-ed by the caller.
 
     A filter the caller did not supply contributes NO clause at all — not
@@ -553,7 +563,11 @@ class CatalogStore:
         return delta or CatalogOpDelta()
 
     def _count_ops(
-        self, *, added: int = 0, updated: int = 0, removed: int = 0,
+        self,
+        *,
+        added: int = 0,
+        updated: int = 0,
+        removed: int = 0,
     ) -> None:
         """Book row operations into the armed collector (a no-op when disarmed)."""
         delta = self._ops
@@ -617,7 +631,7 @@ class CatalogStore:
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='tool'",
             )
             row = await cursor.fetchone()
-        except Exception as e:  # a probe failure is never fatal
+        except (sqlite3.Error, ValueError) as e:  # a probe failure is never fatal
             logger.debug("catalog_ddl_probe_failed err=%s", e)
             return
         allowed = _category_check_values((row[0] or "") if row else "")
@@ -628,15 +642,19 @@ class CatalogStore:
             return
         logger.error(
             "catalog_schema_stale path=%s missing_categories=%s action=delete_the_file",
-            self._path, ",".join(missing),
+            self._path,
+            ",".join(missing),
         )
         from slife.health import record
+
         record(
-            "tool_catalog", "warning", key="schema",
+            "tool_catalog",
+            "warning",
+            key="schema",
             value=f"stale (no {'/'.join(missing)} category)",
             hint=f"Delete {self._path} and restart slife. The catalog is "
-                 f"rebuilt from the tool registry, tools.yaml and the plugins, "
-                 f"so nothing is lost but the loaded/unloaded state.",
+            f"rebuilt from the tool registry, tools.yaml and the plugins, "
+            f"so nothing is lost but the loaded/unloaded state.",
         )
 
     async def _check_columns(self) -> None:
@@ -658,7 +676,7 @@ class CatalogStore:
         try:
             cursor = await self._c.execute("PRAGMA table_info(tool)")
             columns = {r[1] for r in await cursor.fetchall()}
-        except Exception as e:  # a probe failure is never fatal
+        except (sqlite3.Error, ValueError) as e:  # a probe failure is never fatal
             logger.debug("catalog_column_probe_failed err=%s", e)
             return
         if not columns:  # no table yet → the schema creates it complete
@@ -668,21 +686,28 @@ class CatalogStore:
         if not missing and not unexpected:
             return
         detail = "/".join(
-            [*(f"no {c} column" for c in missing),
-             *(f"unknown {c} column" for c in unexpected)]
+            [
+                *(f"no {c} column" for c in missing),
+                *(f"unknown {c} column" for c in unexpected),
+            ]
         )
         logger.error(
             "catalog_schema_stale path=%s missing_columns=%s unexpected_columns=%s "
             "action=delete_the_file",
-            self._path, ",".join(missing), ",".join(unexpected),
+            self._path,
+            ",".join(missing),
+            ",".join(unexpected),
         )
         from slife.health import record
+
         record(
-            "tool_catalog", "warning", key="schema",
+            "tool_catalog",
+            "warning",
+            key="schema",
             value=f"stale ({detail})",
             hint=f"Delete {self._path} and restart slife. The catalog is "
-                 f"rebuilt from the tool registry, tools.yaml and the plugins, "
-                 f"so nothing is lost but the loaded/unloaded state.",
+            f"rebuilt from the tool registry, tools.yaml and the plugins, "
+            f"so nothing is lost but the loaded/unloaded state.",
         )
 
     async def _migrate(self) -> None:
@@ -736,7 +761,7 @@ class CatalogStore:
                 continue
             try:
                 await self._c.execute(stmt)
-            except Exception as e:
+            except (sqlite3.Error, ValueError) as e:
                 logger.error("catalog_schema_stmt_error err=%s stmt=%.80s", e, stmt)
         await self._c.commit()
 
@@ -744,7 +769,7 @@ class CatalogStore:
 
     async def reconcile(
         self,
-        rows: "list[dict]",
+        rows: list[dict],
         *,
         category: str = "",
         purge: bool = False,
@@ -833,11 +858,14 @@ class CatalogStore:
                                             last_loaded)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
-                            name, row.get("description") or "",
+                            name,
+                            row.get("description") or "",
                             row.get("category", "") or "",
-                            row.get("source_id") or NA, new_schema or NA,
+                            row.get("source_id") or NA,
+                            new_schema or NA,
                             new_tool_status or STATUS_ENABLED,
-                            row.get("load_status") or STATUS_NA, "",
+                            row.get("load_status") or STATUS_NA,
+                            "",
                         ),
                     )
                     inserted.append(name)
@@ -906,8 +934,10 @@ class CatalogStore:
                 # autoload override is not one.
                 content_moved = bool(sets)
                 new_status = row.get("load_status")
-                if row.get("override_status") and new_status is not None and (
-                    (prev["load_status"] or None) != new_status
+                if (
+                    row.get("override_status")
+                    and new_status is not None
+                    and ((prev["load_status"] or None) != new_status)
                 ):
                     sets.append("load_status = ?")
                     vals.append(new_status)
@@ -923,7 +953,8 @@ class CatalogStore:
                     continue
                 vals.append(name)
                 await self._c.execute(
-                    f"UPDATE tool SET {', '.join(sets)} WHERE name = ?", vals,
+                    f"UPDATE tool SET {', '.join(sets)} WHERE name = ?",
+                    vals,
                 )
                 (updated if content_moved else status_updated).append(name)
                 # The schema moved, so the vectors were built from text that is
@@ -957,13 +988,19 @@ class CatalogStore:
         # callable — books nothing on either side.  The log line below still
         # reports the raw write count, which is what a log is for.
         self._count_ops(
-            added=usable_added, updated=len(updated), removed=len(purged),
+            added=usable_added,
+            updated=len(updated),
+            removed=len(purged),
         )
         logger.info(
             "catalog_reconcile category=%s inserted=%d updated=%d status=%d "
             "skipped=%d purged=%d",
-            category or "(all)", len(inserted), len(updated),
-            len(status_updated), skipped, len(purged),
+            category or "(all)",
+            len(inserted),
+            len(updated),
+            len(status_updated),
+            skipped,
+            len(purged),
         )
         return {
             "inserted": inserted,
@@ -993,11 +1030,20 @@ class CatalogStore:
         method for the column contracts (``status=None`` = no opinion,
         ``load_status`` on a NEW row only — unless ``override_status``).
         """
-        result = await self.reconcile([{
-            "name": name, "description": description, "category": category,
-            "source_id": source_id, "schema": schema, "status": status,
-            "load_status": load_status, "override_status": override_status,
-        }])
+        result = await self.reconcile(
+            [
+                {
+                    "name": name,
+                    "description": description,
+                    "category": category,
+                    "source_id": source_id,
+                    "schema": schema,
+                    "status": status,
+                    "load_status": load_status,
+                    "override_status": override_status,
+                }
+            ]
+        )
         return name in result["schema_changed"]
 
     async def purge_source(self, source_id: str) -> int:
@@ -1013,7 +1059,8 @@ class CatalogStore:
         """
         async with self._write_lock:
             cursor = await self._c.execute(
-                "SELECT name FROM tool WHERE source_id = ?", (source_id,),
+                "SELECT name FROM tool WHERE source_id = ?",
+                (source_id,),
             )
             names = [r[0] for r in await cursor.fetchall()]
             count = await self._delete_rows(names)
@@ -1022,7 +1069,7 @@ class CatalogStore:
         logger.info("catalog_source_purged source=%s tools=%d", source_id, count)
         return count
 
-    async def purge_source_except(self, source_id: str, keep: "set[str]") -> list[str]:
+    async def purge_source_except(self, source_id: str, keep: set[str]) -> list[str]:
         """Delete one owner's rows for every name NOT in *keep*.
 
         The per-tool half of :meth:`purge_source`: the owner is still
@@ -1040,7 +1087,8 @@ class CatalogStore:
         """
         async with self._write_lock:
             cursor = await self._c.execute(
-                "SELECT name FROM tool WHERE source_id = ?", (source_id,),
+                "SELECT name FROM tool WHERE source_id = ?",
+                (source_id,),
             )
             gone = sorted(r[0] for r in await cursor.fetchall() if r[0] not in keep)
             if gone:
@@ -1049,11 +1097,13 @@ class CatalogStore:
         if gone:
             self._count_ops(removed=len(gone))
             logger.info(
-                "catalog_source_purged_except source=%s tools=%d", source_id, len(gone),
+                "catalog_source_purged_except source=%s tools=%d",
+                source_id,
+                len(gone),
             )
         return gone
 
-    async def purge_missing_sources(self, keep: "set[str]") -> "set[str]":
+    async def purge_missing_sources(self, keep: set[str]) -> set[str]:
         """Purge the rows of every server NOT in *keep*; returns what was purged."""
         purged: set[str] = set()
         for source_id in sorted(await self.list_source_ids() - keep):
@@ -1062,8 +1112,9 @@ class CatalogStore:
         return purged
 
     async def list_source_ids(
-        self, categories: "frozenset[str] | set[str] | None" = SERVER_CATEGORIES,
-    ) -> "set[str]":
+        self,
+        categories: frozenset[str] | set[str] | None = SERVER_CATEGORIES,
+    ) -> set[str]:
         """Every source name that currently owns tool rows.
 
         Defaults to :data:`SERVER_CATEGORIES` — "which servers own rows", the
@@ -1183,7 +1234,7 @@ class CatalogStore:
             await self._c.commit()
         return cursor.rowcount
 
-    async def _delete_rows(self, names: "list[str]") -> int:
+    async def _delete_rows(self, names: list[str]) -> int:
         """DELETE *names* and their embedding chunks; returns the rows removed.
 
         The ONE spelling of a tool-row removal, shared by every batch purge —
@@ -1197,14 +1248,16 @@ class CatalogStore:
             return 0
         ph = in_placeholders(len(names))
         cursor = await self._c.execute(
-            f"DELETE FROM tool WHERE name IN ({ph})", names,
+            f"DELETE FROM tool WHERE name IN ({ph})",
+            names,
         )
         await self._c.execute(
-            f"DELETE FROM tool_embeddings WHERE name IN ({ph})", names,
+            f"DELETE FROM tool_embeddings WHERE name IN ({ph})",
+            names,
         )
         return cursor.rowcount or 0
 
-    async def remove_tools(self, names: "list[str]") -> list[str]:
+    async def remove_tools(self, names: list[str]) -> list[str]:
         """Delete several tool rows at once — the batch face of ``remove_tool``.
 
         What a whole family vanishing costs: ONE statement for the set rather
@@ -1238,7 +1291,8 @@ class CatalogStore:
     async def names_by_category(self, category: str) -> set[str]:
         """Every row name of one category — the mirror's purge diff basis."""
         cursor = await self._c.execute(
-            "SELECT name FROM tool WHERE category = ?", (category,),
+            "SELECT name FROM tool WHERE category = ?",
+            (category,),
         )
         return {row[0] for row in await cursor.fetchall()}
 
@@ -1257,12 +1311,13 @@ class CatalogStore:
         ``error`` are both correctly absent from what the line promises.
         """
         cursor = await self._c.execute(
-            "SELECT COUNT(*) FROM tool WHERE status = ?", (STATUS_ENABLED,),
+            "SELECT COUNT(*) FROM tool WHERE status = ?",
+            (STATUS_ENABLED,),
         )
         row = await cursor.fetchone()
         return row[0] if row else 0
 
-    async def has_error_rows(self, categories: "set[str] | frozenset[str]") -> bool:
+    async def has_error_rows(self, categories: set[str] | frozenset[str]) -> bool:
         """Whether any row of these categories is marked ``error`` right now.
 
         The re-check trigger for the source-fed families (skill / cli): their
@@ -1298,7 +1353,9 @@ class CatalogStore:
 
     # ── Status flips ───────────────────────────────────────────────
 
-    async def set_load_status(self, name: str, load_status: str, *, bump: bool = False) -> int:
+    async def set_load_status(
+        self, name: str, load_status: str, *, bump: bool = False
+    ) -> int:
         """Set a tool's ``load_status`` (loaded/unloaded/n/a); bump → LRU refresh.
 
         Only meaningful for a function tool's row (skill/cli stay 'n/a'); the
@@ -1344,13 +1401,15 @@ class CatalogStore:
             return []
         ph = in_placeholders(len(names))
         cursor = await self._c.execute(
-            f"SELECT name, schema FROM tool WHERE name IN ({ph})", names,
+            f"SELECT name, schema FROM tool WHERE name IN ({ph})",
+            names,
         )
         return [dict(r) for r in await cursor.fetchall()]
 
     async def get_tool(self, name: str) -> dict | None:
         cursor = await self._c.execute(
-            f"SELECT {_SCAN_COLS} FROM tool t WHERE t.name = ?", (name,),
+            f"SELECT {_SCAN_COLS} FROM tool t WHERE t.name = ?",
+            (name,),
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
@@ -1363,7 +1422,8 @@ class CatalogStore:
         return _effective_status(row)
 
     async def scan_effective(
-        self, category: str = "",
+        self,
+        category: str = "",
     ) -> list[dict]:
         """Every tool row, annotated with its effective status.
 
@@ -1376,8 +1436,7 @@ class CatalogStore:
             clauses = "WHERE t.category = ?"
             params.append(category)
         cursor = await self._c.execute(
-            f"SELECT {_SCAN_COLS} FROM tool t {clauses} "
-            f"ORDER BY t.category, t.name",
+            f"SELECT {_SCAN_COLS} FROM tool t {clauses} ORDER BY t.category, t.name",
             params,
         )
         rows = []
@@ -1408,7 +1467,9 @@ class CatalogStore:
         row = await cursor.fetchone()
         return row[0] if row else 0
 
-    async def evict_lru(self, limit: int, protected: frozenset | set = frozenset()) -> list[str]:
+    async def evict_lru(
+        self, limit: int, protected: frozenset | set = frozenset()
+    ) -> list[str]:
         """Evict the oldest-by-``last_loaded`` loaded tools, down to best effort.
 
         Evicts up to *limit* rows (the caller bounds it to the over-threshold
@@ -1456,7 +1517,10 @@ class CatalogStore:
     # ── Search ─────────────────────────────────────────────────────
 
     async def search_keyword(
-        self, query: str, limit: int = 20, filters: "dict | None" = None,
+        self,
+        query: str,
+        limit: int = 20,
+        filters: dict | None = None,
     ) -> list[dict]:
         """FTS5 keyword search, CJK-routed to :meth:`_search_like`.
 
@@ -1494,8 +1558,10 @@ class CatalogStore:
             return []
 
     async def _search_like(
-        self, pattern: str, limit: int,
-        filters: "dict | None" = None,
+        self,
+        pattern: str,
+        limit: int,
+        filters: dict | None = None,
     ) -> list[dict]:
         """Substring (LIKE) search — CJK fallback for :meth:`search_keyword`.
 
@@ -1511,7 +1577,10 @@ class CatalogStore:
             return []
         clause, like_params = _like_terms(words, _LIKE_COLUMNS)
         return await self._search_by_sql(
-            [clause], [words[0], *like_params], filters, limit,
+            [clause],
+            [words[0], *like_params],
+            filters,
+            limit,
         )
 
     #: The text `grep` matches against — :data:`_TEXT_COLUMNS` itself, so the
@@ -1519,7 +1588,9 @@ class CatalogStore:
     _GREP_COLUMNS = _TEXT_COLUMNS
 
     async def browse(
-        self, limit: int = 20, filters: "dict | None" = None,
+        self,
+        limit: int = 20,
+        filters: dict | None = None,
     ) -> list[dict]:
         """Rows passing the column filters, in report order — no text match.
 
@@ -1541,7 +1612,10 @@ class CatalogStore:
         return [dict(row) for row in await cursor.fetchall()]
 
     async def search_grep(
-        self, pattern: str, limit: int = 20, filters: "dict | None" = None,
+        self,
+        pattern: str,
+        limit: int = 20,
+        filters: dict | None = None,
     ) -> list[dict]:
         """REGEX search over the catalog's text columns.
 
@@ -1573,12 +1647,20 @@ class CatalogStore:
                 hits.append(row)
                 if len(hits) >= limit:
                     break
-        logger.debug("catalog_search_grep pattern=%s scanned=%s hits=%s",
-                     pattern[:80], len(rows), len(hits))
+        logger.debug(
+            "catalog_search_grep pattern=%s scanned=%s hits=%s",
+            pattern[:80],
+            len(rows),
+            len(hits),
+        )
         return hits
 
     async def _search_by_sql(
-        self, clauses: list[str], params: list, filters: "dict | None", limit: int,
+        self,
+        clauses: list[str],
+        params: list,
+        filters: dict | None,
+        limit: int,
     ) -> list[dict]:
         """Run one keyword ``AND``-clause search against the shared spine.
 
@@ -1596,7 +1678,10 @@ class CatalogStore:
         return [dict(row) for row in await cursor.fetchall()]
 
     async def search_semantic(
-        self, vec: list[float], limit: int = 20, filters: "dict | None" = None,
+        self,
+        vec: list[float],
+        limit: int = 20,
+        filters: dict | None = None,
     ) -> list[dict]:
         """Brute-force cosine KNN over stored BLOB vectors — one row per tool.
 
@@ -1672,7 +1757,9 @@ class CatalogStore:
         ]
 
     async def replace_embedding_chunks(
-        self, doc: dict, embeddings: list[list[float]],
+        self,
+        doc: dict,
+        embeddings: list[list[float]],
     ) -> None:
         """Atomically replace one tool's embedding chunks (delete+insert, one tx).
 
@@ -1684,7 +1771,8 @@ class CatalogStore:
         async with self._write_lock:
             try:
                 await self._c.execute(
-                    "DELETE FROM tool_embeddings WHERE name = ?", (name,),
+                    "DELETE FROM tool_embeddings WHERE name = ?",
+                    (name,),
                 )
                 for idx, blob in enumerate(vec_blobs):
                     await self._c.execute(
@@ -1696,7 +1784,9 @@ class CatalogStore:
             except Exception:
                 await self._c.rollback()
                 raise
-        logger.debug("catalog_embedding_chunks_replaced name=%s chunks=%d", name, len(vec_blobs))
+        logger.debug(
+            "catalog_embedding_chunks_replaced name=%s chunks=%d", name, len(vec_blobs)
+        )
 
     async def drop_embeddings(self) -> int:
         """Delete all embedding rows. Returns chunk rows deleted."""
@@ -1713,7 +1803,8 @@ class CatalogStore:
 
     async def get_meta(self, key: str) -> str | None:
         cursor = await self._c.execute(
-            "SELECT value FROM meta WHERE key = ?", (key,),
+            "SELECT value FROM meta WHERE key = ?",
+            (key,),
         )
         row = await cursor.fetchone()
         return row[0] if row else None

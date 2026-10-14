@@ -1,11 +1,10 @@
 """Tests for Slife.tools.factory — auto-discovery tool loading."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import pytest
 
 from slife.tools.factory import create_tools_from_config, disabled_tool_instances
+
+pytestmark = pytest.mark.unit
 
 
 class TestCreateToolsFromConfig:
@@ -51,9 +50,11 @@ class TestCreateToolsFromConfig:
 
     def test_shell_tool_timeout_override(self):
         """Override matched by tool name."""
-        registry = create_tools_from_config([
-            {"name": "execute_shell", "timeout": 45},
-        ])
+        registry = create_tools_from_config(
+            [
+                {"name": "execute_shell", "timeout": 45},
+            ]
+        )
         tool = registry.get("execute_shell")
         assert tool is not None
         assert tool.timeout == 45  # type: ignore[attr-defined]
@@ -69,9 +70,11 @@ class TestCreateToolsFromConfig:
 
     def test_disable_tool(self):
         """Tool can be disabled with enabled: false."""
-        registry = create_tools_from_config([
-            {"name": "execute_shell", "enabled": False},
-        ])
+        registry = create_tools_from_config(
+            [
+                {"name": "execute_shell", "enabled": False},
+            ]
+        )
         assert registry.get("execute_shell") is None
         assert registry.get("run_python_script") is not None
 
@@ -94,7 +97,7 @@ class TestCreateToolsFromConfig:
     def test_a_tool_that_cannot_be_built_is_skipped_not_fatal(self, monkeypatch):
         """One unbuildable disabled tool must not take the boot down — the
         cost is a missing catalog row, not a dead agent."""
-        import slife.tools.factory as factory
+        from slife.tools import factory
 
         class _Boom:
             name = "boom_tool"
@@ -108,15 +111,18 @@ class TestCreateToolsFromConfig:
 
     def test_skill_tool_custom_skills_dir(self):
         """Each skill tool matched individually by name."""
-        registry = create_tools_from_config([
-            {"name": "skill_list", "skills_dir": "custom_skills"},
-        ])
+        registry = create_tools_from_config(
+            [
+                {"name": "skill_list", "skills_dir": "custom_skills"},
+            ]
+        )
         # Overridden tool gets custom dir
         list_tool = registry.get("skill_list")
         assert list_tool is not None
         assert str(list_tool.skills_dir) == "custom_skills"  # type: ignore[attr-defined]
         # Other skill tools use the resolved default (absolute path)
         from slife.paths import get_skills_dir
+
         skill_tool = registry.get("skill_use")
         assert skill_tool is not None
         assert str(skill_tool.skills_dir) == str(get_skills_dir())  # type: ignore[attr-defined]
@@ -129,6 +135,7 @@ class TestRunPythonScriptTool:
     async def test_execute_runs_script(self):
         """execute() runs a Python one-liner and returns output."""
         from slife.tools.exec import RunPythonScriptTool
+
         tool = RunPythonScriptTool()
         result = await tool.execute(script="-c print('hello')")
         assert "hello" in result
@@ -137,6 +144,7 @@ class TestRunPythonScriptTool:
     async def test_execute_missing_script_returns_error(self):
         """execute() returns error info for a failing command."""
         from slife.tools.exec import RunPythonScriptTool
+
         tool = RunPythonScriptTool()
         result = await tool.execute(script="-c raise SystemExit(1)")
         assert "Error" in result
@@ -147,9 +155,11 @@ class TestCreateToolsOverrideEdgeCases:
 
     def test_override_entry_without_name_logs_warning(self, caplog):
         """Override entries without a 'name' key log a warning."""
-        registry = create_tools_from_config([
-            {"timeout": 60},  # No name!
-        ])
+        registry = create_tools_from_config(
+            [
+                {"timeout": 60},  # No name!
+            ]
+        )
         # Tool should still be discovered normally
         assert registry.get("execute_shell") is not None
         # Warning should be logged

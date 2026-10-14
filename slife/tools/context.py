@@ -32,7 +32,7 @@ class ToolContext:
     """The live :class:`ToolRegistry` (needed by ``system_tools_list``, model
     switching, etc.)"""
 
-    catalog: "ToolCatalogService | None" = None
+    catalog: ToolCatalogService | None = None
     """The unified tool catalog service (shared tools.db) — used by the
     tool-system meta tools (``tool_search`` / ``func_tool_load`` /
     ``_func_tool_unload``) and the loop's loaded-snapshot inspection.

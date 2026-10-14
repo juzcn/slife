@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from slife.tools.base import Tool, make_params
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.tools.base import Tool, make_params
 
 
 class WaitMinutesTool(Tool):
@@ -29,8 +29,8 @@ class WaitMinutesTool(Tool):
             "type": "string",
             "default": "",
             "description": (
-                "What to resume — your continuation plan, e.g. \"check the "
-                "deploy, then report\". The wake message relays this back to "
+                'What to resume — your continuation plan, e.g. "check the '
+                'deploy, then report". The wake message relays this back to '
                 "you alongside your prior context."
             ),
         },

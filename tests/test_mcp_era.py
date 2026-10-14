@@ -6,8 +6,6 @@ a change notification reaches us at each era (a `subscriptions/listen`
 stream on modern, the session channel on legacy).
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,6 +13,8 @@ import pytest
 from mcp import MCPError
 
 from slife.mcp import era
+
+pytestmark = pytest.mark.unit
 
 
 class _FakeSubscription:
@@ -44,7 +44,7 @@ class _FakeListen:
     """
 
     def __init__(self, rounds):
-        self.rounds = rounds          # list of (events, exc_or_None)
+        self.rounds = rounds  # list of (events, exc_or_None)
         self.entered = 0
 
     def __call__(self, session, **kwargs):
@@ -58,6 +58,7 @@ class _FakeListen:
                     # Rounds exhausted → the supervisor must stop retrying
                     # (a real peer that can't serve listen says exactly this).
                     from mcp.client.subscriptions import ListenNotSupportedError
+
                     raise ListenNotSupportedError("test: no more rounds")
                 events, exc = self.rounds[index]
                 return _FakeSubscription(events, exc)
@@ -85,27 +86,35 @@ class TestNegotiateEra:
     async def test_transport_errors_propagate(self):
         """An unreachable peer is a connect failure, never an era verdict."""
         session = MagicMock()
-        with patch(
-            "mcp.client._probe.negotiate_auto",
-            AsyncMock(side_effect=ConnectionError("refused")),
+        with (
+            patch(
+                "mcp.client._probe.negotiate_auto",
+                AsyncMock(side_effect=ConnectionError("refused")),
+            ),
+            pytest.raises(ConnectionError),
         ):
-            with pytest.raises(ConnectionError):
-                await era.negotiate_era(session)
+            await era.negotiate_era(session)
 
     def test_peer_era_reads_the_adopted_result(self):
         modern = MagicMock(discover_result=object(), initialize_result=None)
         legacy = MagicMock(discover_result=None, initialize_result=object())
         assert era.peer_era(modern) == "modern"
         assert era.peer_era(legacy) == "legacy"
-        assert era.peer_era(MagicMock(discover_result=None, initialize_result=None)) == "unknown"
+        assert (
+            era.peer_era(MagicMock(discover_result=None, initialize_result=None))
+            == "unknown"
+        )
 
 
 def _ready(relisten: float = 0, relisten_max: float = 0) -> MagicMock:
     """A stand-in timeout registry with the two knobs the supervisor reads."""
-    return MagicMock(ready=MagicMock(
-        relisten=relisten, relisten_max=relisten_max,
-        watchdog_backoff_multiplier=2.0,  # noqa-timeout
-    ))
+    return MagicMock(
+        ready=MagicMock(
+            relisten=relisten,
+            relisten_max=relisten_max,
+            watchdog_backoff_multiplier=2.0,  # noqa-timeout
+        )
+    )
 
 
 class TestWatchToolsChanged:
@@ -114,10 +123,12 @@ class TestWatchToolsChanged:
         from mcp.client.subscriptions import SubscriptionLost
 
         handler = AsyncMock()
-        fake = _FakeListen([
-            ([object(), object()], SubscriptionLost("dropped")),
-            ([object()], None),
-        ])
+        fake = _FakeListen(
+            [
+                ([object(), object()], SubscriptionLost("dropped")),
+                ([object()], None),
+            ]
+        )
         with (
             patch("mcp.client.subscriptions.listen", fake),
             # no backoff between rounds in the test
@@ -125,13 +136,15 @@ class TestWatchToolsChanged:
         ):
             # The supervisor ends on its own once the peer refuses a stream.
             await asyncio.wait_for(
-                era.watch_tools_changed(MagicMock(), handler, link="test"), 1)  # noqa-timeout
+                era.watch_tools_changed(MagicMock(), handler, link="test"),
+                1,  # noqa-timeout
+            )
 
         # 2 events + 1 event, across a drop and a re-listen.  The drop fires
         # the handler once more (4 total): an event may have gone down with
         # the stream, and the handler is a level trigger that re-reads.
         assert handler.await_count == 4
-        assert fake.entered == 3   # two rounds + the refusing third
+        assert fake.entered == 3  # two rounds + the refusing third
 
     @pytest.mark.asyncio
     async def test_cancellation_propagates(self):
@@ -143,8 +156,9 @@ class TestWatchToolsChanged:
             patch("slife.timeouts.timeouts", _ready(relisten=5, relisten_max=5)),
         ):
             task = asyncio.create_task(
-                era.watch_tools_changed(MagicMock(), handler, link="test"))
-            await asyncio.sleep(0.02)     # parked in the backoff sleep
+                era.watch_tools_changed(MagicMock(), handler, link="test")
+            )
+            await asyncio.sleep(0.02)  # parked in the backoff sleep
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
@@ -184,7 +198,9 @@ class TestWatchToolsChanged:
             patch("slife.timeouts.timeouts", _ready(relisten=0, relisten_max=0)),
         ):
             await asyncio.wait_for(
-                era.watch_tools_changed(MagicMock(), handler, link="test"), 1)  # noqa-timeout
+                era.watch_tools_changed(MagicMock(), handler, link="test"),
+                1,  # noqa-timeout
+            )
 
         assert calls == 1, "a permanent refusal must not be retried"
         handler.assert_not_awaited()
@@ -209,11 +225,10 @@ class TestWatchToolsChanged:
 
             class _CM:
                 async def __aenter__(_self):
-                    if n <= 2:      # refused at the ack — quota full
+                    if n <= 2:  # refused at the ack — quota full
                         raise MCPError(-32000, "Subscription limit reached")
-                    if n == 3:      # accepted, then the stream drops
-                        return _FakeSubscription([object()],
-                                                 SubscriptionLost("drop"))
+                    if n == 3:  # accepted, then the stream drops
+                        return _FakeSubscription([object()], SubscriptionLost("drop"))
                     raise ListenNotSupportedError("test: done")
 
                 async def __aexit__(_self, *tb):

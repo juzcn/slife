@@ -1,8 +1,5 @@
 """Tests for slife.agent.plugins — PluginLifecycle container."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,6 +9,8 @@ import pytest
 from slife.agent.plugins import PluginLifecycle, PluginRegistry, plugin_port_env
 from slife.platform import IS_WINDOWS
 from slife.plugins.spec import PLUGIN_SPECS
+
+pytestmark = pytest.mark.unit
 
 
 def _real_proxy(name, description):
@@ -23,8 +22,12 @@ def _real_proxy(name, description):
 
     return MCPProxyTool(
         None,
-        {"server": "memdb", "name": name, "description": description,
-         "inputSchema": {"type": "object", "properties": {}}},
+        {
+            "server": "memdb",
+            "name": name,
+            "description": description,
+            "inputSchema": {"type": "object", "properties": {}},
+        },
         route=ProxyRoute.DIRECT,
     )
 
@@ -105,9 +108,9 @@ class TestPluginLifecycleSpawn:
     @staticmethod
     def _client_with(tools):
         client = AsyncMock()
-        client.list_tools = AsyncMock(return_value=[
-            {**t, "server": "test_plugin"} for t in tools
-        ])
+        client.list_tools = AsyncMock(
+            return_value=[{**t, "server": "test_plugin"} for t in tools]
+        )
         return client
 
     @pytest.mark.asyncio
@@ -120,20 +123,26 @@ class TestPluginLifecycleSpawn:
         mock_process.port = 9999
         mock_process.start = AsyncMock()
         mock_process.create_client = AsyncMock(
-            return_value=self._client_with([{"name": "my_tool", "description": "A tool."}]),
+            return_value=self._client_with(
+                [{"name": "my_tool", "description": "A tool."}]
+            ),
         )
 
         caplog.set_level(logging.INFO, logger="slife.agent.plugins")
-        with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc, \
-             patch("slife.mcp.tool_adapter.create_proxy_tools") as mock_create:
+        with (
+            patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc,
+            patch("slife.mcp.tool_adapter.create_proxy_tools") as mock_create,
+        ):
             MockProc.return_value = mock_process
             mock_create.return_value = [MagicMock()]
 
             started = await service._spawn_plugin_generic(
-                "test_plugin", "slife.plugins.mcp_gateway.server",
+                "test_plugin",
+                "slife.plugins.mcp_gateway.server",
             )
 
         import os
+
         assert started is True
         assert os.environ.get("SLIFE_TEST_PLUGIN_PORT") == "9999"
         os.environ.pop("SLIFE_TEST_PLUGIN_PORT", None)
@@ -154,19 +163,25 @@ class TestPluginLifecycleSpawn:
         mock_process.port = 8000
         mock_process.start = AsyncMock()
         mock_process.create_client = AsyncMock(
-            return_value=self._client_with([{"name": "job-list", "description": "List jobs."}]),
+            return_value=self._client_with(
+                [{"name": "job-list", "description": "List jobs."}]
+            ),
         )
 
-        with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc, \
-             patch("slife.mcp.tool_adapter.create_proxy_tools") as mock_create:
+        with (
+            patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc,
+            patch("slife.mcp.tool_adapter.create_proxy_tools") as mock_create,
+        ):
             MockProc.return_value = mock_process
             mock_create.return_value = [MagicMock()]
 
             started = await service._spawn_plugin_generic(
-                "job-coding", "slife.plugins.job_coding.server",
+                "job-coding",
+                "slife.plugins.job_coding.server",
             )
 
         import os
+
         assert started is True
         assert os.environ.get("SLIFE_JOB_CODING_PORT") == "8000"
         assert os.environ.get("SLIFE_JOB-CODING_PORT") is None
@@ -181,40 +196,51 @@ class TestPluginLifecycleSpawn:
         mock_process = MagicMock()
         mock_process.port = 8888
         mock_process.start = AsyncMock()
-        mock_process.create_client = AsyncMock(return_value=self._client_with([{  # noqa: E501
-            "name": "visible_tool", "description": "For LLM."},
-            {"name": "__internal_tool", "description": "Internal (__ prefix)."},
-        ]))
+        mock_process.create_client = AsyncMock(
+            return_value=self._client_with(
+                [
+                    {"name": "visible_tool", "description": "For LLM."},
+                    {"name": "__internal_tool", "description": "Internal (__ prefix)."},
+                ]
+            )
+        )
 
-        with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc, \
-             patch("slife.agent.service.create_proxy_tools") as mock_create:
+        with (
+            patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc,
+            patch("slife.agent.service.create_proxy_tools") as mock_create,
+        ):
             MockProc.return_value = mock_process
             mock_tool = MagicMock()
             mock_tool.name = "visible_tool"
             mock_create.return_value = [mock_tool]
 
             started = await service._spawn_plugin_generic(
-                "test_plugin", "slife.plugins.mcp_gateway.server",
+                "test_plugin",
+                "slife.plugins.mcp_gateway.server",
             )
 
         assert started is True
-        assert service._plugins["test_plugin"].client is mock_process.create_client.return_value
+        assert (
+            service._plugins["test_plugin"].client
+            is mock_process.create_client.return_value
+        )
         assert service._plugins["test_plugin"].process is mock_process
         assert service._plugins["test_plugin"].port == 8888
         assert service._plugins["test_plugin"].registered_tools == {"visible_tool"}
         # Internal `__`-prefixed tools are filtered BEFORE create_proxy_tools
         # runs — the stub only ever receives the visible tool.
-        tagged_names = {
-            t["name"] for t in mock_create.call_args[0][1]
-        }
+        tagged_names = {t["name"] for t in mock_create.call_args[0][1]}
         assert tagged_names == {"visible_tool"}
 
         import os
+
         os.environ.pop("SLIFE_TEST_PLUGIN_PORT", None)
 
     @pytest.mark.asyncio
     async def test_spawn_mirrors_the_plugins_tools_into_the_catalog(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """The spawn path is the one every plugin takes — the mirror used to be
         wired only to the rescan and HTTP-connect twins, so a plugin's tools had
@@ -232,44 +258,62 @@ class TestPluginLifecycleSpawn:
         mock_process = MagicMock()
         mock_process.port = 8888
         mock_process.start = AsyncMock()
-        mock_process.create_client = AsyncMock(return_value=self._client_with([
-            {"name": "turn_search", "description": "Search turns."},
-            {"name": "__check", "description": "Internal."},
-        ]))
+        mock_process.create_client = AsyncMock(
+            return_value=self._client_with(
+                [
+                    {"name": "turn_search", "description": "Search turns."},
+                    {"name": "__check", "description": "Internal."},
+                ]
+            )
+        )
 
-        with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc, \
-             patch("slife.agent.service.create_proxy_tools") as mock_create:
+        with (
+            patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc,
+            patch("slife.agent.service.create_proxy_tools") as mock_create,
+        ):
             MockProc.return_value = mock_process
             mock_create.return_value = [_real_proxy("turn_search", "Search turns.")]
-            assert await service._spawn_plugin_generic(
-                "memdb", "slife.plugins.mcp_gateway.server",
-            ) is True
+            assert (
+                await service._spawn_plugin_generic(
+                    "memdb",
+                    "slife.plugins.mcp_gateway.server",
+                )
+                is True
+            )
 
         row = await store.get_tool("turn_search")
         assert row["category"] == "plugin"
         assert row["source_id"] == "memdb"
-        assert row["load_status"] == "unloaded"      # searchable, not injected
+        assert row["load_status"] == "unloaded"  # searchable, not injected
         # The row carries the tool's OWN description: the `[memdb] ` prefix the
         # proxy stamps is provenance, and provenance is source_id's job.
         assert row["description"] == "Search turns."
-        assert await store.get_tool("__check") is None   # internal: never a row
+        assert await store.get_tool("__check") is None  # internal: never a row
 
         # A respawn that comes back without a tool drops its row.
-        with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc, \
-             patch("slife.agent.service.create_proxy_tools") as mock_create:
+        with (
+            patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc,
+            patch("slife.agent.service.create_proxy_tools") as mock_create,
+        ):
             MockProc.return_value = mock_process
             mock_create.return_value = []
-            service._plugins["memdb"].process = None   # not "already running"
-            assert await service._spawn_plugin_generic(
-                "memdb", "slife.plugins.mcp_gateway.server",
-            ) is True
+            service._plugins["memdb"].process = None  # not "already running"
+            assert (
+                await service._spawn_plugin_generic(
+                    "memdb",
+                    "slife.plugins.mcp_gateway.server",
+                )
+                is True
+            )
 
         assert await store.get_tool("turn_search") is None
         await store.close()
 
     @pytest.mark.asyncio
     async def test_spawn_gives_a_switched_off_tool_a_row_but_no_instance(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """A plugin tool switched off in ``tools.yaml`` keeps its ROW — the model
         must be able to see it in ``tool_search`` and suggest switching it on —
@@ -295,28 +339,39 @@ class TestPluginLifecycleSpawn:
         # wires it the same way at startup), and the registration path below
         # reads the config directly.
         service._catalog = ToolCatalogService(
-            store, write_owner=True,
+            store,
+            write_owner=True,
             disabled_plugin=tuple(config.disabled_plugin),
         )
 
         mock_process = MagicMock()
         mock_process.port = 8888
         mock_process.start = AsyncMock()
-        mock_process.create_client = AsyncMock(return_value=self._client_with([
-            {"name": "turn_search", "description": "Search turns."},
-            {"name": "turn_count", "description": "Count turns."},
-        ]))
+        mock_process.create_client = AsyncMock(
+            return_value=self._client_with(
+                [
+                    {"name": "turn_search", "description": "Search turns."},
+                    {"name": "turn_count", "description": "Count turns."},
+                ]
+            )
+        )
 
-        with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc, \
-             patch("slife.agent.service.create_proxy_tools") as mock_create:
+        with (
+            patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc,
+            patch("slife.agent.service.create_proxy_tools") as mock_create,
+        ):
             MockProc.return_value = mock_process
             mock_create.return_value = [
                 _real_proxy("turn_search", "Search turns."),
                 _real_proxy("turn_count", "Count turns."),
             ]
-            assert await service._spawn_plugin_generic(
-                "memdb", "slife.plugins.mcp_gateway.server",
-            ) is True
+            assert (
+                await service._spawn_plugin_generic(
+                    "memdb",
+                    "slife.plugins.mcp_gateway.server",
+                )
+                is True
+            )
 
         # No route for the switched-off tool; its neighbour is untouched.
         assert service.tool_registry.get("turn_search") is None
@@ -332,7 +387,8 @@ class TestPluginLifecycleSpawn:
 
     @pytest.mark.asyncio
     async def test_spawn_mirror_failure_never_kills_a_healthy_child(
-        self, sample_config,
+        self,
+        sample_config,
     ):
         """The mirror runs inside the spawn's ``except BaseException`` handler,
         which STOPS the child — a catalog hiccup must not take down a plugin
@@ -349,18 +405,25 @@ class TestPluginLifecycleSpawn:
         mock_process = MagicMock()
         mock_process.port = 8888
         mock_process.start = AsyncMock()
-        mock_process.create_client = AsyncMock(return_value=self._client_with([
-            {"name": "turn_search", "description": "Search turns."},
-        ]))
+        mock_process.create_client = AsyncMock(
+            return_value=self._client_with(
+                [
+                    {"name": "turn_search", "description": "Search turns."},
+                ]
+            )
+        )
         proxy = MagicMock()
         proxy.name = "turn_search"
 
-        with patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc, \
-             patch("slife.agent.service.create_proxy_tools") as mock_create:
+        with (
+            patch("slife.plugins.mcp_gateway.process.MCPWrapperProcess") as MockProc,
+            patch("slife.agent.service.create_proxy_tools") as mock_create,
+        ):
             MockProc.return_value = mock_process
             mock_create.return_value = [proxy]
             started = await service._spawn_plugin_generic(
-                "memdb", "slife.plugins.mcp_gateway.server",
+                "memdb",
+                "slife.plugins.mcp_gateway.server",
             )
 
         assert started is True
@@ -386,7 +449,8 @@ class TestPluginLifecycleSpawn:
             MockProc.return_value = mock_process
             with pytest.raises(ConnectionError):
                 await service._spawn_plugin_generic(
-                    "test_plugin", "slife.plugins.mcp_gateway.server",
+                    "test_plugin",
+                    "slife.plugins.mcp_gateway.server",
                 )
 
         lc = service._plugins["test_plugin"]
@@ -395,6 +459,7 @@ class TestPluginLifecycleSpawn:
         assert lc.port == 0
         mock_process.stop.assert_awaited_once()
         import os
+
         os.environ.pop("SLIFE_TEST_PLUGIN_PORT", None)
 
 
@@ -512,6 +577,7 @@ class TestPluginLifecycleStop:
     async def test_stop_cancels_poll_and_restore_tasks(self, lifecycle):
         """stop() always cancels the supervised poll and restore tasks —
         the caller never passes a flag (the lifecycle owns its tasks)."""
+
         async def loop():
             while True:
                 await asyncio.sleep(0.1)
@@ -586,8 +652,9 @@ class TestPluginLifecycleKill:
         mock_process._process = mock_subprocess
         lifecycle.process = mock_process
 
-        with patch("slife.platform._taskkill_tree_sync",
-                   side_effect=RuntimeError("boom")):
+        with patch(
+            "slife.platform._taskkill_tree_sync", side_effect=RuntimeError("boom")
+        ):
             lifecycle.kill()  # Should not raise
 
     def test_kill_already_exited_is_noop(self, lifecycle):
@@ -640,6 +707,7 @@ class TestWatchdogRestart:
         lifecycle._module = "slife.plugins.memdb.server"
 
         spawned = []
+
         async def fake_spawn(name, module):
             spawned.append((name, module))
             lifecycle.process = new_proc
@@ -669,14 +737,19 @@ class TestWatchdogRestart:
     async def test_failed_restart_retries_with_backoff(self, lifecycle, monkeypatch):
         """A failed restart backs off and retries instead of killing the watchdog."""
 
-        monkeypatch.setattr("slife.timeouts.timeouts.ready.watchdog_backoff_initial", 0.01)
-        monkeypatch.setattr("slife.timeouts.timeouts.ready.watchdog_backoff_multiplier", 2.0)
+        monkeypatch.setattr(
+            "slife.timeouts.timeouts.ready.watchdog_backoff_initial", 0.01
+        )
+        monkeypatch.setattr(
+            "slife.timeouts.timeouts.ready.watchdog_backoff_multiplier", 2.0
+        )
 
         new_proc = self._living_process()
         lifecycle.process = self._dead_process()
         lifecycle._module = "slife.plugins.memdb.server"
 
         attempts = 0
+
         async def flaky_spawn(name, module):
             nonlocal attempts
             attempts += 1
@@ -725,20 +798,22 @@ class TestWatchdogRestart:
             task = asyncio.create_task(lifecycle._watchdog_loop())
             try:
                 await asyncio.wait_for(task, timeout=2.0)  # noqa-timeout
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pytest.fail("boot-loop watchdog never gave up (B2)")
         assert lifecycle._restart_count == 3
         assert spawned == 3
 
     @pytest.mark.asyncio
-    async def test_watchdog_unregisters_client_bound_proxies(self, lifecycle,
-                                                             mock_service):
+    async def test_watchdog_unregisters_client_bound_proxies(
+        self, lifecycle, mock_service
+    ):
         """B3 regression: when a plugin's child exits, the watchdog must also
         unregister registry tools bound to the dead client that are NOT in
         ``registered_tools`` — the external MCP proxies the gateway glue
         registered (``{server}__{tool}``).  Otherwise they linger in the LLM
         tool list bound to a dead client."""
         from types import SimpleNamespace
+
         from slife.tools.registry import ToolRegistry
 
         reg = ToolRegistry()
@@ -763,8 +838,7 @@ class TestWatchdogRestart:
         client.disconnect.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_hung_restart_bounded_by_spawn_timeout(self, lifecycle,
-                                                         monkeypatch):
+    async def test_hung_restart_bounded_by_spawn_timeout(self, lifecycle, monkeypatch):
         """B1 regression: a restart_cb that never returns (child stuck before
         its lifespan serves) must not block the watchdog forever.  Each
         restart attempt is bounded by the registry's ready.plugin_start, treated as a
@@ -772,8 +846,12 @@ class TestWatchdogRestart:
         `_max_restarts`."""
 
         monkeypatch.setattr("slife.timeouts.timeouts.ready.plugin_start", 0.02)
-        monkeypatch.setattr("slife.timeouts.timeouts.ready.watchdog_backoff_initial", 0.005)
-        monkeypatch.setattr("slife.timeouts.timeouts.ready.watchdog_backoff_multiplier", 1.0)
+        monkeypatch.setattr(
+            "slife.timeouts.timeouts.ready.watchdog_backoff_initial", 0.005
+        )
+        monkeypatch.setattr(
+            "slife.timeouts.timeouts.ready.watchdog_backoff_multiplier", 1.0
+        )
         lifecycle._max_restarts = 3
         lifecycle.process = self._dead_process()
         # A restart callback that never completes — the hang the timeout must
@@ -783,7 +861,7 @@ class TestWatchdogRestart:
         task = asyncio.create_task(lifecycle._watchdog_loop())
         try:
             await asyncio.wait_for(task, timeout=2.0)  # noqa-timeout
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pytest.fail("watchdog blocked forever on a hung restart (B1)")
         assert lifecycle._restart_count == 3
 

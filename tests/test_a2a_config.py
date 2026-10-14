@@ -1,17 +1,15 @@
 """Tests for Slife.a2a.config — A2AConfig and Slife.a2a.card — AgentCard."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import logging
 import platform
 
 import pytest
 
-from slife.a2a.config import A2AConfig, _default_agent_name
 from slife.a2a.card import AgentCard
+from slife.a2a.config import A2AConfig, _default_agent_name
 from slife.a2a.identity import AgentName
 
+pytestmark = pytest.mark.unit
 
 # ── _default_agent_name ────────────────────────────────────────────────────
 
@@ -119,14 +117,14 @@ class TestA2AConfigFromDict:
             cfg = A2AConfig.from_dict({"transport": "http"}, agent_name="agent-1")
         assert cfg.transport == "http"
         assert cfg.enabled is False
-        assert any(
-            "a2a_transport_unsupported" in r.message for r in caplog.records
-        )
+        assert any("a2a_transport_unsupported" in r.message for r in caplog.records)
 
     def test_unknown_transport_disables_a2a(self, caplog):
         """An unknown transport value is treated like 'http': disable + warn."""
         with caplog.at_level(logging.WARNING, logger="slife.a2a.config"):
-            cfg = A2AConfig.from_dict({"transport": "carrier-pigeon"}, agent_name="agent-1")
+            cfg = A2AConfig.from_dict(
+                {"transport": "carrier-pigeon"}, agent_name="agent-1"
+            )
         assert cfg.transport == "carrier-pigeon"
         assert cfg.enabled is False
 

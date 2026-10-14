@@ -1,8 +1,5 @@
 """Tests for Slife.mcp.tool_adapter — MCPProxyTool and create_proxy_tools."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,6 +7,7 @@ import pytest
 
 from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute, create_proxy_tools
 
+pytestmark = pytest.mark.unit
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -21,7 +19,9 @@ def make_mock_mcp_client():
     return client
 
 
-def make_tool_info(server="test_server", name="test_tool", description="A test tool", input_schema=None):
+def make_tool_info(
+    server="test_server", name="test_tool", description="A test tool", input_schema=None
+):
     """Create a tool info dict for proxy creation."""
     if input_schema is None:
         input_schema = {
@@ -138,10 +138,12 @@ class TestMCPProxyToolConstruction:
         ``Tool`` subclass: a stand-in would instantiate the harness-authored
         rule, not this one, and would pass whatever the base class did.
         """
-        info = make_tool_info(input_schema={
-            "type": "object",
-            "properties": {"a": {"type": "string"}},
-        })
+        info = make_tool_info(
+            input_schema={
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+            }
+        )
         tool = MCPProxyTool(make_mock_mcp_client(), info)
 
         assert "additionalProperties" not in tool.parameters
@@ -153,18 +155,25 @@ class TestMCPProxyToolConstruction:
         # And the behaviour that follows from it: an unknown name on a proxied
         # tool is the remote server's to accept or reject, never refused here.
         from slife.tools.base import validate_args
-        assert validate_args(tool.parameters, "srv__test_tool",
-                             {"a": "1", "anything": "2"}) is None
+
+        assert (
+            validate_args(
+                tool.parameters, "srv__test_tool", {"a": "1", "anything": "2"}
+            )
+            is None
+        )
 
     def test_adopted_schema_keeps_its_own_answer(self):
         """A server that states ``additionalProperties`` keeps that answer —
         open or closed — rather than being normalized either way."""
         for declared in (True, False):
-            info = make_tool_info(input_schema={
-                "type": "object",
-                "properties": {},
-                "additionalProperties": declared,
-            })
+            info = make_tool_info(
+                input_schema={
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": declared,
+                }
+            )
             tool = MCPProxyTool(make_mock_mcp_client(), info)
             assert tool.parameters["additionalProperties"] is declared
 
@@ -183,7 +192,8 @@ class TestMCPProxyToolConstruction:
         on_upd = AsyncMock()
 
         tool = MCPProxyTool(
-            client, info,
+            client,
+            info,
             on_server_added=on_add,
             on_server_removed=on_remove,
             on_server_updated=on_upd,
@@ -199,7 +209,8 @@ class TestMCPProxyToolToOpenaiFunction:
 
     def test_returns_function_dict(self):
         info = make_tool_info(
-            server="mem", name="remember",
+            server="mem",
+            name="remember",
             description="Remember something",
             input_schema={"type": "object", "properties": {"text": {"type": "string"}}},
         )
@@ -231,7 +242,9 @@ class TestMCPProxyToolExecute:
         tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER)
         result = await tool.execute(name="filesystem")
 
-        client.call_tool.assert_called_once_with("mcp_list_tools", {"name": "filesystem"})
+        client.call_tool.assert_called_once_with(
+            "mcp_list_tools", {"name": "filesystem"}
+        )
         assert result == '{"tools":[]}'
 
     @pytest.mark.asyncio
@@ -257,11 +270,16 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = json.dumps({"status": "connected"})
         on_add = AsyncMock()
 
-        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_added=on_add)
+        tool = MCPProxyTool(
+            client, info, route=ProxyRoute.WRAPPER, on_server_added=on_add
+        )
         await tool.execute(
-            name="myserver", command="python",
-            args=["-m", "myserver"], env={"KEY": "VAL"},
-            description="My server", source={"url": "http://example.com"},
+            name="myserver",
+            command="python",
+            args=["-m", "myserver"],
+            env={"KEY": "VAL"},
+            description="My server",
+            source={"url": "http://example.com"},
         )
 
         on_add.assert_called_once()
@@ -280,7 +298,9 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = json.dumps({"status": "error", "error": "boom"})
         on_add = AsyncMock()
 
-        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_added=on_add)
+        tool = MCPProxyTool(
+            client, info, route=ProxyRoute.WRAPPER, on_server_added=on_add
+        )
         await tool.execute(name="bad", command="badcmd")
 
         on_add.assert_not_called()
@@ -293,7 +313,9 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = "not json"
         on_add = AsyncMock()
 
-        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_added=on_add)
+        tool = MCPProxyTool(
+            client, info, route=ProxyRoute.WRAPPER, on_server_added=on_add
+        )
         result = await tool.execute(name="test")
 
         assert result == "not json"
@@ -307,7 +329,9 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = json.dumps({"status": "disabled"})
         on_upd = AsyncMock()
 
-        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_updated=on_upd)
+        tool = MCPProxyTool(
+            client, info, route=ProxyRoute.WRAPPER, on_server_updated=on_upd
+        )
         await tool.execute(name="myserver", enabled=False)
 
         on_upd.assert_called_once_with(name="myserver", enabled=False)
@@ -320,7 +344,9 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = json.dumps({"status": "connected"})
         on_upd = AsyncMock()
 
-        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_updated=on_upd)
+        tool = MCPProxyTool(
+            client, info, route=ProxyRoute.WRAPPER, on_server_updated=on_upd
+        )
         await tool.execute(name="myserver", enabled=True)
 
         on_upd.assert_called_once_with(name="myserver", enabled=True)
@@ -333,7 +359,9 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = json.dumps({"status": "disabled"})
         on_upd = AsyncMock()
 
-        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_updated=on_upd)
+        tool = MCPProxyTool(
+            client, info, route=ProxyRoute.WRAPPER, on_server_updated=on_upd
+        )
         await tool.execute(name="myserver", enabled=False)
 
         on_upd.assert_called_once_with(name="myserver", enabled=False)
@@ -346,7 +374,9 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = json.dumps({"status": "removed"})
         on_remove = AsyncMock()
 
-        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_removed=on_remove)
+        tool = MCPProxyTool(
+            client, info, route=ProxyRoute.WRAPPER, on_server_removed=on_remove
+        )
         await tool.execute(name="oldserver")
 
         on_remove.assert_called_once_with(name="oldserver")
@@ -359,7 +389,9 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = json.dumps({"status": "not_found"})
         on_remove = AsyncMock()
 
-        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_removed=on_remove)
+        tool = MCPProxyTool(
+            client, info, route=ProxyRoute.WRAPPER, on_server_removed=on_remove
+        )
         await tool.execute(name="missing")
 
         on_remove.assert_not_called()
@@ -408,7 +440,10 @@ class TestMCPProxyToolExecute:
         on_add = AsyncMock()
 
         tool = MCPProxyTool(
-            client, info, route=ProxyRoute.WRAPPER, on_server_added=on_add,
+            client,
+            info,
+            route=ProxyRoute.WRAPPER,
+            on_server_added=on_add,
         )
         await tool.execute(name="test", source="string-source")
 
@@ -418,14 +453,18 @@ class TestMCPProxyToolExecute:
     @pytest.mark.asyncio
     async def test_memory_server_calls_directly(self):
         """Memory server tools call the MCP client directly (no routing layer)."""
-        info = make_tool_info(server="memdb", name="memory_search", description="Search")
+        info = make_tool_info(
+            server="memdb", name="memory_search", description="Search"
+        )
         client = make_mock_mcp_client()
         client.call_tool.return_value = "search results"
 
         tool = MCPProxyTool(client, info, route=ProxyRoute.DIRECT)
         result = await tool.execute(query="test query")
 
-        client.call_tool.assert_called_once_with("memory_search", {"query": "test query"})
+        client.call_tool.assert_called_once_with(
+            "memory_search", {"query": "test query"}
+        )
         assert result == "search results"
 
     @pytest.mark.asyncio
@@ -436,7 +475,9 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = json.dumps({"status": "connected"})
         on_add = AsyncMock(side_effect=RuntimeError("callback exploded"))
 
-        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_added=on_add)
+        tool = MCPProxyTool(
+            client, info, route=ProxyRoute.WRAPPER, on_server_added=on_add
+        )
         # Should not raise
         result = await tool.execute(name="test", command="cmd")
         assert json.loads(result)["status"] == "connected"
@@ -449,7 +490,9 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = json.dumps({"status": "removed"})
         on_remove = AsyncMock(side_effect=RuntimeError("callback error"))
 
-        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_removed=on_remove)
+        tool = MCPProxyTool(
+            client, info, route=ProxyRoute.WRAPPER, on_server_removed=on_remove
+        )
         # Should not raise
         result = await tool.execute(name="old")
         assert json.loads(result)["status"] == "removed"
@@ -462,7 +505,9 @@ class TestMCPProxyToolExecute:
         client.call_tool.return_value = "not valid json"
         on_remove = AsyncMock()
 
-        tool = MCPProxyTool(client, info, route=ProxyRoute.WRAPPER, on_server_removed=on_remove)
+        tool = MCPProxyTool(
+            client, info, route=ProxyRoute.WRAPPER, on_server_removed=on_remove
+        )
         await tool.execute(name="test")
         on_remove.assert_not_called()
 
@@ -494,10 +539,13 @@ class TestCreateProxyTools:
         on_add = AsyncMock()
         on_remove = AsyncMock()
         on_upd = AsyncMock()
-        tools_list = [{"server": "srv", "name": "t", "description": "", "inputSchema": {}}]
+        tools_list = [
+            {"server": "srv", "name": "t", "description": "", "inputSchema": {}}
+        ]
 
         result = create_proxy_tools(
-            client, tools_list,
+            client,
+            tools_list,
             on_server_added=on_add,
             on_server_removed=on_remove,
             on_server_updated=on_upd,

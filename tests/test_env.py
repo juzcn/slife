@@ -1,13 +1,10 @@
 """Tests for Slife.env — environment variable resolution."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
-
 import pytest
 
 from slife.env import resolve_env
 
+pytestmark = pytest.mark.unit
 
 # ── String resolution ─────────────────────────────────────────────────
 
@@ -83,12 +80,14 @@ class TestResolveEnvDicts:
         """Nested dicts are recursively resolved."""
         monkeypatch.setenv("DB_HOST", "localhost")
         monkeypatch.setenv("DB_PORT", "5432")
-        result = resolve_env({
-            "database": {
-                "host": "${DB_HOST}",
-                "port": "${DB_PORT}",
+        result = resolve_env(
+            {
+                "database": {
+                    "host": "${DB_HOST}",
+                    "port": "${DB_PORT}",
+                }
             }
-        })
+        )
         assert result == {"database": {"host": "localhost", "port": "5432"}}
 
     def test_empty_dict(self):
@@ -118,10 +117,12 @@ class TestResolveEnvLists:
         """Dicts inside lists are recursively resolved."""
         monkeypatch.setenv("TOKEN", "abc123")
         monkeypatch.setenv("URL", "https://api.example.com")
-        result = resolve_env([
-            {"key": "${TOKEN}", "url": "${URL}"},
-            {"key": "static"},
-        ])
+        result = resolve_env(
+            [
+                {"key": "${TOKEN}", "url": "${URL}"},
+                {"key": "static"},
+            ]
+        )
         assert result == [
             {"key": "abc123", "url": "https://api.example.com"},
             {"key": "static"},
@@ -171,9 +172,7 @@ class TestResolveEnvEdgeCases:
     def test_deeply_nested_structure(self, monkeypatch):
         """Deep nesting works correctly."""
         monkeypatch.setenv("VAL", "done")
-        result = resolve_env({
-            "a": [{"b": [{"c": "${VAL}"}]}]
-        })
+        result = resolve_env({"a": [{"b": [{"c": "${VAL}"}]}]})
         assert result == {"a": [{"b": [{"c": "done"}]}]}
 
     def test_var_with_no_default_no_brace_space(self, monkeypatch):

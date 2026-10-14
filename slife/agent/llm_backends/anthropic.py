@@ -35,7 +35,9 @@ class AnthropicBackend:
         )
         logger.debug(
             "anthropic_init model=%s provider=%s thinking=%s",
-            model.api_model, model.provider, model.thinking_enabled,
+            model.api_model,
+            model.provider,
+            model.thinking_enabled,
         )
 
     # ── Internal adaptation (private) ─────────────────────────────────
@@ -74,7 +76,9 @@ class AnthropicBackend:
             if pending_tool_results:
                 # Copy — the list is stored in the message, then cleared so
                 # the next batch starts fresh.
-                converted.append({"role": "user", "content": list(pending_tool_results)})
+                converted.append(
+                    {"role": "user", "content": list(pending_tool_results)}
+                )
                 pending_tool_results.clear()
 
         for msg in messages:
@@ -93,15 +97,23 @@ class AnthropicBackend:
                                 # data:image/jpeg;base64,<data>
                                 header, b64 = url.split(",", 1)
                                 mime = header.split(":")[1].split(";")[0]
-                                blocks.append({
-                                    "type": "image",
-                                    "source": {"type": "base64", "media_type": mime, "data": b64},
-                                })
+                                blocks.append(
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": mime,
+                                            "data": b64,
+                                        },
+                                    }
+                                )
                             else:
-                                blocks.append({
-                                    "type": "image",
-                                    "source": {"type": "url", "url": url},
-                                })
+                                blocks.append(
+                                    {
+                                        "type": "image",
+                                        "source": {"type": "url", "url": url},
+                                    }
+                                )
                         else:
                             blocks.append(part)
                     user_content = blocks
@@ -113,10 +125,12 @@ class AnthropicBackend:
                     # content, and separate blocks would break alternation.
                     if not isinstance(user_content, list):
                         user_content = [{"type": "text", "text": user_content}]
-                    converted.append({
-                        "role": "user",
-                        "content": pending_tool_results + user_content,
-                    })
+                    converted.append(
+                        {
+                            "role": "user",
+                            "content": pending_tool_results + user_content,
+                        }
+                    )
                     pending_tool_results.clear()
                 else:
                     converted.append({"role": "user", "content": user_content})
@@ -125,7 +139,7 @@ class AnthropicBackend:
                 blocks: list[dict] = []
                 if content and str(content).strip():
                     blocks.append({"type": "text", "text": str(content)})
-                for tc in (msg.get("tool_calls") or []):
+                for tc in msg.get("tool_calls") or []:
                     fn = tc.get("function", {})
                     try:
                         inp = json.loads(fn.get("arguments", "{}"))
@@ -136,12 +150,14 @@ class AnthropicBackend:
                         # {"_raw": …} — instead of silently emptying the call.
                         raw = str(fn.get("arguments", ""))
                         inp = {"_raw": raw} if raw else {}
-                    blocks.append({
-                        "type": "tool_use",
-                        "id": tc["id"],
-                        "name": fn.get("name", ""),
-                        "input": inp,
-                    })
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": tc["id"],
+                            "name": fn.get("name", ""),
+                            "input": inp,
+                        }
+                    )
                 if not blocks:
                     # An assistant turn with no text and no tool_calls (e.g. a
                     # reasoning-only response cut by max_tokens) would emit an
@@ -154,12 +170,14 @@ class AnthropicBackend:
                 # The persisted ``is_error`` verdict maps to Anthropic's native
                 # ``tool_result.is_error`` (C3): the model reads a failed call
                 # as a failure, not as a success whose text starts "Error:".
-                pending_tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": msg.get("tool_call_id", ""),
-                    "content": str(content),
-                    "is_error": bool(msg.get("is_error", False)),
-                })
+                pending_tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": msg.get("tool_call_id", ""),
+                        "content": str(content),
+                        "is_error": bool(msg.get("is_error", False)),
+                    }
+                )
         _flush_tool_results()
 
         system_blocks: list[dict] | None = None
@@ -180,11 +198,13 @@ class AnthropicBackend:
             # Keep harness meta-params (_timeout/_async/_approve): the three
             # backends expose the same tool schemas to the model, so the LLM
             # can drive timeouts/async/approval uniformly on every API.
-            result.append({
-                "name": fn.get("name", ""),
-                "description": fn.get("description", ""),
-                "input_schema": schema,
-            })
+            result.append(
+                {
+                    "name": fn.get("name", ""),
+                    "description": fn.get("description", ""),
+                    "input_schema": schema,
+                }
+            )
         return result
 
     def _use_system_cache_control(self) -> bool:
@@ -217,18 +237,14 @@ class AnthropicBackend:
         p = self.model_config.provider.lower()
         u = self.model_config.base_url.lower()
         m = self.model_config.api_model.lower()
-        return (
-            "deepseek" in p or "deepseek" in u
-            or m.startswith("deepseek") or m.startswith("qwen")
-        )
+        return "deepseek" in p or "deepseek" in u or m.startswith(("deepseek", "qwen"))
 
     # ── Build kwargs ──────────────────────────────────────────────────
 
-    def _build_kwargs(
-        self, messages: list[dict], tools: list[dict] | None
-    ) -> dict:
+    def _build_kwargs(self, messages: list[dict], tools: list[dict] | None) -> dict:
         system, msgs = self._oa_msgs_to_anthropic(
-            messages, cache_control=self._use_system_cache_control(),
+            messages,
+            cache_control=self._use_system_cache_control(),
         )
         kwargs: dict = {
             "model": self.model_config.api_model,
@@ -282,18 +298,20 @@ class AnthropicBackend:
     # ── Chat ──────────────────────────────────────────────────────────
 
     async def chat(
-        self, messages: list[dict], tools: list[dict] | None = None,
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
     ) -> tuple:
         kwargs = self._build_kwargs(messages, tools)
         response = await self.client.messages.create(**kwargs)
         text = "".join(
-            b.text for b in response.content
-            if hasattr(b, "type") and b.type == "text"
+            b.text for b in response.content if hasattr(b, "type") and b.type == "text"
         )
         usage = TokenUsage(
             prompt_tokens=response.usage.input_tokens or 0,
             completion_tokens=response.usage.output_tokens or 0,
-            total_tokens=(response.usage.input_tokens or 0) + (response.usage.output_tokens or 0),
+            total_tokens=(response.usage.input_tokens or 0)
+            + (response.usage.output_tokens or 0),
         )
         return _chat_response(text, usage)
 
@@ -312,7 +330,8 @@ class AnthropicBackend:
 
         logger.debug(
             "anthropic_stream_start model=%s msgs=%d tools=%d",
-            self.model_config.api_model, len(messages),
+            self.model_config.api_model,
+            len(messages),
             len(tools) if tools else 0,
         )
 
@@ -353,24 +372,32 @@ class AnthropicBackend:
                         if idx in tool_accum:
                             tool_accum[idx]["arguments"] += delta.partial_json
                         acc = tool_accum.get(idx, {})
-                        yield StreamChunk(tool_deltas=[{
-                            "index": idx,
-                            "id": acc.get("id", ""),
-                            "function": {
-                                "name": acc.get("name", ""),
-                                "arguments": delta.partial_json,
-                            },
-                        }])
+                        yield StreamChunk(
+                            tool_deltas=[
+                                {
+                                    "index": idx,
+                                    "id": acc.get("id", ""),
+                                    "function": {
+                                        "name": acc.get("name", ""),
+                                        "arguments": delta.partial_json,
+                                    },
+                                }
+                            ]
+                        )
 
                 elif etype == "message_delta":
                     u = getattr(event, "usage", None)
                     if u:
                         usage.completion_tokens = u.output_tokens or 0
-                        usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
+                        usage.total_tokens = (
+                            usage.prompt_tokens + usage.completion_tokens
+                        )
                         elapsed = (_time.monotonic() - t0) * 1000
                         logger.debug(
                             "anthropic_stream_done prompt=%d completion=%d total=%d took_ms=%.0f",
-                            usage.prompt_tokens, usage.completion_tokens,
-                            usage.total_tokens, elapsed,
+                            usage.prompt_tokens,
+                            usage.completion_tokens,
+                            usage.total_tokens,
+                            elapsed,
                         )
                         yield StreamChunk(usage=usage)

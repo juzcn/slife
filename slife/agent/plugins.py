@@ -33,10 +33,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from slife.plugins.mcp_gateway.client import MCPClient
-from slife.platform import terminate_process_sync
-from slife.plugins.spec import PLUGIN_SPECS, PluginSpec, spec_for
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.platform import terminate_process_sync
+from slife.plugins.mcp_gateway.client import MCPClient
+from slife.plugins.spec import PLUGIN_SPECS, PluginSpec, spec_for
 
 if TYPE_CHECKING:
     from slife.agent.service import AgentService
@@ -89,7 +89,7 @@ class PluginBehavior:
     """
 
     enable: Callable[[], Awaitable[bool]] | None = None
-    after_ready: Callable[["PluginLifecycle"], Awaitable[None]] | None = None
+    after_ready: Callable[[PluginLifecycle], Awaitable[None]] | None = None
 
 
 class PluginLifecycle:
@@ -107,7 +107,7 @@ class PluginLifecycle:
         self.name = name
         self._service = service
         self.client: MCPClient | None = None
-        self.process: "MCPWrapperProcess | None" = None
+        self.process: MCPWrapperProcess | None = None
         self.port: int = 0
         self.poll_task: asyncio.Task | None = None
         # Optional plugin-side background task, reseeded on watchdog restart
@@ -191,6 +191,7 @@ class PluginLifecycle:
         self._watchdog_task = asyncio.ensure_future(self._watchdog_loop())
         logger.info("%s_watchdog_started", self.name)
         from slife.health import record
+
         record("watchdog", "ok", key=self.name, value="active")
 
     async def _watchdog_loop(self) -> None:
@@ -223,14 +224,17 @@ class PluginLifecycle:
                     returncode = await subprocess.wait()
                 except Exception:
                     logger.debug(
-                        "%s_watchdog_wait_error — exiting", self.name, exc_info=True,
+                        "%s_watchdog_wait_error — exiting",
+                        self.name,
+                        exc_info=True,
                     )
                     return
                 if self._stopping:
                     return
                 logger.warning(
                     "%s_process_exited returncode=%s",
-                    self.name, returncode,
+                    self.name,
+                    returncode,
                 )
 
                 # ── Clean up dead tools ──────────────────────────────
@@ -245,11 +249,14 @@ class PluginLifecycle:
                     if removed:
                         logger.info(
                             "%s_watchdog_unregistered_tools count=%d",
-                            self.name, removed,
+                            self.name,
+                            removed,
                         )
                 except Exception:
                     logger.debug(
-                        "%s_watchdog_unregister_error", self.name, exc_info=True,
+                        "%s_watchdog_unregister_error",
+                        self.name,
+                        exc_info=True,
                     )
 
                 # External MCP proxies registered by this lifecycle's gateway
@@ -264,17 +271,22 @@ class PluginLifecycle:
                 try:
                     removed_proxies = 0
                     for tool in list(self._service.tool_registry.list_tools()):
-                        if getattr(tool, "_mcp_client", None) is self.client:
-                            if self._service.tool_registry.unregister(tool.name):
-                                removed_proxies += 1
+                        if getattr(
+                            tool, "_mcp_client", None
+                        ) is self.client and self._service.tool_registry.unregister(
+                            tool.name
+                        ):
+                            removed_proxies += 1
                     if removed_proxies:
                         logger.info(
                             "%s_watchdog_unregistered_proxies count=%d",
-                            self.name, removed_proxies,
+                            self.name,
+                            removed_proxies,
                         )
                 except Exception:
                     logger.debug(
-                        "%s_watchdog_proxy_unregister_error", self.name,
+                        "%s_watchdog_proxy_unregister_error",
+                        self.name,
                         exc_info=True,
                     )
 
@@ -286,7 +298,9 @@ class PluginLifecycle:
                     await self._service.on_plugin_child_exit(self.name)
                 except Exception:
                     logger.debug(
-                        "%s_watchdog_catalog_mark_error", self.name, exc_info=True,
+                        "%s_watchdog_catalog_mark_error",
+                        self.name,
+                        exc_info=True,
                     )
 
                 # ── Tear down the dead client, don't just drop it ─────
@@ -308,7 +322,9 @@ class PluginLifecycle:
                     except Exception as e:
                         logger.debug(
                             "%s_watchdog_client_disconnect_error err=%s",
-                            self.name, e, exc_info=True,
+                            self.name,
+                            e,
+                            exc_info=True,
                         )
 
             # A fresh process is running — go back to waiting on it.
@@ -329,12 +345,16 @@ class PluginLifecycle:
             if self._restart_count >= self._max_restarts:
                 logger.error(
                     "%s_watchdog_max_restarts count=%d — giving up",
-                    self.name, self._restart_count,
+                    self.name,
+                    self._restart_count,
                 )
                 from slife.health import record
+
                 record(
-                    "watchdog", "error",
-                    key=self.name, value="exhausted",
+                    "watchdog",
+                    "error",
+                    key=self.name,
+                    value="exhausted",
                     hint=(
                         f"{self.name} plugin crashed {self._restart_count} times "
                         f"(max {self._max_restarts}) — watchdog gave up. "
@@ -352,12 +372,17 @@ class PluginLifecycle:
             self._restart_count += 1
             logger.info(
                 "%s_watchdog_restart attempt=%d/%d",
-                self.name, self._restart_count, self._max_restarts,
+                self.name,
+                self._restart_count,
+                self._max_restarts,
             )
             from slife.health import record
+
             record(
-                "watchdog", "warning",
-                key=self.name, value=f"restarting ({self._restart_count}/{self._max_restarts})",
+                "watchdog",
+                "warning",
+                key=self.name,
+                value=f"restarting ({self._restart_count}/{self._max_restarts})",
                 hint=(
                     f"{self.name} plugin exited, "
                     f"restart attempt {self._restart_count}/{self._max_restarts} "
@@ -389,7 +414,8 @@ class PluginLifecycle:
                         # `PluginLifecycle.spawn` copy was deleted for exactly
                         # this divergence.)
                         await self._service._spawn_plugin_generic(
-                            self.name, module,
+                            self.name,
+                            module,
                         )
                 # The restart call returned — but counters/backoff are NOT
                 # reset here.  A restart only "succeeded" once the child has
@@ -397,9 +423,12 @@ class PluginLifecycle:
                 # resetting right after spawn lets a ~1s boot-loop restart
                 # forever (B2).
                 from slife.health import record
+
                 record(
-                    "watchdog", "ok",
-                    key=self.name, value="active after restart",
+                    "watchdog",
+                    "ok",
+                    key=self.name,
+                    value="active after restart",
                 )
             except Exception:
                 backoff = min(
@@ -408,7 +437,8 @@ class PluginLifecycle:
                 )
                 logger.exception(
                     "%s_watchdog_restart_failed backoff=%.1fs",
-                    self.name, backoff,
+                    self.name,
+                    backoff,
                 )
                 if not self._stopping:
                     await asyncio.sleep(backoff)
@@ -430,7 +460,9 @@ class PluginLifecycle:
             except Exception as e:
                 logger.debug(
                     "%s_http_reconnect_old_disconnect_error err=%s",
-                    self.name, e, exc_info=True,
+                    self.name,
+                    e,
+                    exc_info=True,
                 )
         client = MCPClient(
             tool_timeout=self._service.config.tool_timeout,
@@ -461,7 +493,7 @@ class PluginLifecycle:
                 task.cancel()
                 try:
                     await task
-                except (asyncio.CancelledError, Exception):
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110 — an awaited cancelled task: its failure or cancellation is expected at cleanup
                     pass
             setattr(self, attr, None)
 
@@ -498,7 +530,9 @@ class PluginLifecycle:
             try:
                 await self.process.stop()
             except Exception as e:
-                logger.debug("%s_process_stop_error err=%s", self.name, e, exc_info=True)
+                logger.debug(
+                    "%s_process_stop_error err=%s", self.name, e, exc_info=True
+                )
             self.process = None
 
         logger.info("%s_shutdown", self.name)
@@ -533,7 +567,7 @@ class PluginRegistry:
     :meth:`ensure`).
     """
 
-    def __init__(self, service: "AgentService") -> None:
+    def __init__(self, service: AgentService) -> None:
         self._service = service
         self.specs: dict[str, PluginSpec] = dict(PLUGIN_SPECS)
         self.lifecycles: dict[str, PluginLifecycle] = {

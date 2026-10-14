@@ -3,10 +3,12 @@ time-window bound grammar used by memdb and memfiles search tools."""
 
 import datetime as _dt
 
-import pytest; pytestmark = pytest.mark.unit
+import pytest
 from dateutil.relativedelta import relativedelta
 
 from slife.timeutil import InvalidTimeBound, normalize_time_bound
+
+pytestmark = pytest.mark.unit
 
 
 def _yesterday() -> str:
@@ -60,16 +62,18 @@ class TestPeriodWords:
     """
 
     def test_last_month_since_is_first_day(self):
-        assert normalize_time_bound("last month", role="since") == (
-            _dt.date.today().replace(day=1) - relativedelta(months=1)
-        ).isoformat()
+        assert (
+            normalize_time_bound("last month", role="since")
+            == (_dt.date.today().replace(day=1) - relativedelta(months=1)).isoformat()
+        )
 
     def test_last_month_until_is_the_exclusive_upper_bound(self):
         """The period's last day, then the usual +1-day `until` rounding —
         the bound excludes the next period, not the last day of this one."""
-        assert normalize_time_bound("last month", role="until") == (
-            _dt.date.today().replace(day=1)
-        ).isoformat()
+        assert (
+            normalize_time_bound("last month", role="until")
+            == (_dt.date.today().replace(day=1)).isoformat()
+        )
 
     def test_last_month_is_not_today_minus_one_month(self, monkeypatch):
         """The naive reading is a different instant — never what we return.
@@ -80,6 +84,7 @@ class TestPeriodWords:
         readings are only distinguishable off the 1st, which is the case the
         claim is about.
         """
+
         class _MidMonth(_dt.date):
             @classmethod
             def today(cls):
@@ -87,11 +92,11 @@ class TestPeriodWords:
 
         monkeypatch.setattr("slife.timeutil.date", _MidMonth)
         got = normalize_time_bound("last month", role="since")
-        assert got == "2026-09-01"                       # the period's edge
-        assert got != (
-            _MidMonth.today() - relativedelta(months=1)
-        ).isoformat()                                    # 2026-09-20, the same
-                                                         # day-of-month
+        assert got == "2026-09-01"  # the period's edge
+        assert (
+            got != (_MidMonth.today() - relativedelta(months=1)).isoformat()
+        )  # 2026-09-20, the same
+        # day-of-month
 
     def test_since_and_until_of_one_period_differ(self):
         """One word, two instants — bounded from either end."""
@@ -104,23 +109,27 @@ class TestPeriodWords:
         assert normalize_time_bound("this month", role="since") == (
             today.replace(day=1).isoformat()
         )
-        assert normalize_time_bound("this month", role="until") == (
-            today.replace(day=1) + relativedelta(months=1)
-        ).isoformat()
+        assert (
+            normalize_time_bound("this month", role="until")
+            == (today.replace(day=1) + relativedelta(months=1)).isoformat()
+        )
 
     def test_last_week_is_monday_to_sunday(self):
         today = _dt.date.today()
         monday = today - _dt.timedelta(days=today.weekday())
-        assert normalize_time_bound("last week", role="since") == (
-            monday - _dt.timedelta(days=7)
-        ).isoformat()
+        assert (
+            normalize_time_bound("last week", role="since")
+            == (monday - _dt.timedelta(days=7)).isoformat()
+        )
         assert normalize_time_bound("last week", role="until") == monday.isoformat()
 
     def test_last_quarter_starts_a_quarter_boundary(self):
         today = _dt.date.today()
         q_first = _dt.date(today.year, 3 * ((today.month - 1) // 3) + 1, 1)
         expected = q_first - relativedelta(months=3)
-        assert normalize_time_bound("last quarter", role="since") == expected.isoformat()
+        assert (
+            normalize_time_bound("last quarter", role="since") == expected.isoformat()
+        )
         assert (expected.month - 1) % 3 == 0  # a real quarter start
 
     def test_last_year(self):
@@ -132,9 +141,15 @@ class TestPeriodWords:
             _dt.date(today.year, 1, 1).isoformat()
         )
 
-    @pytest.mark.parametrize("period,months,days", [
-        ("week", 0, 7), ("month", 1, 0), ("quarter", 3, 0), ("year", 12, 0),
-    ])
+    @pytest.mark.parametrize(
+        "period,months,days",
+        [
+            ("week", 0, 7),
+            ("month", 1, 0),
+            ("quarter", 3, 0),
+            ("year", 12, 0),
+        ],
+    )
     def test_since_is_a_period_start_and_until_the_next(self, period, months, days):
         """Whatever today is: `since` lands on a period start, and the span it
         opens is exactly one period — `until` being the next start, which is
@@ -147,12 +162,13 @@ class TestPeriodWords:
         )
         assert since < until
         expected_next = (
-            since + relativedelta(months=months) if months
+            since + relativedelta(months=months)
+            if months
             else since + _dt.timedelta(days=days)
         )
         assert until == expected_next
         if period == "week":
-            assert since.weekday() == 0                    # Monday
+            assert since.weekday() == 0  # Monday
         elif period == "month":
             assert since.day == 1
         elif period == "quarter":
@@ -190,9 +206,10 @@ class TestAgoOffsets:
         """A bare date reaching an `until` against a timestamp column still
         gets the +1-day rounding — the offset resolves first, then the
         existing granularity rule applies."""
-        assert normalize_time_bound("3 days ago", role="until") == (
-            _dt.date.today() - _dt.timedelta(days=2)
-        ).isoformat()
+        assert (
+            normalize_time_bound("3 days ago", role="until")
+            == (_dt.date.today() - _dt.timedelta(days=2)).isoformat()
+        )
 
 
 class TestISOOffsets:
@@ -200,12 +217,18 @@ class TestISOOffsets:
     lexicographic comparison against local timestamps stays correct."""
 
     def test_offset_datetime_since(self):
-        expected = _dt.datetime.fromisoformat(
-            "2026-07-20T14:39:19+08:00"
-        ).astimezone().isoformat(timespec="seconds")
-        assert normalize_time_bound(
-            "2026-07-20T14:39:19+08:00", role="since",
-        ) == expected
+        expected = (
+            _dt.datetime.fromisoformat("2026-07-20T14:39:19+08:00")
+            .astimezone()
+            .isoformat(timespec="seconds")
+        )
+        assert (
+            normalize_time_bound(
+                "2026-07-20T14:39:19+08:00",
+                role="since",
+            )
+            == expected
+        )
 
     def test_utc_z_datetime_normalized_to_local(self):
         result = normalize_time_bound("2026-07-20T06:39:19Z", role="since")
@@ -229,24 +252,33 @@ class TestDatetimeGranularity:
     def test_today_until_advances_day(self):
         # "today" resolves to a bare date first, then advances like any
         # date-only until.
-        assert normalize_time_bound(
-            "today", role="until",
-        ) == (_dt.date.today() + _dt.timedelta(days=1)).isoformat()
+        assert (
+            normalize_time_bound(
+                "today",
+                role="until",
+            )
+            == (_dt.date.today() + _dt.timedelta(days=1)).isoformat()
+        )
 
     def test_period_until_advances_day(self):
         """A period end is a bare date too, so the same rounding applies —
         which is what makes the period bound an exclusive upper bound."""
         last_day = _dt.date.today().replace(day=1) - _dt.timedelta(days=1)
-        assert normalize_time_bound("last month", role="until") == (
-            last_day + _dt.timedelta(days=1)
-        ).isoformat()
+        assert (
+            normalize_time_bound("last month", role="until")
+            == (last_day + _dt.timedelta(days=1)).isoformat()
+        )
 
     def test_datetime_until_passthrough(self):
         """Full datetime until is left alone — the caller specified the time
         explicitly."""
-        assert normalize_time_bound(
-            "2026-07-20T23:59:59", role="until",
-        ) == "2026-07-20T23:59:59"
+        assert (
+            normalize_time_bound(
+                "2026-07-20T23:59:59",
+                role="until",
+            )
+            == "2026-07-20T23:59:59"
+        )
 
 
 class TestDateGranularity:
@@ -255,38 +287,63 @@ class TestDateGranularity:
     and datetime bounds are reduced to their date part."""
 
     def test_date_only_until_not_advanced(self):
-        assert normalize_time_bound(
-            "2026-07-20", role="until", granularity="date",
-        ) == "2026-07-20"
+        assert (
+            normalize_time_bound(
+                "2026-07-20",
+                role="until",
+                granularity="date",
+            )
+            == "2026-07-20"
+        )
 
     def test_date_only_since_passthrough(self):
-        assert normalize_time_bound(
-            "2026-07-20", role="since", granularity="date",
-        ) == "2026-07-20"
+        assert (
+            normalize_time_bound(
+                "2026-07-20",
+                role="since",
+                granularity="date",
+            )
+            == "2026-07-20"
+        )
 
     def test_datetime_reduced_to_date(self):
-        assert normalize_time_bound(
-            "2026-07-20T14:39:19+08:00", role="since", granularity="date",
-        ) == "2026-07-20"
+        assert (
+            normalize_time_bound(
+                "2026-07-20T14:39:19+08:00",
+                role="since",
+                granularity="date",
+            )
+            == "2026-07-20"
+        )
 
     def test_relative_word_reduced_to_date(self):
-        assert normalize_time_bound(
-            "today", role="since", granularity="date",
-        ) == _dt.date.today().isoformat()
+        assert (
+            normalize_time_bound(
+                "today",
+                role="since",
+                granularity="date",
+            )
+            == _dt.date.today().isoformat()
+        )
 
     def test_relative_now_reduced_to_date(self):
         result = normalize_time_bound(
-            "now", role="since", granularity="date",
+            "now",
+            role="since",
+            granularity="date",
         )
         assert result == _dt.date.today().isoformat()
 
     def test_period_until_not_advanced(self):
         """On a date column the period's last day IS the bound — no +1."""
-        assert normalize_time_bound(
-            "last month", role="until", granularity="date",
-        ) == (
-            _dt.date.today().replace(day=1) - _dt.timedelta(days=1)
-        ).isoformat()
+        assert (
+            normalize_time_bound(
+                "last month",
+                role="until",
+                granularity="date",
+            )
+            == (_dt.date.today().replace(day=1) - _dt.timedelta(days=1)).isoformat()
+        )
 
 
 class TestInvalidBounds:

@@ -8,18 +8,18 @@ import logging
 import os
 import time as _time
 from collections.abc import Awaitable, Callable
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, AbstractSet, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from cachetools import FIFOCache
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.agent.llm_client import LLMClient, TokenUsage
-from slife.logfmt import sanitize_secrets
 from slife.agent.message_history import MessageHistory
+from slife.logfmt import elapsed, request_scope, sanitize_secrets
 from slife.platform import detect_current_shell
 from slife.tools.registry import ToolRegistry
-from slife.logfmt import request_scope, elapsed
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 if TYPE_CHECKING:
     from slife.tools.catalog_service import ToolCatalogService
@@ -55,14 +55,13 @@ def _function_from_schema(name: str, schema_json: str | None) -> dict | None:
             "name": name or desc.get("name"),
             "description": desc.get("description") or "",
             "parameters": desc.get("inputSchema")
-                          or {"type": "object", "properties": {}},
+            or {"type": "object", "properties": {}},
         },
     }
 
 
 class AgentCancelled(Exception):
     """Raised when the agent loop is cancelled by user request."""
-    pass
 
 
 # ── LLM stream retry ───────────────────────────────────────────────
@@ -146,18 +145,18 @@ def _is_retryable_stream_error(exc: BaseException) -> bool:
     except ImportError:
         openai = None
     if openai is not None and isinstance(
-        exc, (openai.APIConnectionError, openai.APITimeoutError),
+        exc,
+        (openai.APIConnectionError, openai.APITimeoutError),
     ):
         return True
     try:
         import anthropic
     except ImportError:
         anthropic = None
-    if anthropic is not None and isinstance(
-        exc, (anthropic.APIConnectionError, anthropic.APITimeoutError),
-    ):
-        return True
-    return False
+    return bool(
+        anthropic is not None
+        and isinstance(exc, (anthropic.APIConnectionError, anthropic.APITimeoutError))
+    )
 
 
 # ── Types ──────────────────────────────────────────────────────────
@@ -526,9 +525,7 @@ class AgentLoop:
                 "type": "function",
                 "function": {
                     "name": tc.name,
-                    "arguments": json.dumps(
-                        tc.arguments, ensure_ascii=False
-                    ),
+                    "arguments": json.dumps(tc.arguments, ensure_ascii=False),
                 },
             }
             for tc in tool_calls
@@ -543,11 +540,7 @@ class AgentLoop:
         for idx in sorted(accum.keys()):
             acc = accum[idx]
             try:
-                args = (
-                    json.loads(acc["arguments"])
-                    if acc["arguments"].strip()
-                    else {}
-                )
+                args = json.loads(acc["arguments"]) if acc["arguments"].strip() else {}
             except json.JSONDecodeError:
                 # Truncated by max_tokens / provider mid-argument — surface it
                 # in the tool result instead of silently running the tool with
@@ -555,7 +548,9 @@ class AgentLoop:
                 # confusing no-op, and a default-arg tool a wrong effect).
                 logger.warning(
                     "tool_args_malformed id=%s name=%s raw=%.120s",
-                    acc["id"], acc["name"], acc["arguments"],
+                    acc["id"],
+                    acc["name"],
+                    acc["arguments"],
                 )
                 args = {}
                 truncated = True
@@ -597,7 +592,9 @@ class AgentLoop:
         """
         usage = self._usage_by_history.get(id(history))
         if usage is None:
-            usage = self._last_usage  # restored session: previous round's persisted context_tokens
+            usage = (
+                self._last_usage
+            )  # restored session: previous round's persisted context_tokens
         if usage.prompt_tokens or usage.completion_tokens:
             return usage.prompt_tokens + usage.completion_tokens
         if usage.total_tokens:
@@ -659,8 +656,8 @@ class AgentLoop:
         if start < 0 or end <= start:
             return None
         try:
-            parsed = json.loads(text[start:end + 1])
-        except Exception:
+            parsed = json.loads(text[start : end + 1])
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
             return None
         if not isinstance(parsed, dict):
             return None
@@ -688,8 +685,7 @@ class AgentLoop:
             if not isinstance(raw, dict):
                 return None
             if not all(
-                isinstance(raw.get(k), (str, type(None)))
-                for k in cls._RECALL_KEYS
+                isinstance(raw.get(k), (str, type(None))) for k in cls._RECALL_KEYS
             ):
                 return None
             anchor = raw.get("anchor")
@@ -706,7 +702,9 @@ class AgentLoop:
         return {"keep": keep, "recall": recall}
 
     async def _discriminate_recall(
-        self, history: MessageHistory, user_input: str,
+        self,
+        history: MessageHistory,
+        user_input: str,
     ) -> dict | None:
         """One call deciding what this turn's context should be; None on failure.
 
@@ -750,8 +748,7 @@ class AgentLoop:
         # context is otherwise sent as it stands.
         messages = MessageHistory.strip_turn_ids(history.messages)
         messages.append(
-            {"role": "user",
-             "content": build_recall_instruction(user_input)},
+            {"role": "user", "content": build_recall_instruction(user_input)},
         )
         # `msgs` / `prompt_chars` are the call's *shape*: what the
         # discriminator was actually asked with, which is not the same thing
@@ -759,7 +756,9 @@ class AgentLoop:
         prompt_chars = sum(len(m.get("content") or "") for m in messages)
         logger.debug(
             "recall_discriminator_prompt msgs=%d chars=%d text=%.300s",
-            len(messages), prompt_chars, sanitize_secrets(messages[-1]["content"]),
+            len(messages),
+            prompt_chars,
+            sanitize_secrets(messages[-1]["content"]),
         )
         t0 = _time.monotonic()
         try:
@@ -771,7 +770,8 @@ class AgentLoop:
         except Exception:
             logger.warning(
                 "recall_discriminator_failed took_ms=%.0f",
-                (_time.monotonic() - t0) * 1000, exc_info=True,
+                (_time.monotonic() - t0) * 1000,
+                exc_info=True,
             )
             return None
         args = self._parse_recall_args(text)
@@ -782,7 +782,8 @@ class AgentLoop:
             # is the only trace of why the recall did not run.
             logger.warning(
                 "recall_discriminator_unparsed took_ms=%.0f reply=%.200s",
-                took_ms, sanitize_secrets(text),
+                took_ms,
+                sanitize_secrets(text),
             )
             return None
         keep = args.get("keep")
@@ -790,10 +791,14 @@ class AgentLoop:
         logger.info(
             "recall_discriminated msgs=%d prompt_chars=%d took_ms=%.0f "
             "keep=%s query=%.60s since=%s until=%s anchor=%s",
-            len(messages), prompt_chars, took_ms,
+            len(messages),
+            prompt_chars,
+            took_ms,
             "all" if keep is None else len(keep),
             sanitize_secrets(str(recall.get("query") or "")),
-            recall.get("since"), recall.get("until"), recall.get("anchor"),
+            recall.get("since"),
+            recall.get("until"),
+            recall.get("anchor"),
         )
         return args
 
@@ -854,7 +859,9 @@ class AgentLoop:
         return carried
 
     async def _recall_and_rebuild(
-        self, history: MessageHistory, user_input: str,
+        self,
+        history: MessageHistory,
+        user_input: str,
         handler: object | None = None,
     ) -> bool:
         """Rebuild the context from the discriminator's decision — once per turn.
@@ -907,9 +914,7 @@ class AgentLoop:
         # as ``_turn_id`` (stamped at save, re-stamped on restore and rebuild),
         # which is also the id the model names in a keep-list.
         live = self._live_turns(history)
-        by_id = {
-            t["turn_id"]: t for t in live if t.get("turn_id") is not None
-        }
+        by_id = {t["turn_id"]: t for t in live if t.get("turn_id") is not None}
         if keep is None:
             base = list(by_id)
         else:
@@ -932,9 +937,7 @@ class AgentLoop:
         # compacts *to* the floor, so a live context sits at or above it for
         # most of a session, and subtracting it would leave no headroom and
         # make "keep this and add that" unreachable exactly when it is wanted.
-        base_tokens = sum(
-            by_id[i]["estimated_tokens"] for i in base if i in by_id
-        )
+        base_tokens = sum(by_id[i]["estimated_tokens"] for i in base if i in by_id)
         ids = []
         if recall:
             ids = await self.recall_turns(
@@ -961,8 +964,7 @@ class AgentLoop:
         # Membership is the union; order is time (rebuild_messages sorts).
         target = sorted(set(base) | set(ids))
         turns = (
-            await self.turns_by_ids(target)
-            if (target and self.turns_by_ids) else []
+            await self.turns_by_ids(target) if (target and self.turns_by_ids) else []
         )
         if target and not turns:
             logger.warning("recall_abandoned reason=unfetchable ids=%d", len(target))
@@ -993,9 +995,11 @@ class AgentLoop:
             # contract is the same list, and it must agree with the history
             # the turn actually ran on.  This is reached only by an explicit
             # `"clear"`, or by one that recalled nothing.
-            if self.clear_context_turns is not None:
-                if not await self.clear_context_turns():
-                    logger.warning("recall_clear_failed")
+            if (
+                self.clear_context_turns is not None
+                and not await self.clear_context_turns()
+            ):
+                logger.warning("recall_clear_failed")
             # The context is now the system prompt, so the *measured* size of
             # the one it replaced must go too (unlike a normal rebuild, where
             # the previous round's number is one turn behind and a far better
@@ -1024,8 +1028,11 @@ class AgentLoop:
         return True
 
     async def _trim_context(
-        self, history: MessageHistory, handler: object | None = None,
-        *, estimate_fallback: bool = False,
+        self,
+        history: MessageHistory,
+        handler: object | None = None,
+        *,
+        estimate_fallback: bool = False,
     ) -> None:
         """Trim the oldest turns when the context is at/over the ceiling.
 
@@ -1126,13 +1133,16 @@ class AgentLoop:
                 await self.drop_context_turns(evicted)
             except Exception:
                 logger.exception(
-                    "context_turns_drop_failed count=%d", len(evicted),
+                    "context_turns_drop_failed count=%d",
+                    len(evicted),
                 )
 
         removed = len(turns)
         logger.info(
             "context_trimmed turns=%d ids=%d tokens_freed=%d",
-            removed, len(evicted), tokens_freed,
+            removed,
+            len(evicted),
+            tokens_freed,
         )
 
         # Tell the LLM how much of its context was just cut.  Runtime-only
@@ -1221,14 +1231,15 @@ class AgentLoop:
         # Harness ids strip a leading underscore if present (_turn_prompt →
         # _harness_turn_prompt_…); non-underscore tools (attach_image) keep
         # their name: _harness_attach_image_…
-        stem = name[1:] if name.startswith("_") else name
+        stem = name.removeprefix("_")
         tc = ToolCallInfo(
             id=f"_harness_{stem}_{_time.time_ns():x}",
             name=name,
             arguments=args,
         )
         history.add_assistant_message(
-            content=None, tool_calls=self._serialize_tool_calls([tc]),
+            content=None,
+            tool_calls=self._serialize_tool_calls([tc]),
         )
         try:
             # Run the tool against the history the loop is currently
@@ -1247,11 +1258,12 @@ class AgentLoop:
             finally:
                 if ctx is not None:
                     ctx.message_history = prev_history
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — tool execute is plugin code; any failure becomes an error result
             result = f"Error: Tool '{name}' failed: {type(e).__name__}: {e}."
             logger.warning("auto_invoke_error name=%s err=%s", name, e)
         history.add_tool_result(
-            tc.id, sanitize_secrets(result),
+            tc.id,
+            sanitize_secrets(result),
             is_error=result.startswith("Error"),
         )
 
@@ -1349,14 +1361,18 @@ class AgentLoop:
         (the historical behavior).
         """
         if self.tool_catalog is None:
-            return self.tool_registry.to_openai_functions(projection=self._inject_snapshot)
+            return self.tool_registry.to_openai_functions(
+                projection=self._inject_snapshot
+            )
         if self._inject_snapshot is None:
             return self.tool_registry.to_openai_functions()
         try:
             rows = await self.tool_catalog.store.rows_for_names(self._inject_snapshot)
         except Exception:
             logger.exception("tools_schema_read_failed — falling back to instances")
-            return self.tool_registry.to_openai_functions(projection=self._inject_snapshot)
+            return self.tool_registry.to_openai_functions(
+                projection=self._inject_snapshot
+            )
         by_name = {r["name"]: r["schema"] for r in rows}
         result: list[dict] = []
         for tool in self.tool_registry.list_tools():
@@ -1474,8 +1490,12 @@ class AgentLoop:
                     try:
                         stream_usage = await asyncio.wait_for(
                             self._consume_stream(
-                                stream_iter, handler, content_parts,
-                                thinking_parts, tool_accum, emitted,
+                                stream_iter,
+                                handler,
+                                content_parts,
+                                thinking_parts,
+                                tool_accum,
+                                emitted,
                             ),
                             timeout=self.stream_timeout,
                         )
@@ -1485,8 +1505,12 @@ class AgentLoop:
                         ) from e
                 else:
                     stream_usage = await self._consume_stream(
-                        stream_iter, handler, content_parts, thinking_parts,
-                        tool_accum, emitted,
+                        stream_iter,
+                        handler,
+                        content_parts,
+                        thinking_parts,
+                        tool_accum,
+                        emitted,
                     )
                 break  # stream completed cleanly
             except asyncio.CancelledError:
@@ -1515,7 +1539,7 @@ class AgentLoop:
                     if on_retry is not None:
                         try:
                             await on_retry()
-                        except Exception:
+                        except Exception:  # noqa: BLE001, S110 — a TUI retry callback is advisory
                             pass
                 content_parts.clear()
                 thinking_parts.clear()
@@ -1523,11 +1547,15 @@ class AgentLoop:
                 stream_usage = TokenUsage()
                 logger.warning(
                     "llm_stream_retry attempt=%d max=%d err=%s",
-                    attempts, max_retries, e,
+                    attempts,
+                    max_retries,
+                    e,
                 )
                 if self._cancel_event.is_set():
                     raise AgentCancelled()
-                await asyncio.sleep(_timeouts.timeouts.stream.retry_base_delay * attempts)
+                await asyncio.sleep(
+                    _timeouts.timeouts.stream.retry_base_delay * attempts
+                )
 
         # Remember the last API call's usage on the shared history — every
         # inbox message runs against the main agent's one context.
@@ -1643,7 +1671,8 @@ class AgentLoop:
                     inline_timeout = float(inline_timeout)
                 except (TypeError, ValueError):
                     logger.debug(
-                        "tool_timeout_garbage_discarded value=%r", inline_timeout,
+                        "tool_timeout_garbage_discarded value=%r",
+                        inline_timeout,
                     )
                     inline_timeout = None
             approve_requested = bool(actual_args.pop("_approve", False))
@@ -1667,7 +1696,7 @@ class AgentLoop:
             # governs — the contract these tools document ("≤0 = default") —
             # and never forward the instant-kill zero.
             tool = self.tool_registry.get(tc.name)
-            prop_keys = getattr(tool, 'parameters', {}).get("properties", {})
+            prop_keys = getattr(tool, "parameters", {}).get("properties", {})
             has_native_timeout = "timeout" in prop_keys
             if has_native_timeout:
                 if inline_timeout is not None:
@@ -1756,7 +1785,8 @@ class AgentLoop:
                         _run_ctx.message_history = _run_conv
                         try:
                             return await self.tool_registry.execute(
-                                tc.name, **actual_args,
+                                tc.name,
+                                **actual_args,
                             )
                         finally:
                             _run_ctx.message_history = _saved
@@ -1774,17 +1804,20 @@ class AgentLoop:
                 # wait_for(agent value); native tools already received it via
                 # the `timeout` arg mapped above (they self-enforce — no
                 # double timer).
-                if not has_native_timeout:
-                    if inline_timeout is not None and inline_timeout > 0:
-                        coro = asyncio.wait_for(coro, timeout=inline_timeout)
+                if (
+                    not has_native_timeout
+                    and inline_timeout is not None
+                    and inline_timeout > 0
+                ):
+                    coro = asyncio.wait_for(coro, timeout=inline_timeout)
 
                 task_id = schedule_async(coro)
                 result = (
                     f"✓ Async task started.\n"
                     f"  task_id: {task_id}\n"
                     f"  tool: {tc.name}\n"
-                    f"  Poll with check_async(task_id=\"{task_id}\").\n"
-                    f"  Cancel with cancel_async(task_id=\"{task_id}\")."
+                    f'  Poll with check_async(task_id="{task_id}").\n'
+                    f'  Cancel with cancel_async(task_id="{task_id}").'
                 )
                 result = self._flag_truncated_args(tc, result)
                 result = sanitize_secrets(result)
@@ -1800,12 +1833,12 @@ class AgentLoop:
                 try:
                     coro = self.tool_registry.execute(tc.name, **actual_args)
                     result = await coro
-                except Exception as e:
-                    result = (
-                        f"Error: Tool '{tc.name}' failed: {type(e).__name__}: {e}."
-                    )
+                except Exception as e:  # noqa: BLE001 — arbitrary tool/plugin code; any failure becomes an error result
+                    result = f"Error: Tool '{tc.name}' failed: {type(e).__name__}: {e}."
                     logger.warning(
-                        "tool_error name=%s err=%s", tc.name, e,
+                        "tool_error name=%s err=%s",
+                        tc.name,
+                        e,
                     )
             else:
                 # ── Agent Loop timeout: wrap with asyncio.wait_for ──
@@ -1819,22 +1852,22 @@ class AgentLoop:
                 try:
                     coro = self.tool_registry.execute(tc.name, **actual_args)
                     result = await asyncio.wait_for(coro, timeout=effective_timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     result = (
-                        f"Error: Tool '{tc.name}' timed out "
-                        f"({effective_timeout}s)."
+                        f"Error: Tool '{tc.name}' timed out ({effective_timeout}s)."
                     )
                     logger.warning(
                         "tool_timeout name=%s timeout=%ds args=%s",
-                        tc.name, effective_timeout,
+                        tc.name,
+                        effective_timeout,
                         self._truncate_args(tc.arguments),
                     )
-                except Exception as e:
-                    result = (
-                        f"Error: Tool '{tc.name}' failed: {type(e).__name__}: {e}."
-                    )
+                except Exception as e:  # noqa: BLE001 — arbitrary tool/plugin code; any failure becomes an error result
+                    result = f"Error: Tool '{tc.name}' failed: {type(e).__name__}: {e}."
                     logger.warning(
-                        "tool_error name=%s err=%s", tc.name, e,
+                        "tool_error name=%s err=%s",
+                        tc.name,
+                        e,
                     )
 
             # Judge failure BEFORE the args-truncation marker prepends its ⚠
@@ -1856,7 +1889,12 @@ class AgentLoop:
                     f"\n… (truncated: original {original_len} chars — "
                     f"re-run the tool to see the full output)"
                 )
-                logger.debug("tool_result_truncated name=%s original=%d truncated=%d", tc.name, original_len, max_chars)
+                logger.debug(
+                    "tool_result_truncated name=%s original=%d truncated=%d",
+                    tc.name,
+                    original_len,
+                    max_chars,
+                )
 
             if handler:
                 await handler.on_tool_result(tc.id, result, is_error)
@@ -1882,14 +1920,16 @@ class AgentLoop:
         batch = asyncio.gather(*(_run_one(tc) for tc in tool_calls))
         try:
             await asyncio.wait(
-                {batch, cancel_wait}, return_when=asyncio.FIRST_COMPLETED,
+                {batch, cancel_wait},
+                return_when=asyncio.FIRST_COMPLETED,
             )
         finally:
             cancel_wait.cancel()
             if not batch.done():
                 logger.info(
                     "tool_batch_preempted calls=%d names=%s",
-                    len(tool_calls), ",".join(tc.name for tc in tool_calls),
+                    len(tool_calls),
+                    ",".join(tc.name for tc in tool_calls),
                 )
                 batch.cancel()
             # Awaited in both cases: a cancelled tool finishes its teardown
@@ -1934,7 +1974,11 @@ class AgentLoop:
                 f"but {n_imgs} image(s) were received. "
                 f"Use a vision-capable model, or remove the @path attachment."
             )
-            logger.warning("vision_unsupported imgs=%d model_vision=%s", n_imgs, self.supports_vision)
+            logger.warning(
+                "vision_unsupported imgs=%d model_vision=%s",
+                n_imgs,
+                self.supports_vision,
+            )
             # Add text-only — don't encode images the model can't handle.
             # The warning is recorded as the assistant reply so the
             # history doesn't end on a dangling user message.
@@ -1962,12 +2006,16 @@ class AgentLoop:
         history.add_user_message(user_input)
         if images:
             await self._auto_invoke(
-                "attach_image", {"sources": list(images)}, history,
+                "attach_image",
+                {"sources": list(images)},
+                history,
             )
         total_usage = TokenUsage()
         t_request = _time.monotonic()
 
-        logger.info("req_start msg=%.100s imgs=%d", sanitize_secrets(user_input), n_imgs)
+        logger.info(
+            "req_start msg=%.100s imgs=%d", sanitize_secrets(user_input), n_imgs
+        )
 
         with request_scope():
             try:
@@ -1982,7 +2030,9 @@ class AgentLoop:
                 # reports it as the usage %, and the TUI status bar.
                 current = self.context_tokens_for(history)
                 await self._auto_invoke(
-                    "_turn_prompt", self._turn_prompt_kwargs(history, current), history,
+                    "_turn_prompt",
+                    self._turn_prompt_kwargs(history, current),
+                    history,
                 )
                 # Trimming is not a turn-start decision: it moved to
                 # _trim_context (after each turn is persisted), where the real
@@ -2025,7 +2075,9 @@ class AgentLoop:
                     # max_iterations are what bound it.)
                     if not self.persist_turns:
                         await self._trim_context(
-                            history, handler, estimate_fallback=True,
+                            history,
+                            handler,
+                            estimate_fallback=True,
                         )
 
                     # The injected tool list is rebuilt for EVERY request from
@@ -2046,7 +2098,9 @@ class AgentLoop:
 
                         # Check for cancellation after stream
                         if self._cancel_event.is_set():
-                            logger.info("agent_cancelled phase=after_stream iter=%d", i + 1)
+                            logger.info(
+                                "agent_cancelled phase=after_stream iter=%d", i + 1
+                            )
                             raise AgentCancelled()
 
                         # Tool calls?
@@ -2090,7 +2144,9 @@ class AgentLoop:
                 # the history is repaired there, not here.  The reason rides
                 # the result so the repair's closing line can name it.
                 return AgentResult(
-                    text="", usage=total_usage, cancelled=True,
+                    text="",
+                    usage=total_usage,
+                    cancelled=True,
                     stop_reason="esc",
                 )
             except MaxIterationsExceeded:
@@ -2104,10 +2160,12 @@ class AgentLoop:
                     if on_max is not None:
                         try:
                             await on_max(self.max_iterations)
-                        except Exception:
+                        except Exception:  # noqa: BLE001, S110 — a TUI notification callback is advisory
                             pass
                 return AgentResult(
-                    text="", usage=total_usage, cancelled=True,
+                    text="",
+                    usage=total_usage,
+                    cancelled=True,
                     stop_reason="max_iterations",
                 )
             except Exception:

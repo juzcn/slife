@@ -1,5 +1,5 @@
 """Shared mock doubles for mcp_gateway tests (excluded from pytest collection
-by the leading underscore convention, mirroring credstore/tests/_mocks.py).
+by the leading underscore convention).
 """
 
 from __future__ import annotations

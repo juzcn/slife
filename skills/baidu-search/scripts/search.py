@@ -1,11 +1,15 @@
-import sys
 import json
-import requests
 import os
 import re
+import sys
 from datetime import datetime, timedelta
-from typing import Tuple, Dict
 from urllib.parse import urlparse
+
+import requests
+
+
+class BaiduSearchError(RuntimeError):
+    """Raised when the Baidu AI Search API returns an error payload."""
 
 
 def baidu_search(requestBody: dict):
@@ -16,7 +20,7 @@ def baidu_search(requestBody: dict):
     response.raise_for_status()
     results = response.json()
     if "code" in results:
-        raise Exception(results["message"])
+        raise BaiduSearchError(results["message"])
     datas = results["references"]
     keys_to_remove = {"snippet"}
     for item in datas:
@@ -26,7 +30,7 @@ def baidu_search(requestBody: dict):
     return datas
 
 
-def resolve_sandbox_url(original_url: str) -> Tuple[str, Dict[str, str]]:
+def resolve_sandbox_url(original_url: str) -> tuple[str, dict[str, str]]:
     """若当前在沙盒环境中，将目标 URL 替换为代理 URL，并返回需要附加的 headers。"""
     session_id = os.environ.get("DUMATE_SESSION_ID")
     scheduler_url = os.environ.get("DUMATE_SCHEDULER_URL")
@@ -51,12 +55,15 @@ def resolve_sandbox_url(original_url: str) -> Tuple[str, Dict[str, str]]:
     if parsed.query:
         proxy_url += f"?{parsed.query}"
 
-    headers.update({
-        "Host": parsed.netloc,
-        "X-Dumate-Session-Id": session_id,
-        "X-Appbuilder-From": "desktop",
-    })
+    headers.update(
+        {
+            "Host": parsed.netloc,
+            "X-Dumate-Session-Id": session_id,
+            "X-Appbuilder-From": "desktop",
+        }
+    )
     return proxy_url, headers
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -84,7 +91,7 @@ if __name__ == "__main__":
             count = 50
     current_time = datetime.now()
     end_date = (current_time + timedelta(days=1)).strftime("%Y-%m-%d")
-    pattern = r'\d{4}-\d{2}-\d{2}to\d{4}-\d{2}-\d{2}'
+    pattern = r"\d{4}-\d{2}-\d{2}to\d{4}-\d{2}-\d{2}"
     if "freshness" in parse_data:
         if parse_data["freshness"] in ["pd", "pw", "pm", "py"]:
             start_date: str
@@ -96,29 +103,30 @@ if __name__ == "__main__":
                 start_date = (current_time - timedelta(days=30)).strftime("%Y-%m-%d")
             else:  # py
                 start_date = (current_time - timedelta(days=364)).strftime("%Y-%m-%d")
-            search_filter = {"range": {"page_time": {"gte": start_date, "lt": end_date}}}
+            search_filter = {
+                "range": {"page_time": {"gte": start_date, "lt": end_date}}
+            }
         elif re.match(pattern, parse_data["freshness"]):
             start_date = parse_data["freshness"].split("to")[0]
             end_date = parse_data["freshness"].split("to")[1]
-            search_filter = {"range": {"page_time": {"gte": start_date, "lt": end_date}}}
+            search_filter = {
+                "range": {"page_time": {"gte": start_date, "lt": end_date}}
+            }
         else:
-            print(f"Error: freshness ({parse_data['freshness']}) must be pd, pw, pm, py, or match {pattern}.")
+            print(
+                f"Error: freshness ({parse_data['freshness']}) must be pd, pw, pm, py, or match {pattern}."
+            )
             sys.exit(1)
 
     request_body = {
-        "messages": [
-            {
-                "content": parse_data["query"],
-                "role": "user"
-            }
-        ],
+        "messages": [{"content": parse_data["query"], "role": "user"}],
         "search_source": "baidu_search_v2",
         "resource_type_filter": [{"type": "web", "top_k": count}],
-        "search_filter": search_filter
+        "search_filter": search_filter,
     }
     try:
         results = baidu_search(request_body)
         print(json.dumps(results, indent=2, ensure_ascii=False))
-    except Exception as e:
-        print(f"Error: {str(e)}")
+    except (BaiduSearchError, requests.RequestException, KeyError, ValueError) as e:
+        print(f"Error: {e!s}")
         sys.exit(1)

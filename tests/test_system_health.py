@@ -1,38 +1,38 @@
 """Tests for Slife.tools.system_health — system health check tool."""
 
-import pytest; pytestmark = pytest.mark.integration
-
-
 import json
 from contextlib import ExitStack, contextmanager
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from slife.tools.system import (
     _CHECK_FUNCTIONS,
-    check_memdb,
-    check_wechat,
-    check_memfiles,
-    check_sharefile,
+    SystemHealthTool,
+    _collapse,
+    _component_status,
+    _dedupe_records,
+    _format_fact,
+    _group_by_component,
+    _render_report,
+    _semantic_facts,
+    _verdict,
+    check_a2a,
     check_embeddings,
+    check_job_coding,
     check_local_embed,
     check_mcp_gateway,
-    check_a2a,
     check_media,
-    check_job_coding,
+    check_memdb,
+    check_memfiles,
+    check_sharefile,
     check_tool_catalog,
     check_watchdog,
-    _group_by_component,
-    _semantic_facts,
-    _component_status,
-    _collapse,
-    _format_fact,
-    _verdict,
-    _render_report,
-    _dedupe_records,
-    SystemHealthTool,
+    check_wechat,
 )
+
+pytestmark = pytest.mark.integration
 
 
 @contextmanager
@@ -46,11 +46,15 @@ def _patch_all_checks(**overrides):
     """
     startup = overrides.pop("startup", [])
     with ExitStack() as stack:
-        stack.enter_context(patch("slife.tools.system.get_startup_records",
-                                  return_value=startup))
+        stack.enter_context(
+            patch("slife.tools.system.get_startup_records", return_value=startup)
+        )
         for name in _CHECK_FUNCTIONS:
-            stack.enter_context(patch(f"slife.tools.system.{name}",
-                                      return_value=overrides.get(name, [])))
+            stack.enter_context(
+                patch(
+                    f"slife.tools.system.{name}", return_value=overrides.get(name, [])
+                )
+            )
         yield
 
 
@@ -105,17 +109,30 @@ class TestDedupeRecords:
 
     @staticmethod
     def _startup(component, key, level="warning"):
-        return {"component": component, "level": level, "key": key,
-                "value": "startup", "hint": "recorded at startup"}
+        return {
+            "component": component,
+            "level": level,
+            "key": key,
+            "value": "startup",
+            "hint": "recorded at startup",
+        }
 
     @staticmethod
     def _live(component, key, level="ok"):
-        return {"component": component, "level": level, "key": key,
-                "value": "live", "hint": "probed now"}
+        return {
+            "component": component,
+            "level": level,
+            "key": key,
+            "value": "live",
+            "hint": "probed now",
+        }
 
     def test_live_ok_supersedes_stale_warning(self):
         merged = _dedupe_records(
-            [self._startup("mcp_servers", "fs"), self._startup("mcp_servers", "github")],
+            [
+                self._startup("mcp_servers", "fs"),
+                self._startup("mcp_servers", "github"),
+            ],
             [self._live("mcp_servers", "fs")],
         )
         # kept startup records come first, the live entries after them
@@ -227,23 +244,41 @@ class TestCollapse:
 
     def test_identical_entries_merge_into_one_fact(self):
         entries = [
-            {"component": "mcp_servers", "level": "warning", "key": f"s{i}",
-             "value": "disconnected", "hint": "retry"}
+            {
+                "component": "mcp_servers",
+                "level": "warning",
+                "key": f"s{i}",
+                "value": "disconnected",
+                "hint": "retry",
+            }
             for i in range(19)
         ]
         items = _collapse(entries)
         assert len(items) == 1
         assert len(items[0]["keys"]) == 19
-        assert _format_fact(items[0]) == "disconnected [s0, s1, s10, s11, s12, s13, s14, s15, s16, s17, s18, s2, s3, s4, s5, s6, s7, s8, s9]"
+        assert (
+            _format_fact(items[0])
+            == "disconnected [s0, s1, s10, s11, s12, s13, s14, s15, s16, s17, s18, s2, s3, s4, s5, s6, s7, s8, s9]"
+        )
 
     def test_same_hint_different_value_does_not_merge(self):
         """Two servers that failed differently are two different facts —
         merging on (level, hint) alone would silently drop one."""
         entries = [
-            {"component": "mcp_servers", "level": "warning", "key": "a",
-             "value": "disconnected (ECONNREFUSED)", "hint": "retry"},
-            {"component": "mcp_servers", "level": "warning", "key": "b",
-             "value": "disconnected (timeout)", "hint": "retry"},
+            {
+                "component": "mcp_servers",
+                "level": "warning",
+                "key": "a",
+                "value": "disconnected (ECONNREFUSED)",
+                "hint": "retry",
+            },
+            {
+                "component": "mcp_servers",
+                "level": "warning",
+                "key": "b",
+                "value": "disconnected (timeout)",
+                "hint": "retry",
+            },
         ]
         assert len(_collapse(entries)) == 2
 
@@ -270,10 +305,12 @@ class TestCollapse:
         assert [i["level"] for i in _collapse(entries)] == ["error", "ok"]
 
     def test_keyless_entries_collapse_without_a_key_list(self):
-        items = _collapse([
-            {"component": "x", "level": "ok", "value": "same"},
-            {"component": "x", "level": "ok", "value": "same"},
-        ])
+        items = _collapse(
+            [
+                {"component": "x", "level": "ok", "value": "same"},
+                {"component": "x", "level": "ok", "value": "same"},
+            ]
+        )
         assert len(items) == 1
         assert items[0]["keys"] == []
         assert _format_fact(items[0]) == "same"
@@ -291,8 +328,7 @@ class TestFormatFact:
         assert _format_fact(item) == "db"
 
     def test_many_keys_render_value_then_the_list(self):
-        item = {"level": "ok", "value": "active", "hint": "",
-                "keys": ["a", "b"]}
+        item = {"level": "ok", "value": "active", "hint": "", "keys": ["a", "b"]}
         assert _format_fact(item) == "active [a, b]"
 
     def test_key_list_is_capped(self):
@@ -323,18 +359,34 @@ class TestRenderReport:
         assert report.strip()
 
     def test_never_looks_like_an_error_or_a_compacted_result(self):
-        report = _render([{"component": "x", "level": "error", "key": "k",
-                           "value": "broken", "hint": "fix it"}])
+        report = _render(
+            [
+                {
+                    "component": "x",
+                    "level": "error",
+                    "key": "k",
+                    "value": "broken",
+                    "hint": "fix it",
+                }
+            ]
+        )
         assert not report.startswith("Error")
         assert not report.startswith((" ", "[", "#", "\n"))
         assert "[compacted at save:" not in report
 
     def test_problem_leads_and_healthy_follows(self):
-        report = _render([
-            {"component": "memdb", "level": "ok", "key": "db", "value": "1.2 MB"},
-            {"component": "a2a", "level": "warning", "key": "status",
-             "value": "unavailable", "hint": "Start mosquitto."},
-        ])
+        report = _render(
+            [
+                {"component": "memdb", "level": "ok", "key": "db", "value": "1.2 MB"},
+                {
+                    "component": "a2a",
+                    "level": "warning",
+                    "key": "status",
+                    "value": "unavailable",
+                    "hint": "Start mosquitto.",
+                },
+            ]
+        )
         assert report.index("## Problems") < report.index("## Components OK")
         assert report.index("a2a") < report.index("memdb")
         assert "[WARN]  a2a" in report
@@ -344,65 +396,111 @@ class TestRenderReport:
         """The host facts are probed at startup on a daemon thread, so a
         report read early says which facts are not in yet instead of letting a
         smaller component count read as a smaller system."""
-        report = _render([
-            {"component": "memdb", "level": "ok", "key": "db", "value": "1.2 MB"},
-        ])
-        assert ("Scope: config/model/subagent/node/npm/bun/uv are host facts"
-                in report)
+        report = _render(
+            [
+                {"component": "memdb", "level": "ok", "key": "db", "value": "1.2 MB"},
+            ]
+        )
+        assert "Scope: config/model/subagent/node/npm/bun/uv are host facts" in report
 
     def test_a_report_holding_them_carries_no_scope_line(self):
-        report = _render([
-            {"component": c, "level": "ok", "key": "k", "value": "v"}
-            for c in ("memdb", "config", "model", "subagent",
-                      "node", "npm", "bun", "uv")
-        ])
+        report = _render(
+            [
+                {"component": c, "level": "ok", "key": "k", "value": "v"}
+                for c in (
+                    "memdb",
+                    "config",
+                    "model",
+                    "subagent",
+                    "node",
+                    "npm",
+                    "bun",
+                    "uv",
+                )
+            ]
+        )
         assert "Scope:" not in report
 
     def test_error_ranks_above_warning(self):
-        report = _render([
-            {"component": "a2a", "level": "warning", "key": "status", "value": "w"},
-            {"component": "wechat", "level": "error", "key": "status", "value": "e"},
-        ])
+        report = _render(
+            [
+                {"component": "a2a", "level": "warning", "key": "status", "value": "w"},
+                {
+                    "component": "wechat",
+                    "level": "error",
+                    "key": "status",
+                    "value": "e",
+                },
+            ]
+        )
         assert report.index("[ERROR] wechat") < report.index("[WARN]  a2a")
 
     def test_healthy_components_render_one_line_each(self):
-        report = _render([
-            {"component": "memdb", "level": "ok", "key": "db", "value": "1.2 MB"},
-            {"component": "memdb", "level": "ok", "key": "embedding", "value": "ready"},
-        ])
+        report = _render(
+            [
+                {"component": "memdb", "level": "ok", "key": "db", "value": "1.2 MB"},
+                {
+                    "component": "memdb",
+                    "level": "ok",
+                    "key": "embedding",
+                    "value": "ready",
+                },
+            ]
+        )
         body = report.split("## Components OK", 1)[1].strip().splitlines()
         assert len(body) == 1
         assert body[0] == "memdb: db=1.2 MB; embedding=ready"
 
     def test_environment_facts_sort_last(self):
-        report = _render([
-            {"component": "node", "level": "ok", "key": "version", "value": "v25"},
-            {"component": "memdb", "level": "ok", "key": "db", "value": "1.2 MB"},
-            {"component": "watchdog", "level": "ok", "key": "p", "value": "active"},
-        ])
+        report = _render(
+            [
+                {"component": "node", "level": "ok", "key": "version", "value": "v25"},
+                {"component": "memdb", "level": "ok", "key": "db", "value": "1.2 MB"},
+                {"component": "watchdog", "level": "ok", "key": "p", "value": "active"},
+            ]
+        )
         body = report.split("## Components OK", 1)[1]
         assert body.index("memdb") < body.index("watchdog") < body.index("node")
 
     def test_info_entries_are_reported_as_ok_never_as_problems(self):
-        report = _render([
-            {"component": "mcp_servers", "level": "info", "key": "slack",
-             "value": "disabled"},
-        ])
+        report = _render(
+            [
+                {
+                    "component": "mcp_servers",
+                    "level": "info",
+                    "key": "slack",
+                    "value": "disabled",
+                },
+            ]
+        )
         assert "## Problems" not in report
         assert "HEALTHY" in report
         assert "slack=disabled" in report
 
     def test_problem_without_a_hint_has_no_dangling_separator(self):
-        report = _render([{"component": "memfiles", "level": "warning",
-                           "key": "plugin", "value": "store_error: boom"}])
+        report = _render(
+            [
+                {
+                    "component": "memfiles",
+                    "level": "warning",
+                    "key": "plugin",
+                    "value": "store_error: boom",
+                }
+            ]
+        )
         line = next(ln for ln in report.splitlines() if ln.startswith("[WARN]"))
         assert line.endswith("store_error: boom")
         assert not line.rstrip().endswith("—")
 
     def test_every_problem_fact_in_a_component_shares_one_remedy_once(self):
         entries = [
-            {"component": "mcp_servers", "level": "warning", "key": f"s{i}",
-             "value": "disconnected", "hint": "The wrapper retries."}
+            {
+                "component": "mcp_servers",
+                "level": "warning",
+                "key": f"s{i}",
+                "value": "disconnected",
+                "hint": "The wrapper retries.",
+            }
             for i in range(19)
         ]
         report = _render(entries)
@@ -410,45 +508,93 @@ class TestRenderReport:
         assert report.count("disconnected [") == 1
 
     def test_distinct_remedies_pair_with_their_own_fact(self):
-        report = _render([
-            {"component": "mixed", "level": "warning", "key": "a",
-             "value": "one", "hint": "fix one"},
-            {"component": "mixed", "level": "error", "key": "b",
-             "value": "two", "hint": "fix two"},
-        ])
+        report = _render(
+            [
+                {
+                    "component": "mixed",
+                    "level": "warning",
+                    "key": "a",
+                    "value": "one",
+                    "hint": "fix one",
+                },
+                {
+                    "component": "mixed",
+                    "level": "error",
+                    "key": "b",
+                    "value": "two",
+                    "hint": "fix two",
+                },
+            ]
+        )
         line = next(ln for ln in report.splitlines() if ln.startswith("[ERROR]"))
         assert "two — fix two" in line and "one — fix one" in line
 
     def test_machine_only_keys_are_not_rendered(self):
-        plain = [{"component": "mcp_servers", "level": "warning", "key": "fs",
-                  "value": "disconnected", "hint": "retry"}]
-        noisy = [{"component": "mcp_servers", "level": "warning", "key": "fs",
-                  "value": "disconnected", "hint": "retry",
-                  "enabled": True, "state": "disconnected", "tool_count": 0,
-                  "transport": "stdio", "peers": [{"agent_name": "x"}]}]
+        plain = [
+            {
+                "component": "mcp_servers",
+                "level": "warning",
+                "key": "fs",
+                "value": "disconnected",
+                "hint": "retry",
+            }
+        ]
+        noisy = [
+            {
+                "component": "mcp_servers",
+                "level": "warning",
+                "key": "fs",
+                "value": "disconnected",
+                "hint": "retry",
+                "enabled": True,
+                "state": "disconnected",
+                "tool_count": 0,
+                "transport": "stdio",
+                "peers": [{"agent_name": "x"}],
+            }
+        ]
         assert _render(plain) == _render(noisy)
 
     def test_unknown_level_does_not_crash(self):
-        report = _render([{"component": "x", "level": "banana", "key": "k",
-                           "value": "v"}])
+        report = _render(
+            [{"component": "x", "level": "banana", "key": "k", "value": "v"}]
+        )
         assert "[WARN]" in report
 
     def test_a_check_that_blew_up_is_reported_with_its_blast_radius(self):
-        report = _render([{
-            "component": "system_health", "level": "error",
-            "key": "check_a2a_failed", "value": "check_a2a failed",
-            "hint": "RuntimeError: boom — the rest of this report is unaffected.",
-        }])
+        report = _render(
+            [
+                {
+                    "component": "system_health",
+                    "level": "error",
+                    "key": "check_a2a_failed",
+                    "value": "check_a2a failed",
+                    "hint": "RuntimeError: boom — the rest of this report is unaffected.",
+                }
+            ]
+        )
         assert "[ERROR] system_health" in report
         assert "unaffected" in report
 
     def test_the_two_server_families_report_separately(self):
-        report = _render([
-            {"component": "mcp_servers", "level": "warning", "key": "fs",
-             "value": "disconnected", "hint": "use mcp_list."},
-            {"component": "rest-api", "level": "warning", "key": "github",
-             "value": "disconnected", "hint": "use rest_api_list."},
-        ])
+        report = _render(
+            [
+                {
+                    "component": "mcp_servers",
+                    "level": "warning",
+                    "key": "fs",
+                    "value": "disconnected",
+                    "hint": "use mcp_list.",
+                },
+                {
+                    "component": "rest-api",
+                    "level": "warning",
+                    "key": "github",
+                    "value": "disconnected",
+                    "hint": "use rest_api_list.",
+                },
+            ]
+        )
         lines = report.splitlines()
         mcp_line = "[WARN]  mcp_servers: fs=disconnected — use mcp_list."
         rest_line = "[WARN]  rest-api   : github=disconnected — use rest_api_list."
@@ -456,46 +602,85 @@ class TestRenderReport:
         assert lines.index(mcp_line) < lines.index(rest_line)
 
     def test_collapsed_watchdog_entries_share_one_line(self):
-        report = _render([
-            {"component": "watchdog", "level": "ok", "key": p, "value": "active"}
-            for p in ("memdb", "wechat")
-        ])
+        report = _render(
+            [
+                {"component": "watchdog", "level": "ok", "key": p, "value": "active"}
+                for p in ("memdb", "wechat")
+            ]
+        )
         body = report.split("## Components OK", 1)[1].strip().splitlines()
         assert len(body) == 1
         assert body[0] == "watchdog: active [memdb, wechat]"
 
     def test_oversized_report_folds_only_the_healthy_section(self):
-        entries = [{"component": "a2a", "level": "warning", "key": "status",
-                    "value": "unavailable", "hint": "fix it"}]
-        entries += [{"component": f"c{i}", "level": "ok", "key": "k",
-                     "value": "v" * 200} for i in range(60)]
+        entries = [
+            {
+                "component": "a2a",
+                "level": "warning",
+                "key": "status",
+                "value": "unavailable",
+                "hint": "fix it",
+            }
+        ]
+        entries += [
+            {"component": f"c{i}", "level": "ok", "key": "k", "value": "v" * 200}
+            for i in range(60)
+        ]
         report = _render(entries)
         assert len(report) <= 7000
-        assert "fix it" in report          # problems survive the fold
-        assert "detail omitted" in report   # and the fold announces itself
+        assert "fix it" in report  # problems survive the fold
+        assert "detail omitted" in report  # and the fold announces itself
 
     def test_realistic_report_fits_the_save_budget(self):
         """The previous JSON report was 16 KB and had its middle amputated by
         the save-side compaction (8000).  A baseline exam must not."""
         entries = [
-            {"component": "config", "level": "ok", "key": "path",
-             "value": r"D:\Dev\Workspace\slife\slife.yaml (16 models, 20 MCP servers, embeddings=enabled)"},
-            {"component": "model", "level": "ok", "key": "active",
-             "value": "deepseek/deepseek-flash (thinking=on, vision=on, ctx 1000000)"},
+            {
+                "component": "config",
+                "level": "ok",
+                "key": "path",
+                "value": r"D:\Dev\Workspace\slife\slife.yaml (16 models, 20 MCP servers, embeddings=enabled)",
+            },
+            {
+                "component": "model",
+                "level": "ok",
+                "key": "active",
+                "value": "deepseek/deepseek-flash (thinking=on, vision=on, ctx 1000000)",
+            },
         ]
-        entries += [{"component": c, "level": "ok", "key": "version", "value": "v1"}
-                    for c in ("node", "npm", "bun", "uv")]
         entries += [
-            {"component": "memdb", "level": "ok", "key": "db", "value": "7.3 MB (slife.db)"},
-            {"component": "memdb", "level": "ok", "key": "embedding",
-             "value": "ready (BAAI/bge-m3, dim=1024)"},
-            {"component": "memfiles", "level": "ok", "key": "plugin",
-             "value": "connected (semantic index ready)"},
+            {"component": c, "level": "ok", "key": "version", "value": "v1"}
+            for c in ("node", "npm", "bun", "uv")
+        ]
+        entries += [
+            {
+                "component": "memdb",
+                "level": "ok",
+                "key": "db",
+                "value": "7.3 MB (slife.db)",
+            },
+            {
+                "component": "memdb",
+                "level": "ok",
+                "key": "embedding",
+                "value": "ready (BAAI/bge-m3, dim=1024)",
+            },
+            {
+                "component": "memfiles",
+                "level": "ok",
+                "key": "plugin",
+                "value": "connected (semantic index ready)",
+            },
             {"component": "watchdog", "level": "ok", "key": "memdb", "value": "active"},
         ]
         entries += [
-            {"component": "mcp_servers", "level": "warning", "key": n,
-             "value": "disconnected", "hint": "The wrapper retries."}
+            {
+                "component": "mcp_servers",
+                "level": "warning",
+                "key": n,
+                "value": "disconnected",
+                "hint": "The wrapper retries.",
+            }
             for n in [f"server-{i}" for i in range(18)] + ["github", "mcp-registry"]
         ]
         report = _render(entries)
@@ -507,8 +692,10 @@ class TestVerdict:
 
     def _problems(self, *specs):
         # (rank, order, component, status, line)
-        return [(0 if s == "error" else 1, i, f"c{i}", s, "line")
-                for i, s in enumerate(specs)]
+        return [
+            (0 if s == "error" else 1, i, f"c{i}", s, "line")
+            for i, s in enumerate(specs)
+        ]
 
     def test_all_healthy(self):
         text = _verdict([], 16)
@@ -549,9 +736,18 @@ class TestCheckMemdb:
     async def test_plugin_facts_are_interpreted(self):
         payload = {
             "db": {"exists": True, "size_mb": 1.0, "path": "slife.db"},
-            "semantic": {"configured": True, "provider": "local", "model": "bge-m3",
-                         "dimension": 1024, "available": True, "semantic_ready": True,
-                         "state": "ready", "reason": "", "unembedded": 0, "loaded": True},
+            "semantic": {
+                "configured": True,
+                "provider": "local",
+                "model": "bge-m3",
+                "dimension": 1024,
+                "available": True,
+                "semantic_ready": True,
+                "state": "ready",
+                "reason": "",
+                "unembedded": 0,
+                "loaded": True,
+            },
         }
         client = MagicMock()
         client.call_tool = AsyncMock(return_value=json.dumps(payload))
@@ -570,9 +766,18 @@ class TestCheckMemdb:
     async def test_plugin_semantic_building_is_warning(self):
         payload = {
             "db": {"exists": False, "path": "slife.db"},
-            "semantic": {"configured": True, "provider": "local", "model": "bge-m3",
-                         "dimension": 1024, "available": True, "semantic_ready": False,
-                         "state": "indexing", "reason": "", "unembedded": 5, "loaded": False},
+            "semantic": {
+                "configured": True,
+                "provider": "local",
+                "model": "bge-m3",
+                "dimension": 1024,
+                "available": True,
+                "semantic_ready": False,
+                "state": "indexing",
+                "reason": "",
+                "unembedded": 5,
+                "loaded": False,
+            },
         }
         client = MagicMock()
         client.call_tool = AsyncMock(return_value=json.dumps(payload))
@@ -600,11 +805,17 @@ class TestCheckMemdb:
         payload = {
             "db": {"exists": True, "path": "slife.db"},
             "semantic": {
-                "configured": True, "provider": "local", "model": "bge-m3",
-                "dimension": 1024, "available": True, "semantic_ready": False,
-                "state": "stalled", "unembedded": 7, "loaded": True,
+                "configured": True,
+                "provider": "local",
+                "model": "bge-m3",
+                "dimension": 1024,
+                "available": True,
+                "semantic_ready": False,
+                "state": "stalled",
+                "unembedded": 7,
+                "loaded": True,
                 "reason": "semantic index stalled — the embedder failed "
-                          "repeatedly and gave up this round.",
+                "repeatedly and gave up this round.",
             },
         }
         client = MagicMock()
@@ -619,14 +830,19 @@ class TestCheckMemdb:
     async def test_missing_endpoint_points_at_the_config_tool(self):
         payload = {
             "db": {"exists": True, "size_mb": 1.0, "path": "slife.db"},
-            "semantic": {"configured": False, "available": False,
-                         "semantic_ready": False, "state": "unconfigured",
-                         "reason": "", "unembedded": 0},
+            "semantic": {
+                "configured": False,
+                "available": False,
+                "semantic_ready": False,
+                "state": "unconfigured",
+                "reason": "",
+                "unembedded": 0,
+            },
         }
         client = MagicMock()
         client.call_tool = AsyncMock(return_value=json.dumps(payload))
         entries = await check_memdb(client=client)
-        emb = [e for e in entries if e["key"] == "embedding"][0]
+        emb = next(e for e in entries if e["key"] == "embedding")
         assert emb["value"] == "unavailable (no embeddings endpoint configured)"
         assert "embeddings_model_set" in emb["hint"]
 
@@ -685,8 +901,17 @@ class TestCheckWechatStatus:
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = True
 
-        payload = {"logged_in": True, "auth_failed": False, "last_error": "",
-                   "session": {"saved": True, "saved_at": 0.0, "age_h": 1.0, "max_age_h": 72.0}}
+        payload = {
+            "logged_in": True,
+            "auth_failed": False,
+            "last_error": "",
+            "session": {
+                "saved": True,
+                "saved_at": 0.0,
+                "age_h": 1.0,
+                "max_age_h": 72.0,
+            },
+        }
         client = MagicMock()
         client.call_tool = AsyncMock(return_value=json.dumps(payload))
         result = await check_wechat(client=client, config=mock_config)
@@ -703,8 +928,17 @@ class TestCheckWechatStatus:
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = True
 
-        payload = {"logged_in": False, "auth_failed": False, "last_error": "",
-                   "session": {"saved": True, "saved_at": 0.0, "age_h": 73.0, "max_age_h": 72.0}}
+        payload = {
+            "logged_in": False,
+            "auth_failed": False,
+            "last_error": "",
+            "session": {
+                "saved": True,
+                "saved_at": 0.0,
+                "age_h": 73.0,
+                "max_age_h": 72.0,
+            },
+        }
         client = MagicMock()
         client.call_tool = AsyncMock(return_value=json.dumps(payload))
         result = await check_wechat(client=client, config=mock_config)
@@ -718,8 +952,17 @@ class TestCheckWechatStatus:
         mock_config.wechat_config = MagicMock()
         mock_config.wechat_config.enabled = True
 
-        payload = {"logged_in": True, "auth_failed": True, "last_error": "401",
-                   "session": {"saved": True, "saved_at": 0.0, "age_h": 1.0, "max_age_h": 72.0}}
+        payload = {
+            "logged_in": True,
+            "auth_failed": True,
+            "last_error": "401",
+            "session": {
+                "saved": True,
+                "saved_at": 0.0,
+                "age_h": 1.0,
+                "max_age_h": 72.0,
+            },
+        }
         client = MagicMock()
         client.call_tool = AsyncMock(return_value=json.dumps(payload))
         result = await check_wechat(client=client, config=mock_config)
@@ -742,9 +985,7 @@ class TestCheckWechatStatus:
     async def test_config_load_exception_falls_back_to_default(self):
         """When config loading fails, check_wechat falls back
         to trying to load config from disk itself."""
-        with patch(
-            "slife.config.Config"
-        ) as MockConfig:
+        with patch("slife.config.Config") as MockConfig:
             MockConfig.from_yaml.side_effect = Exception("parse error")
             with patch("pathlib.Path.exists", return_value=True):
                 result = await check_wechat(config=None)
@@ -787,8 +1028,9 @@ class TestSystemHealthToolExecute:
     @pytest.mark.asyncio
     async def test_execute_includes_startup_records(self):
         tool = SystemHealthTool()
-        startup = [{"component": "startup", "level": "ok", "key": "bootstrap",
-                    "value": "done"}]
+        startup = [
+            {"component": "startup", "level": "ok", "key": "bootstrap", "value": "done"}
+        ]
         with _patch_all_checks(startup=startup):
             result = await tool.execute()
         assert "startup" in result
@@ -797,8 +1039,15 @@ class TestSystemHealthToolExecute:
     @pytest.mark.asyncio
     async def test_execute_with_warnings_is_not_healthy(self):
         tool = SystemHealthTool()
-        startup = [{"component": "db", "level": "warning", "key": "schema",
-                    "value": "migrated", "hint": "check logs"}]
+        startup = [
+            {
+                "component": "db",
+                "level": "warning",
+                "key": "schema",
+                "value": "migrated",
+                "hint": "check logs",
+            }
+        ]
         with _patch_all_checks(startup=startup):
             result = await tool.execute()
         assert result.startswith("system_health: DEGRADED")
@@ -824,16 +1073,23 @@ class TestSystemHealthToolExecute:
         the stale startup record is superseded by the live result."""
         tool = SystemHealthTool()
         startup = [
-            {"component": "mcp_servers", "level": "warning", "key": "fs",
-             "value": "connect_pending",
-             "hint": "enabled but not yet connected; retrying in background."},
+            {
+                "component": "mcp_servers",
+                "level": "warning",
+                "key": "fs",
+                "value": "connect_pending",
+                "hint": "enabled but not yet connected; retrying in background.",
+            },
         ]
         live = [
-            {"component": "mcp_servers", "level": "ok", "key": "fs",
-             "value": "connected (5 tools, stdio)"},
+            {
+                "component": "mcp_servers",
+                "level": "ok",
+                "key": "fs",
+                "value": "connected (5 tools, stdio)",
+            },
         ]
-        with _patch_all_checks(startup=startup,
-                               check_mcp_gateway=live):
+        with _patch_all_checks(startup=startup, check_mcp_gateway=live):
             result = await tool.execute()
         assert "HEALTHY" in result
         assert "## Problems" not in result
@@ -866,13 +1122,23 @@ class TestCheckWatchdogFunction:
     def test_no_records_reports_none(self):
         with patch("slife.tools.system.get_startup_records", return_value=[]):
             entries = check_watchdog()
-        assert entries == [{"component": "watchdog", "level": "ok",
-                            "key": "status",
-                            "value": "none (subagent, or plugins not started)"}]
+        assert entries == [
+            {
+                "component": "watchdog",
+                "level": "ok",
+                "key": "status",
+                "value": "none (subagent, or plugins not started)",
+            }
+        ]
 
     def test_keeps_latest_per_plugin(self):
         records = [
-            {"component": "watchdog", "key": "plugin_a", "value": "warning", "level": "warning"},
+            {
+                "component": "watchdog",
+                "key": "plugin_a",
+                "value": "warning",
+                "level": "warning",
+            },
             {"component": "watchdog", "key": "plugin_a", "value": "ok", "level": "ok"},
         ]
         with patch("slife.tools.system.get_startup_records", return_value=records):
@@ -881,8 +1147,15 @@ class TestCheckWatchdogFunction:
         assert entries[0]["value"] == "ok"  # later record overwrites
 
     def test_exhausted_watchdog_keeps_its_remedy(self):
-        records = [{"component": "watchdog", "key": "memdb", "value": "exhausted",
-                    "level": "error", "hint": "Restart slife to recover."}]
+        records = [
+            {
+                "component": "watchdog",
+                "key": "memdb",
+                "value": "exhausted",
+                "level": "error",
+                "hint": "Restart slife to recover.",
+            }
+        ]
         with patch("slife.tools.system.get_startup_records", return_value=records):
             entries = check_watchdog()
         assert entries[0]["hint"] == "Restart slife to recover."
@@ -962,7 +1235,7 @@ class TestCheckMcpFunction:
         entry = entries[0]
         assert entry["level"] == "warning"
         assert entry["value"].startswith("no working tool list")
-        assert "boom" in entry["value"]      # the recorded reason rides along
+        assert "boom" in entry["value"]  # the recorded reason rides along
         assert "retries in the background" in entry["hint"]
         assert "healthy" not in entry
 
@@ -982,15 +1255,15 @@ class TestCheckMcpFunction:
         differs and the remedy has to name the right tool set."""
         payload = [
             self._server("fs", tools_ok=False, last_error=""),
-            self._server("github", tools_ok=False, last_error="",
-                         rest_api=True),
+            self._server("github", tools_ok=False, last_error="", rest_api=True),
         ]
         entries = await check_mcp_gateway(client=self._client(payload))
         by_key = {e["key"]: e for e in entries}
         assert by_key["fs"]["component"] == "mcp_servers"
         assert by_key["github"]["component"] == "rest-api"
-        assert (by_key["fs"]["value"] == by_key["github"]["value"]
-                == "no working tool list")
+        assert (
+            by_key["fs"]["value"] == by_key["github"]["value"] == "no working tool list"
+        )
         assert "mcp_list" in by_key["fs"]["hint"]
         assert "rest_api_list" in by_key["github"]["hint"]
         assert "mcp_list" not in by_key["github"]["hint"]
@@ -1056,9 +1329,13 @@ class TestCheckA2aFunction:
     @staticmethod
     def _status(**overrides):
         data = {
-            "enabled": True, "connected": True, "agent_name": "slife",
-            "status": "idle", "broker": "localhost:1883",
-            "peers": [], "queued": {"tasks": 0, "presence": 0, "cancellations": 0},
+            "enabled": True,
+            "connected": True,
+            "agent_name": "slife",
+            "status": "idle",
+            "broker": "localhost:1883",
+            "peers": [],
+            "queued": {"tasks": 0, "presence": 0, "cancellations": 0},
         }
         data.update(overrides)
         return data
@@ -1091,22 +1368,30 @@ class TestCheckA2aFunction:
 
     @pytest.mark.asyncio
     async def test_connected_with_peers(self):
-        client = _FakeA2aClient(self._status(peers=[
-            {"agent_name": "peer-1", "status": "idle"},
-        ]))
+        client = _FakeA2aClient(
+            self._status(
+                peers=[
+                    {"agent_name": "peer-1", "status": "idle"},
+                ]
+            )
+        )
         entries = await check_a2a(client=client)
         assert entries[0]["level"] == "ok"
         assert entries[0]["peers"][0]["agent_name"] == "peer-1"
-        assert entries[0]["value"] == "connected (broker localhost:1883, 1 peer: peer-1)"
+        assert (
+            entries[0]["value"] == "connected (broker localhost:1883, 1 peer: peer-1)"
+        )
 
     @pytest.mark.asyncio
     async def test_name_collision_is_reported_as_the_reason(self):
         """A mesh down over its agent name must not be reported as a missing
         broker — mosquitto is running; the second instance is the problem."""
-        client = _FakeA2aClient(self._status(
-            connected=False,
-            error="agent name 'slife' is already in use on default/default",
-        ))
+        client = _FakeA2aClient(
+            self._status(
+                connected=False,
+                error="agent name 'slife' is already in use on default/default",
+            )
+        )
         entries = await check_a2a(client=client)
         assert entries[0]["level"] == "warning"
         assert "already in use" in entries[0]["value"]
@@ -1116,10 +1401,14 @@ class TestCheckA2aFunction:
     @pytest.mark.asyncio
     async def test_connected_multiple_peers_plural(self):
         """Two peers pluralise and list both names."""
-        client = _FakeA2aClient(self._status(peers=[
-            {"agent_name": "peer-1", "status": "idle"},
-            {"agent_name": "peer-2", "status": "idle"},
-        ]))
+        client = _FakeA2aClient(
+            self._status(
+                peers=[
+                    {"agent_name": "peer-1", "status": "idle"},
+                    {"agent_name": "peer-2", "status": "idle"},
+                ]
+            )
+        )
         entries = await check_a2a(client=client)
         assert "2 peers: peer-1, peer-2" in entries[0]["value"]
 
@@ -1127,9 +1416,11 @@ class TestCheckA2aFunction:
     async def test_queued_backlog_surfaces_in_the_value(self):
         """Undelivered messages are a degradation signal the exam used to
         probe and throw away."""
-        client = _FakeA2aClient(self._status(
-            queued={"tasks": 2, "presence": 1, "cancellations": 0},
-        ))
+        client = _FakeA2aClient(
+            self._status(
+                queued={"tasks": 2, "presence": 1, "cancellations": 0},
+            )
+        )
         entries = await check_a2a(client=client)
         assert entries[0]["value"].endswith(", 3 queued)")
 
@@ -1159,8 +1450,12 @@ class TestCheckMemfilesFunction:
     @staticmethod
     def _status(**overrides):
         data = {
-            "ok": True, "connected": True, "state": "ready",
-            "semantic_ready": True, "unembedded": 0, "reason": "",
+            "ok": True,
+            "connected": True,
+            "state": "ready",
+            "semantic_ready": True,
+            "unembedded": 0,
+            "reason": "",
         }
         data.update(overrides)
         return data
@@ -1185,9 +1480,13 @@ class TestCheckMemfilesFunction:
     @pytest.mark.asyncio
     async def test_connected_semantic_indexing(self):
         """A building index is a fact on an ok entry — no remedy to give."""
-        client = _FakeMemfilesClient(self._status(
-            state="indexing", semantic_ready=False, unembedded=5,
-        ))
+        client = _FakeMemfilesClient(
+            self._status(
+                state="indexing",
+                semantic_ready=False,
+                unembedded=5,
+            )
+        )
         entries = await check_memfiles(client=client)
         assert len(entries) == 1
         assert entries[0]["level"] == "ok"
@@ -1195,10 +1494,14 @@ class TestCheckMemfilesFunction:
 
     @pytest.mark.asyncio
     async def test_store_error_carries_the_reason_as_the_fact(self):
-        client = _FakeMemfilesClient(self._status(
-            ok=False, state="store_error", semantic_ready=False,
-            reason="store init failed",
-        ))
+        client = _FakeMemfilesClient(
+            self._status(
+                ok=False,
+                state="store_error",
+                semantic_ready=False,
+                reason="store init failed",
+            )
+        )
         entries = await check_memfiles(client=client)
         assert entries[0]["level"] == "warning"
         assert entries[0]["value"] == "store_error: store init failed"
@@ -1239,10 +1542,15 @@ class TestCheckSharefileFunction:
     async def test_active_tunnel_reports_its_url(self):
         # No ``reachable`` key — a plugin that predates the field reads as
         # reachable, so the harness never cries wolf over a word it added.
-        client = _FakeSharefileClient({
-            "active": True, "state": "active",
-            "url": "https://x.lhr.life", "reason": "", "provider": "localhost.run",
-        })
+        client = _FakeSharefileClient(
+            {
+                "active": True,
+                "state": "active",
+                "url": "https://x.lhr.life",
+                "reason": "",
+                "provider": "localhost.run",
+            }
+        )
         entries = await check_sharefile(client=client)
         assert entries[0]["level"] == "ok"
         assert entries[0]["value"] == "https://x.lhr.life"
@@ -1254,11 +1562,16 @@ class TestCheckSharefileFunction:
         keeps its URL while answering every request with HTTP 530.  Reporting
         "ok" off ``active`` alone is how an all-green system_health sat next to
         a link nobody could fetch."""
-        client = _FakeSharefileClient({
-            "active": True, "reachable": False, "state": "active",
-            "url": "https://x.trycloudflare.com", "reason": "",
-            "provider": "cloudflare",
-        })
+        client = _FakeSharefileClient(
+            {
+                "active": True,
+                "reachable": False,
+                "state": "active",
+                "url": "https://x.trycloudflare.com",
+                "reason": "",
+                "provider": "cloudflare",
+            }
+        )
         entries = await check_sharefile(client=client)
         assert entries[0]["level"] == "warning"
         assert entries[0]["value"] == "unreachable (cloudflare)"
@@ -1270,16 +1583,22 @@ class TestCheckSharefileFunction:
         in fake-ip mode carrying (and cutting) the control connection.  The
         harness reports both the symptom and the cause — the cause is what
         carries the remedy, and it is invisible from inside slife."""
-        client = _FakeSharefileClient({
-            "active": True, "reachable": False, "state": "active",
-            "url": "https://x.trycloudflare.com", "reason": "",
-            "provider": "cloudflare",
-            "edge_ip": "198.18.0.32", "edge_via_proxy": True,
-        })
+        client = _FakeSharefileClient(
+            {
+                "active": True,
+                "reachable": False,
+                "state": "active",
+                "url": "https://x.trycloudflare.com",
+                "reason": "",
+                "provider": "cloudflare",
+                "edge_ip": "198.18.0.32",
+                "edge_via_proxy": True,
+            }
+        )
         entries = await check_sharefile(client=client)
 
         assert [e["key"] for e in entries] == ["tunnel", "edge"]
-        assert entries[0]["value"] == "unreachable (cloudflare)"      # symptom
+        assert entries[0]["value"] == "unreachable (cloudflare)"  # symptom
         assert entries[1]["level"] == "warning"
         assert entries[1]["value"] == "edge via fake-ip (198.18.0.32)"
         # The remedy is on the user's proxy config, so it must be spelled out.
@@ -1290,12 +1609,18 @@ class TestCheckSharefileFunction:
     async def test_a_healthy_tunnel_on_a_fake_ip_edge_still_warns(self):
         """The interception is the fact to report, not the current blip state:
         a tunnel inside a working window flaps again in 30-60s."""
-        client = _FakeSharefileClient({
-            "active": True, "reachable": True, "state": "active",
-            "url": "https://x.trycloudflare.com", "reason": "",
-            "provider": "cloudflare",
-            "edge_ip": "198.18.0.32", "edge_via_proxy": True,
-        })
+        client = _FakeSharefileClient(
+            {
+                "active": True,
+                "reachable": True,
+                "state": "active",
+                "url": "https://x.trycloudflare.com",
+                "reason": "",
+                "provider": "cloudflare",
+                "edge_ip": "198.18.0.32",
+                "edge_via_proxy": True,
+            }
+        )
         entries = await check_sharefile(client=client)
 
         assert entries[0]["level"] == "ok"
@@ -1305,12 +1630,18 @@ class TestCheckSharefileFunction:
     @pytest.mark.asyncio
     async def test_a_real_edge_reports_only_the_tunnel(self):
         """No proxy, no extra line — the check must not cry wolf."""
-        client = _FakeSharefileClient({
-            "active": True, "reachable": True, "state": "active",
-            "url": "https://x.trycloudflare.com", "reason": "",
-            "provider": "cloudflare",
-            "edge_ip": "104.16.0.1", "edge_via_proxy": False,
-        })
+        client = _FakeSharefileClient(
+            {
+                "active": True,
+                "reachable": True,
+                "state": "active",
+                "url": "https://x.trycloudflare.com",
+                "reason": "",
+                "provider": "cloudflare",
+                "edge_ip": "104.16.0.1",
+                "edge_via_proxy": False,
+            }
+        )
         entries = await check_sharefile(client=client)
 
         assert [e["key"] for e in entries] == ["tunnel"]
@@ -1320,11 +1651,15 @@ class TestCheckSharefileFunction:
         """The hint must not paste one provider's remediation onto another's
         failure: the provider is a fact (in the value) and the reason is
         quoted verbatim from that provider."""
-        client = _FakeSharefileClient({
-            "active": False, "state": "failed", "url": "",
-            "provider": "cloudflare",
-            "reason": "cloudflared not found ('cloudflared').",
-        })
+        client = _FakeSharefileClient(
+            {
+                "active": False,
+                "state": "failed",
+                "url": "",
+                "provider": "cloudflare",
+                "reason": "cloudflared not found ('cloudflared').",
+            }
+        )
         entries = await check_sharefile(client=client)
         assert entries[0]["level"] == "warning"
         assert entries[0]["value"] == "offline (cloudflare)"
@@ -1334,10 +1669,15 @@ class TestCheckSharefileFunction:
 
     @pytest.mark.asyncio
     async def test_down_tunnel_without_a_reason_still_names_the_provider(self):
-        client = _FakeSharefileClient({
-            "active": False, "state": "failed", "url": "",
-            "provider": "ngrok", "reason": "",
-        })
+        client = _FakeSharefileClient(
+            {
+                "active": False,
+                "state": "failed",
+                "url": "",
+                "provider": "ngrok",
+                "reason": "",
+            }
+        )
         entries = await check_sharefile(client=client)
         assert entries[0]["value"] == "offline (ngrok)"
         assert "sharefile.yaml" in entries[0]["hint"]
@@ -1369,21 +1709,27 @@ class TestCheckEmbeddings:
 
     def _http(self, seen, models=None, error=None):
         """Fake httpx2.AsyncClient recording the request headers."""
+
         class _FakeResp:
             def __init__(self, models):
                 self._models = models
+
             def raise_for_status(self):
                 pass
+
             def json(self):
                 return {"data": self._models}
 
         class _FakeHttp:
             def __init__(self, *a, **k):
                 pass
+
             async def __aenter__(self):
                 return self
+
             async def __aexit__(self, *a):
                 return False
+
             async def get(self, url, headers=None):
                 if error is not None:
                     raise error
@@ -1396,9 +1742,16 @@ class TestCheckEmbeddings:
     @pytest.mark.asyncio
     async def test_no_base_url_offline(self):
         """No configured endpoint → offline/not configured."""
-        with patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value={"providers": {}}),              patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
-                   return_value={"base_url": "", "api_key": "", "model": ""}):
+        with (
+            patch(
+                "slife.plugins.memdb.embedding_config.read_embedding_config",
+                return_value={"providers": {}},
+            ),
+            patch(
+                "slife.plugins.memdb.embedding_config.get_active_endpoint",
+                return_value={"base_url": "", "api_key": "", "model": ""},
+            ),
+        ):
             entries = await check_embeddings()
         assert entries[0]["component"] == "embeddings"
         assert entries[0]["level"] == "warning"
@@ -1412,12 +1765,21 @@ class TestCheckEmbeddings:
         """Active = siliconflow: probed with the RESOLVED Bearer key — the old
         401 (probe without a key) is the regression being guarded."""
         seen = {}
-        with patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value={"providers": {}}),              patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
-                   return_value=self._endpoint()), \
-             patch("slife.tools.system.httpx2.AsyncClient", self._http(
-                 seen, models=[{"id": "BAAI/bge-m3"}])), \
-             patch("slife.config._resolve_secret", return_value="sk-real"):
+        with (
+            patch(
+                "slife.plugins.memdb.embedding_config.read_embedding_config",
+                return_value={"providers": {}},
+            ),
+            patch(
+                "slife.plugins.memdb.embedding_config.get_active_endpoint",
+                return_value=self._endpoint(),
+            ),
+            patch(
+                "slife.tools.system.httpx2.AsyncClient",
+                self._http(seen, models=[{"id": "BAAI/bge-m3"}]),
+            ),
+            patch("slife.config._resolve_secret", return_value="sk-real"),
+        ):
             entries = await check_embeddings()
         assert entries[0]["component"] == "embeddings"
         assert entries[0]["level"] == "ok"
@@ -1434,14 +1796,28 @@ class TestCheckEmbeddings:
         nowhere near the head, so "first entry + a model count" named a model
         this session never embeds with."""
         seen = {}
-        with patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value={"providers": {}}),              patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
-                   return_value=self._endpoint()), \
-             patch("slife.tools.system.httpx2.AsyncClient", self._http(
-                 seen, models=[{"id": "tencent/Hy4-preview"},
-                               {"id": "Qwen/Qwen3-8B"},
-                               {"id": "BAAI/bge-m3"}])), \
-             patch("slife.config._resolve_secret", return_value="sk-real"):
+        with (
+            patch(
+                "slife.plugins.memdb.embedding_config.read_embedding_config",
+                return_value={"providers": {}},
+            ),
+            patch(
+                "slife.plugins.memdb.embedding_config.get_active_endpoint",
+                return_value=self._endpoint(),
+            ),
+            patch(
+                "slife.tools.system.httpx2.AsyncClient",
+                self._http(
+                    seen,
+                    models=[
+                        {"id": "tencent/Hy4-preview"},
+                        {"id": "Qwen/Qwen3-8B"},
+                        {"id": "BAAI/bge-m3"},
+                    ],
+                ),
+            ),
+            patch("slife.config._resolve_secret", return_value="sk-real"),
+        ):
             entries = await check_embeddings()
         assert entries[0]["level"] == "ok"
         assert entries[0]["value"] == "BAAI/bge-m3 at https://api.siliconflow.cn/v1"
@@ -1455,12 +1831,21 @@ class TestCheckEmbeddings:
         EmbeddingClient pins the listing's first entry, so that IS the model
         this session embeds with — reported as such."""
         seen = {}
-        with patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value={"providers": {}}),              patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
-                   return_value=self._endpoint(model="")), \
-             patch("slife.tools.system.httpx2.AsyncClient", self._http(
-                 seen, models=[{"id": "bge-m3"}, {"id": "bge-small"}])), \
-             patch("slife.config._resolve_secret", return_value="sk-real"):
+        with (
+            patch(
+                "slife.plugins.memdb.embedding_config.read_embedding_config",
+                return_value={"providers": {}},
+            ),
+            patch(
+                "slife.plugins.memdb.embedding_config.get_active_endpoint",
+                return_value=self._endpoint(model=""),
+            ),
+            patch(
+                "slife.tools.system.httpx2.AsyncClient",
+                self._http(seen, models=[{"id": "bge-m3"}, {"id": "bge-small"}]),
+            ),
+            patch("slife.config._resolve_secret", return_value="sk-real"),
+        ):
             entries = await check_embeddings()
         assert entries[0]["level"] == "ok"
         assert entries[0]["value"] == "bge-m3 at https://api.siliconflow.cn/v1"
@@ -1470,13 +1855,23 @@ class TestCheckEmbeddings:
         """A key credstore can't resolve is never sent as a literal token —
         the probe still runs (header just absent)."""
         seen = {}
-        with patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value={"providers": {}}),              patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
-                   return_value=self._endpoint()), \
-             patch("slife.tools.system.httpx2.AsyncClient", self._http(
-                 seen, models=[{"id": "BAAI/bge-m3"}])), \
-             patch("slife.config._resolve_secret",
-                   return_value="${SILICONFLOW_API_KEY}"):
+        with (
+            patch(
+                "slife.plugins.memdb.embedding_config.read_embedding_config",
+                return_value={"providers": {}},
+            ),
+            patch(
+                "slife.plugins.memdb.embedding_config.get_active_endpoint",
+                return_value=self._endpoint(),
+            ),
+            patch(
+                "slife.tools.system.httpx2.AsyncClient",
+                self._http(seen, models=[{"id": "BAAI/bge-m3"}]),
+            ),
+            patch(
+                "slife.config._resolve_secret", return_value="${SILICONFLOW_API_KEY}"
+            ),
+        ):
             entries = await check_embeddings()
         assert entries[0]["level"] == "ok"
         assert seen["authorization"] is None
@@ -1488,17 +1883,26 @@ class TestCheckEmbeddings:
         a "model not loaded" warning.  It is the PROVIDER key here, which is
         the only place the daemon's name belongs."""
         seen = {}
-        with patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value={"providers": {}}),              patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
-                   return_value={
-                       "provider": "local_embed",
-                       "base_url": "http://127.0.0.1:17347/v1",
-                       "api_key": "local",
-                       "model": "bge-m3",
-                   }), \
-             patch("slife.tools.system.httpx2.AsyncClient", self._http(
-                 seen, models=[{"id": "bge-m3"}])), \
-             patch("slife.config._resolve_secret", return_value="local"):
+        with (
+            patch(
+                "slife.plugins.memdb.embedding_config.read_embedding_config",
+                return_value={"providers": {}},
+            ),
+            patch(
+                "slife.plugins.memdb.embedding_config.get_active_endpoint",
+                return_value={
+                    "provider": "local_embed",
+                    "base_url": "http://127.0.0.1:17347/v1",
+                    "api_key": "local",
+                    "model": "bge-m3",
+                },
+            ),
+            patch(
+                "slife.tools.system.httpx2.AsyncClient",
+                self._http(seen, models=[{"id": "bge-m3"}]),
+            ),
+            patch("slife.config._resolve_secret", return_value="local"),
+        ):
             entries = await check_embeddings()
         assert entries[0]["level"] == "ok"
         assert entries[0]["key"] == "local_embed"
@@ -1510,12 +1914,21 @@ class TestCheckEmbeddings:
     @pytest.mark.asyncio
     async def test_probe_error_reports_unreachable(self):
         seen = {}
-        with patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value={"providers": {}}),              patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
-                   return_value=self._endpoint()), \
-             patch("slife.tools.system.httpx2.AsyncClient", self._http(
-                 seen, error=RuntimeError("Connection error."))), \
-             patch("slife.config._resolve_secret", return_value="sk-real"):
+        with (
+            patch(
+                "slife.plugins.memdb.embedding_config.read_embedding_config",
+                return_value={"providers": {}},
+            ),
+            patch(
+                "slife.plugins.memdb.embedding_config.get_active_endpoint",
+                return_value=self._endpoint(),
+            ),
+            patch(
+                "slife.tools.system.httpx2.AsyncClient",
+                self._http(seen, error=RuntimeError("Connection error.")),
+            ),
+            patch("slife.config._resolve_secret", return_value="sk-real"),
+        ):
             entries = await check_embeddings()
         assert entries[0]["component"] == "embeddings"
         assert entries[0]["level"] == "warning"
@@ -1541,7 +1954,8 @@ class TestCheckToolsInternal:
         import slife.tools.system as system_mod
 
         wrappers = {
-            name for name in vars(system_mod)
+            name
+            for name in vars(system_mod)
             if name.startswith("Check") and name.endswith("Tool")
         }
         # CheckAsyncTool/CancelAsyncTool are real registered tools; the
@@ -1582,9 +1996,16 @@ class TestCheckMedia:
             return_value=MagicMock(is_empty=MagicMock(return_value=False)),
         ):
             payload = {
-                "configured": True, "error": "",
-                "providers": [{"id": "p1", "api": "openai-images",
-                               "kinds": ["image"], "has_api_key": True}],
+                "configured": True,
+                "error": "",
+                "providers": [
+                    {
+                        "id": "p1",
+                        "api": "openai-images",
+                        "kinds": ["image"],
+                        "has_api_key": True,
+                    }
+                ],
             }
             client = MagicMock()
             client.call_tool = AsyncMock(return_value=json.dumps(payload))
@@ -1607,12 +2028,26 @@ class TestCheckMedia:
             return_value=MagicMock(is_empty=MagicMock(return_value=False)),
         ):
             payload = {
-                "configured": True, "error": "",
-                "providers": [{"id": "p1", "api": "dashscope-aigc",
-                               "kinds": ["image"], "has_api_key": True}],
-                "calls": [{"provider": "p1", "kind": "image", "model": "wanx-v1",
-                           "ok": False, "age_s": 90.0,
-                           "message": "403 - model not purchased"}],
+                "configured": True,
+                "error": "",
+                "providers": [
+                    {
+                        "id": "p1",
+                        "api": "dashscope-aigc",
+                        "kinds": ["image"],
+                        "has_api_key": True,
+                    }
+                ],
+                "calls": [
+                    {
+                        "provider": "p1",
+                        "kind": "image",
+                        "model": "wanx-v1",
+                        "ok": False,
+                        "age_s": 90.0,
+                        "message": "403 - model not purchased",
+                    }
+                ],
             }
             client = MagicMock()
             client.call_tool = AsyncMock(return_value=json.dumps(payload))
@@ -1635,24 +2070,49 @@ class TestCheckMedia:
             return_value=MagicMock(is_empty=MagicMock(return_value=False)),
         ):
             payload = {
-                "configured": True, "error": "",
-                "providers": [{"id": "p1", "api": "dashscope-aigc",
-                               "kinds": ["image", "tts"], "has_api_key": True}],
+                "configured": True,
+                "error": "",
+                "providers": [
+                    {
+                        "id": "p1",
+                        "api": "dashscope-aigc",
+                        "kinds": ["image", "tts"],
+                        "has_api_key": True,
+                    }
+                ],
                 "calls": [
-                    {"provider": "p1", "kind": "image", "model": "wanx-v1",
-                     "ok": False, "age_s": 30.0, "message": "403 not purchased"},
-                    {"provider": "p1", "kind": "tts", "model": "cosyvoice",
-                     "ok": True, "age_s": 30.0, "message": ""},
+                    {
+                        "provider": "p1",
+                        "kind": "image",
+                        "model": "wanx-v1",
+                        "ok": False,
+                        "age_s": 30.0,
+                        "message": "403 not purchased",
+                    },
+                    {
+                        "provider": "p1",
+                        "kind": "tts",
+                        "model": "cosyvoice",
+                        "ok": True,
+                        "age_s": 30.0,
+                        "message": "",
+                    },
                 ],
             }
             client = MagicMock()
             client.call_tool = AsyncMock(return_value=json.dumps(payload))
             result = await check_media(client=client)
 
-            assert any(e["level"] == "warning" and "image/wanx-v1" in e["value"]
-                       for e in result)
-            assert any(e["level"] == "ok" and "tts/cosyvoice" in e["value"]
-                       and "OK" in e["value"] for e in result)
+            assert any(
+                e["level"] == "warning" and "image/wanx-v1" in e["value"]
+                for e in result
+            )
+            assert any(
+                e["level"] == "ok"
+                and "tts/cosyvoice" in e["value"]
+                and "OK" in e["value"]
+                for e in result
+            )
 
     @pytest.mark.asyncio
     async def test_provider_without_a_key_warns_with_the_remedy(self):
@@ -1661,9 +2121,16 @@ class TestCheckMedia:
             return_value=MagicMock(is_empty=MagicMock(return_value=False)),
         ):
             payload = {
-                "configured": True, "error": "",
-                "providers": [{"id": "p1", "api": "openai-images",
-                               "kinds": ["image"], "has_api_key": False}],
+                "configured": True,
+                "error": "",
+                "providers": [
+                    {
+                        "id": "p1",
+                        "api": "openai-images",
+                        "kinds": ["image"],
+                        "has_api_key": False,
+                    }
+                ],
             }
             client = MagicMock()
             client.call_tool = AsyncMock(return_value=json.dumps(payload))
@@ -1686,9 +2153,11 @@ class TestCheckJobCoding:
     @pytest.mark.asyncio
     async def test_probes_plugin_facts(self):
         payload = {
-            "jobs_dir": r"C:\jobs", "jobs": 2,
+            "jobs_dir": r"C:\jobs",
+            "jobs": 2,
             "job_names": ["summarize", "translate"],
-            "llm_model": "scnet/DeepSeek-V4-Flash-0731", "error": "",
+            "llm_model": "scnet/DeepSeek-V4-Flash-0731",
+            "error": "",
             "mcp_gateway": {"port": 1234, "source": "env"},
         }
         client = MagicMock()
@@ -1704,13 +2173,20 @@ class TestCheckJobCoding:
         assert jobs["level"] == "ok"
         assert jobs["value"] == "2 (summarize, translate)"
         model = next(e for e in result if e["key"] == "llm_model")
-        assert model["level"] == "ok" and model["value"] == "scnet/DeepSeek-V4-Flash-0731"
+        assert (
+            model["level"] == "ok" and model["value"] == "scnet/DeepSeek-V4-Flash-0731"
+        )
         assert "hint" not in model
 
     @pytest.mark.asyncio
     async def test_unresolved_llm_warns(self):
-        payload = {"jobs_dir": r"C:\jobs", "jobs": 0, "job_names": [],
-                   "llm_model": "unconfigured", "error": ""}
+        payload = {
+            "jobs_dir": r"C:\jobs",
+            "jobs": 0,
+            "job_names": [],
+            "llm_model": "unconfigured",
+            "error": "",
+        }
         client = MagicMock()
         client.call_tool = AsyncMock(return_value=json.dumps(payload))
         result = await check_job_coding(client=client)
@@ -1726,9 +2202,14 @@ class TestCheckJobCoding:
         check used to warn here on every fresh session and prescribe "re-run
         system_health shortly", which no probe could ever clear (the probe
         never connects)."""
-        payload = {"jobs_dir": r"C:\jobs", "jobs": 1, "job_names": ["x"],
-                   "llm_model": "m", "error": "",
-                   "mcp_gateway": {"port": 1, "source": "env"}}
+        payload = {
+            "jobs_dir": r"C:\jobs",
+            "jobs": 1,
+            "job_names": ["x"],
+            "llm_model": "m",
+            "error": "",
+            "mcp_gateway": {"port": 1, "source": "env"},
+        }
         client = MagicMock()
         client.call_tool = AsyncMock(return_value=json.dumps(payload))
         result = await check_job_coding(client=client)
@@ -1741,9 +2222,14 @@ class TestCheckJobCoding:
     async def test_no_gateway_port_is_the_failure(self):
         """Without a port every ``mcp.call`` fails — the one state worth a
         warning, and the fact the probe can actually distinguish."""
-        payload = {"jobs_dir": r"C:\jobs", "jobs": 1, "job_names": ["x"],
-                   "llm_model": "m", "error": "",
-                   "mcp_gateway": {"port": None, "source": "", "connected": False}}
+        payload = {
+            "jobs_dir": r"C:\jobs",
+            "jobs": 1,
+            "job_names": ["x"],
+            "llm_model": "m",
+            "error": "",
+            "mcp_gateway": {"port": None, "source": "", "connected": False},
+        }
         client = MagicMock()
         client.call_tool = AsyncMock(return_value=json.dumps(payload))
         result = await check_job_coding(client=client)
@@ -1754,8 +2240,13 @@ class TestCheckJobCoding:
 
     @pytest.mark.asyncio
     async def test_jobs_dir_is_named_when_there_are_no_jobs(self):
-        payload = {"jobs_dir": r"C:\jobs", "jobs": 0, "job_names": [],
-                   "llm_model": "m", "error": ""}
+        payload = {
+            "jobs_dir": r"C:\jobs",
+            "jobs": 0,
+            "job_names": [],
+            "llm_model": "m",
+            "error": "",
+        }
         client = MagicMock()
         client.call_tool = AsyncMock(return_value=json.dumps(payload))
         result = await check_job_coding(client=client)
@@ -1768,11 +2259,20 @@ class TestCheckToolCatalog:
     """Tests for check_tool_catalog() — the tools.db exam (a gap: the catalog
     is the single source of truth for tools and was never checked)."""
 
-    _FACTS = {
-        "tools": 1538, "servers": 19, "loaded": 12,
-        "semantic": {"configured": True, "available": True,
-                     "semantic_ready": True, "state": "ready", "reason": "",
-                     "model": "BAAI/bge-m3", "dimension": 1024, "unembedded": 0},
+    _FACTS: ClassVar[dict] = {
+        "tools": 1538,
+        "servers": 19,
+        "loaded": 12,
+        "semantic": {
+            "configured": True,
+            "available": True,
+            "semantic_ready": True,
+            "state": "ready",
+            "reason": "",
+            "model": "BAAI/bge-m3",
+            "dimension": 1024,
+            "unembedded": 0,
+        },
     }
 
     @pytest.mark.asyncio
@@ -1792,8 +2292,10 @@ class TestCheckToolCatalog:
     @pytest.mark.asyncio
     async def test_facts_are_interpreted(self):
         ctx = MagicMock(catalog=MagicMock())
-        with patch("slife.mcp.host_server._host_catalog_facts",
-                   AsyncMock(return_value=self._FACTS)):
+        with patch(
+            "slife.mcp.host_server._host_catalog_facts",
+            AsyncMock(return_value=self._FACTS),
+        ):
             entries = await check_tool_catalog(ctx=ctx)
         keys = {e["key"] for e in entries}
         assert keys == {"db", "semantic"}
@@ -1811,8 +2313,10 @@ class TestCheckToolCatalog:
     @pytest.mark.asyncio
     async def test_broken_catalog_reports_the_reason(self):
         ctx = MagicMock(catalog=MagicMock())
-        with patch("slife.mcp.host_server._host_catalog_facts",
-                   AsyncMock(return_value={"error": "catalog probe failed: disk"})):
+        with patch(
+            "slife.mcp.host_server._host_catalog_facts",
+            AsyncMock(return_value={"error": "catalog probe failed: disk"}),
+        ):
             entries = await check_tool_catalog(ctx=ctx)
         assert entries[0]["level"] == "warning"
         assert entries[0]["value"] == "probe failed"
@@ -1833,29 +2337,76 @@ class TestOkEntriesCarryNoHint:
         import slife.tools.system as system_mod
 
         cases = [
-            ("check_memdb", {
-                "db": {"exists": True, "size_mb": 1.0, "path": "slife.db"},
-                "semantic": {"configured": True, "available": True,
-                             "semantic_ready": True, "state": "ready",
-                             "reason": "", "model": "m", "dimension": 3,
-                             "unembedded": 0},
-            }),
-            ("check_memfiles", {"ok": True, "connected": True, "state": "ready",
-                                "semantic_ready": True, "unembedded": 0,
-                                "reason": ""}),
-            ("check_sharefile", {"active": True, "state": "active",
-                                 "url": "https://x", "reason": "",
-                                 "provider": "ngrok"}),
-            ("check_a2a", {"enabled": True, "connected": True, "agent_name": "a",
-                           "status": "idle", "broker": "b", "peers": [],
-                           "queued": {}}),
-            ("check_media", {"configured": True, "error": "",
-                             "providers": [{"id": "p", "api": "x",
-                                            "kinds": ["image"],
-                                            "has_api_key": True}]}),
-            ("check_job_coding", {"jobs_dir": "d", "jobs": 1, "job_names": ["j"],
-                                  "llm_model": "m", "error": "",
-                                  "mcp_gateway": {"port": 1, "connected": True}}),
+            (
+                "check_memdb",
+                {
+                    "db": {"exists": True, "size_mb": 1.0, "path": "slife.db"},
+                    "semantic": {
+                        "configured": True,
+                        "available": True,
+                        "semantic_ready": True,
+                        "state": "ready",
+                        "reason": "",
+                        "model": "m",
+                        "dimension": 3,
+                        "unembedded": 0,
+                    },
+                },
+            ),
+            (
+                "check_memfiles",
+                {
+                    "ok": True,
+                    "connected": True,
+                    "state": "ready",
+                    "semantic_ready": True,
+                    "unembedded": 0,
+                    "reason": "",
+                },
+            ),
+            (
+                "check_sharefile",
+                {
+                    "active": True,
+                    "state": "active",
+                    "url": "https://x",
+                    "reason": "",
+                    "provider": "ngrok",
+                },
+            ),
+            (
+                "check_a2a",
+                {
+                    "enabled": True,
+                    "connected": True,
+                    "agent_name": "a",
+                    "status": "idle",
+                    "broker": "b",
+                    "peers": [],
+                    "queued": {},
+                },
+            ),
+            (
+                "check_media",
+                {
+                    "configured": True,
+                    "error": "",
+                    "providers": [
+                        {"id": "p", "api": "x", "kinds": ["image"], "has_api_key": True}
+                    ],
+                },
+            ),
+            (
+                "check_job_coding",
+                {
+                    "jobs_dir": "d",
+                    "jobs": 1,
+                    "job_names": ["j"],
+                    "llm_model": "m",
+                    "error": "",
+                    "mcp_gateway": {"port": 1, "connected": True},
+                },
+            ),
         ]
         for name, payload in cases:
             client = MagicMock()
@@ -1872,8 +2423,10 @@ class TestOkEntriesCarryNoHint:
     async def test_media_and_watchdog_placeholders_are_hintless(self):
         import slife.tools.system as system_mod
 
-        with patch("slife.plugins.media.config.load_media_config",
-                   return_value=MagicMock(is_empty=MagicMock(return_value=True))):
+        with patch(
+            "slife.plugins.media.config.load_media_config",
+            return_value=MagicMock(is_empty=MagicMock(return_value=True)),
+        ):
             entries = await system_mod.check_media()
         assert entries[0]["level"] == "ok" and not entries[0].get("hint")
 
@@ -1909,10 +2462,19 @@ class TestCheckLocalEmbed:
 
     @pytest.mark.asyncio
     async def test_a_loaded_model_is_ok(self):
-        client = self._client({"models": [
-            {"name": "bge-m3", "backend": "gguf", "dimension": 1024,
-             "loaded": True, "available": True},
-        ]})
+        client = self._client(
+            {
+                "models": [
+                    {
+                        "name": "bge-m3",
+                        "backend": "gguf",
+                        "dimension": 1024,
+                        "loaded": True,
+                        "available": True,
+                    },
+                ]
+            }
+        )
         entries = await check_local_embed(client=client)
         assert entries[0]["key"] == "bge-m3"
         assert entries[0]["level"] == "ok"
@@ -1920,20 +2482,36 @@ class TestCheckLocalEmbed:
 
     @pytest.mark.asyncio
     async def test_a_model_that_loads_on_demand_is_not_a_problem(self):
-        client = self._client({"models": [
-            {"name": "bge-m3", "backend": "gguf", "loaded": False,
-             "available": True},
-        ]})
+        client = self._client(
+            {
+                "models": [
+                    {
+                        "name": "bge-m3",
+                        "backend": "gguf",
+                        "loaded": False,
+                        "available": True,
+                    },
+                ]
+            }
+        )
         entries = await check_local_embed(client=client)
         assert entries[0]["level"] == "info"
         assert entries[0]["value"] == "not loaded"
 
     @pytest.mark.asyncio
     async def test_a_missing_backend_is_a_warning_with_the_remedy(self):
-        client = self._client({"models": [
-            {"name": "bge-m3", "backend": "llama-cpp", "loaded": False,
-             "available": False},
-        ]})
+        client = self._client(
+            {
+                "models": [
+                    {
+                        "name": "bge-m3",
+                        "backend": "llama-cpp",
+                        "loaded": False,
+                        "available": False,
+                    },
+                ]
+            }
+        )
         entries = await check_local_embed(client=client)
         assert entries[0]["level"] == "warning"
         assert "backend unavailable" in entries[0]["value"]
@@ -1961,34 +2539,58 @@ class TestInactiveCloudProviderIsLeftAlone:
 
     @pytest.mark.asyncio
     async def test_an_inactive_cloud_provider_gets_no_line(self):
-        cfg = {"providers": {
-            "siliconflow": {"base_url": "https://api.siliconflow.cn/v1",
-                            "model": "BAAI/bge-m3", "api_key": ""},
-            "other-cloud": {"base_url": "https://api.example.com/v1",
-                            "model": "m", "api_key": ""},
-        }, "active_model": "siliconflow"}
+        cfg = {
+            "providers": {
+                "siliconflow": {
+                    "base_url": "https://api.siliconflow.cn/v1",
+                    "model": "BAAI/bge-m3",
+                    "api_key": "",
+                },
+                "other-cloud": {
+                    "base_url": "https://api.example.com/v1",
+                    "model": "m",
+                    "api_key": "",
+                },
+            },
+            "active_model": "siliconflow",
+        }
 
         class _Resp:
             def raise_for_status(self):
                 pass
+
             def json(self):
                 return {"data": [{"id": "BAAI/bge-m3"}]}
 
         class _Fake:
             def __init__(self, *a, **k):
                 pass
+
             async def __aenter__(self):
                 return self
+
             async def __aexit__(self, *a):
                 return False
+
             async def get(self, url, headers=None):
                 return _Resp()
 
-        with patch("slife.plugins.memdb.embedding_config.get_active_endpoint",
-                   return_value={"provider": "siliconflow",
-                                 "base_url": "https://api.siliconflow.cn/v1",
-                                 "api_key": "", "model": "BAAI/bge-m3"}),              patch("slife.plugins.memdb.embedding_config.read_embedding_config",
-                   return_value=cfg),              patch("slife.tools.system.httpx2.AsyncClient", _Fake):
+        with (
+            patch(
+                "slife.plugins.memdb.embedding_config.get_active_endpoint",
+                return_value={
+                    "provider": "siliconflow",
+                    "base_url": "https://api.siliconflow.cn/v1",
+                    "api_key": "",
+                    "model": "BAAI/bge-m3",
+                },
+            ),
+            patch(
+                "slife.plugins.memdb.embedding_config.read_embedding_config",
+                return_value=cfg,
+            ),
+            patch("slife.tools.system.httpx2.AsyncClient", _Fake),
+        ):
             entries = await check_embeddings()
         assert {e["key"] for e in entries} == {"siliconflow"}
 
@@ -2005,11 +2607,18 @@ class TestSemanticFacts:
         search too, and reporting it as merely "maintained by the main
         process" was the one place a child read healthier than reality.
         """
-        level, value, hint = _semantic_facts({
-            "configured": True, "available": True, "semantic_ready": False,
-            "state": "stalled", "reason": "embedder failed repeatedly",
-            "model": "BAAI/bge-m3", "dimension": 1024, "unembedded": 7,
-        })
+        level, value, hint = _semantic_facts(
+            {
+                "configured": True,
+                "available": True,
+                "semantic_ready": False,
+                "state": "stalled",
+                "reason": "embedder failed repeatedly",
+                "model": "BAAI/bge-m3",
+                "dimension": 1024,
+                "unembedded": 7,
+            }
+        )
         assert level == "warning"
         assert value.startswith("stalled (7 items pending")
         assert hint == ""
@@ -2019,11 +2628,13 @@ class TestSemanticFacts:
         fix is the Python, not the config.  Reported with the reason the store
         recorded plus the way out, because "unavailable" alone sends a reader
         to the embeddings config, which is not the problem."""
-        level, value, hint = _semantic_facts({
-            "vec_available": False,
-            "vec_reason": "this Python's sqlite3 cannot load extensions "
-                          "(no enable_load_extension)",
-        })
+        level, value, hint = _semantic_facts(
+            {
+                "vec_available": False,
+                "vec_reason": "this Python's sqlite3 cannot load extensions "
+                "(no enable_load_extension)",
+            }
+        )
         assert level == "warning"
         assert "no enable_load_extension" in value
         assert "--enable-loadable-sqlite-extensions" in hint
@@ -2037,9 +2648,12 @@ class TestSemanticFacts:
         assert value == "no drainer has published state"
 
     def test_a_measured_width_is_reported(self):
-        assert _semantic_facts(
-            {"semantic_ready": True, "model": "BAAI/bge-m3", "dimension": 1024}
-        )[1] == "ready (BAAI/bge-m3, dim=1024)"
+        assert (
+            _semantic_facts(
+                {"semantic_ready": True, "model": "BAAI/bge-m3", "dimension": 1024}
+            )[1]
+            == "ready (BAAI/bge-m3, dim=1024)"
+        )
 
     def test_an_unmeasured_width_is_not_reported_as_zero(self):
         """Each index has its own embedder, so only the one that has probed

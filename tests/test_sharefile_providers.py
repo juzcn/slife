@@ -139,12 +139,14 @@ CF_UNREGISTERED = (
 #: connector set scraped from the output still looks complete while the edge
 #: answers HTTP 530 to every request for the published hostname.
 CF_SERVE_ERROR = (
-    "2026-09-10T20:00:30Z ERR Serve tunnel error error=\"datagram manager "
-    "error: timeout: no recent network activity\" connIndex=0 event=0\n"
+    '2026-09-10T20:00:30Z ERR Serve tunnel error error="datagram manager '
+    'error: timeout: no recent network activity" connIndex=0 event=0\n'
 )
 
 #: The loopback metrics API the child announces before it registers.
-CF_METRICS = "2026-09-10T20:00:00Z INF Starting metrics server on 127.0.0.1:20241/metrics\n"
+CF_METRICS = (
+    "2026-09-10T20:00:00Z INF Starting metrics server on 127.0.0.1:20241/metrics\n"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -193,13 +195,24 @@ class TestCreateProvider:
 class TestLocalhostRunUrlParsing:
     def test_extracts_the_url_after_the_marker(self):
         line = "0b1c8d2351fa97.lhr.life tunneled with tls termination, https://0b1c8d2351fa97.lhr.life\n"
-        assert providers.LocalhostRunTunnel()._parse_url(line) == "https://0b1c8d2351fa97.lhr.life"
+        assert (
+            providers.LocalhostRunTunnel()._parse_url(line)
+            == "https://0b1c8d2351fa97.lhr.life"
+        )
 
     def test_ignores_the_anonymous_banner(self):
-        assert providers.LocalhostRunTunnel()._parse_url("authenticated as anonymous user\n") is None
+        assert (
+            providers.LocalhostRunTunnel()._parse_url(
+                "authenticated as anonymous user\n"
+            )
+            is None
+        )
 
     def test_ignores_unrelated_output(self):
-        assert providers.LocalhostRunTunnel()._parse_url("Warning: Permanently added\n") is None
+        assert (
+            providers.LocalhostRunTunnel()._parse_url("Warning: Permanently added\n")
+            is None
+        )
 
     def test_strips_a_trailing_slash(self):
         line = "x.lhr.life tunneled with tls termination, https://x.lhr.life/\n"
@@ -254,7 +267,8 @@ class TestCloudflareReadiness:
 
     def test_the_url_publishes_once_a_connector_registers(self, monkeypatch):
         _install_fake_popen(
-            monkeypatch, lambda: _LinesStdout([CF_BANNER, CF_REGISTERED]),
+            monkeypatch,
+            lambda: _LinesStdout([CF_BANNER, CF_REGISTERED]),
         )
         tunnel = providers.CloudflareQuickTunnel()
         try:
@@ -289,7 +303,9 @@ class TestCloudflareReadiness:
     def test_localhost_run_needs_no_registration_vocabulary(self, monkeypatch):
         """Its hostname can only be printed once the forward is up, so the
         base contract still publishes on the URL alone."""
-        _install_fake_popen(monkeypatch, lambda: _LinesStdout([_lhr_line("a.lhr.life")]))
+        _install_fake_popen(
+            monkeypatch, lambda: _LinesStdout([_lhr_line("a.lhr.life")])
+        )
         tunnel = providers.LocalhostRunTunnel()
         try:
             assert tunnel.start(8080) == "https://a.lhr.life"
@@ -314,7 +330,7 @@ class TestEdgeViaProxy:
         name, so a non-public edge address is the proxy's, not a host's.  The
         fact is measured from the resolver, so it is stated here rather than
         left to whatever DNS the test machine has."""
-        import slife.net as net
+        from slife import net
 
         monkeypatch.setattr(net, "resolver_uses_fake_ip", lambda: True)
 
@@ -345,7 +361,7 @@ class TestEdgeViaProxy:
         assert tunnel.edge_via_proxy is False
 
     def test_an_unobserved_edge_is_not_flagged(self):
-        """"" means "not observed", never "fine" — and must not read as a
+        """ "" means "not observed", never "fine" — and must not read as a
         proxy interception on a provider that publishes no such line."""
         assert providers.CloudflareQuickTunnel().edge_via_proxy is False
 
@@ -378,7 +394,7 @@ class TestCloudflareLiveness:
         tunnel._read_output(proc)
 
         assert tunnel._registered == {"0"}  # the child's prose still claims it…
-        assert tunnel.is_alive() is False   # …the transport says it is gone
+        assert tunnel.is_alive() is False  # …the transport says it is gone
 
     def test_a_healthy_transport_reads_as_alive(self, monkeypatch):
         tunnel = providers.CloudflareQuickTunnel()
@@ -483,8 +499,8 @@ class TestIsReachable:
         tunnel._public_url = "https://x.trycloudflare.com"
         monkeypatch.setattr(tunnel, "is_alive", lambda: False)
 
-        assert tunnel.is_active is True    # the URL is still published…
-        assert tunnel.is_reachable() is False   # …and nothing is behind it
+        assert tunnel.is_active is True  # the URL is still published…
+        assert tunnel.is_reachable() is False  # …and nothing is behind it
 
     def test_a_broken_probe_never_refuses_a_share(self, monkeypatch):
         """Refusing on a probe that cannot answer would turn a broken probe
@@ -508,7 +524,12 @@ class TestCloudflareUrlParsing:
         assert url == "https://random-words-here.trycloudflare.com"
 
     def test_ignores_other_lines(self):
-        assert providers.CloudflareQuickTunnel()._parse_url("INF Requesting new quick Tunnel\n") is None
+        assert (
+            providers.CloudflareQuickTunnel()._parse_url(
+                "INF Requesting new quick Tunnel\n"
+            )
+            is None
+        )
 
     def test_ignores_a_non_quicktunnel_host(self):
         line = "INF |  https://dashboard.cloudflare.com  |\n"
@@ -522,10 +543,12 @@ class TestStart:
     def test_parses_the_url_and_publishes_it(self, monkeypatch):
         _install_fake_popen(
             monkeypatch,
-            _LinesStdout([
-                "authenticated as anonymous user\n",
-                _lhr_line("0b1c8d2351fa97.lhr.life"),
-            ]),
+            _LinesStdout(
+                [
+                    "authenticated as anonymous user\n",
+                    _lhr_line("0b1c8d2351fa97.lhr.life"),
+                ]
+            ),
         )
         tunnel = providers.LocalhostRunTunnel({"host": "localhost.run"})
         url = tunnel.start(8080)
@@ -537,7 +560,9 @@ class TestStart:
         assert tunnel.status() == {"state": "active", "url": url}
 
     def test_second_start_reuses_the_live_tunnel(self, monkeypatch):
-        captured = _install_fake_popen(monkeypatch, _LinesStdout([_lhr_line("a.lhr.life")]))
+        captured = _install_fake_popen(
+            monkeypatch, _LinesStdout([_lhr_line("a.lhr.life")])
+        )
         tunnel = providers.LocalhostRunTunnel()
         first = tunnel.start(8080)
         assert tunnel.start(8080) == first
@@ -585,7 +610,9 @@ class TestStart:
 
 class TestLocalhostRunArgv:
     def test_non_interactive_and_forwards_the_port(self, monkeypatch):
-        captured = _install_fake_popen(monkeypatch, _LinesStdout([_lhr_line("a.lhr.life")]))
+        captured = _install_fake_popen(
+            monkeypatch, _LinesStdout([_lhr_line("a.lhr.life")])
+        )
         providers.LocalhostRunTunnel({"remote_port": 80}).start(8080)
 
         argv = captured[0][0]
@@ -598,17 +625,23 @@ class TestLocalhostRunArgv:
         assert "-T" in argv  # no pseudo-tty — stdout stays line-oriented
 
     def test_binary_option_is_honoured(self, monkeypatch):
-        captured = _install_fake_popen(monkeypatch, _LinesStdout([_lhr_line("a.lhr.life")]))
+        captured = _install_fake_popen(
+            monkeypatch, _LinesStdout([_lhr_line("a.lhr.life")])
+        )
         providers.LocalhostRunTunnel({"binary": "/opt/ssh"}).start(8080)
         assert captured[0][0][0] == "/opt/ssh"
 
     def test_default_binary_is_ssh(self, monkeypatch):
-        captured = _install_fake_popen(monkeypatch, _LinesStdout([_lhr_line("a.lhr.life")]))
+        captured = _install_fake_popen(
+            monkeypatch, _LinesStdout([_lhr_line("a.lhr.life")])
+        )
         providers.LocalhostRunTunnel().start(8080)
         assert captured[0][0][0] == "ssh"
 
     def test_ssh_key_is_accepted_as_a_synonym_for_binary(self, monkeypatch):
-        captured = _install_fake_popen(monkeypatch, _LinesStdout([_lhr_line("a.lhr.life")]))
+        captured = _install_fake_popen(
+            monkeypatch, _LinesStdout([_lhr_line("a.lhr.life")])
+        )
         providers.LocalhostRunTunnel({"ssh": "/opt/ssh"}).start(8080)
         assert captured[0][0][0] == "/opt/ssh"
 
@@ -616,7 +649,8 @@ class TestLocalhostRunArgv:
 class TestCloudflareArgv:
     def test_runs_the_quick_tunnel_for_the_local_port(self, monkeypatch):
         captured = _install_fake_popen(
-            monkeypatch, _LinesStdout([CF_BANNER, CF_REGISTERED]),
+            monkeypatch,
+            _LinesStdout([CF_BANNER, CF_REGISTERED]),
         )
         url = providers.CloudflareQuickTunnel().start(8080)
 
@@ -632,7 +666,8 @@ class TestCloudflareArgv:
         or TUN adapter — it registers, then loses the connection repeatedly,
         and the published URL answers 530 in between.  http2 rides TCP."""
         captured = _install_fake_popen(
-            monkeypatch, _LinesStdout([CF_BANNER, CF_REGISTERED]),
+            monkeypatch,
+            _LinesStdout([CF_BANNER, CF_REGISTERED]),
         )
         providers.CloudflareQuickTunnel().start(8080)
 
@@ -641,7 +676,8 @@ class TestCloudflareArgv:
 
     def test_protocol_option_is_honoured(self, monkeypatch):
         captured = _install_fake_popen(
-            monkeypatch, _LinesStdout([CF_BANNER, CF_REGISTERED]),
+            monkeypatch,
+            _LinesStdout([CF_BANNER, CF_REGISTERED]),
         )
         providers.CloudflareQuickTunnel({"protocol": "quic"}).start(8080)
 

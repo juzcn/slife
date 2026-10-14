@@ -1,9 +1,11 @@
 """Scheduled-task LLM-tool validation (A9) — cron + timezone are rejected at
 set time, never stored-enabled-and-silently-never-fired."""
 
-import pytest; pytestmark = pytest.mark.unit
+import pytest
 
 from slife.tools.schedule import ScheduledTaskSetTool
+
+pytestmark = pytest.mark.unit
 
 
 class TestScheduledTaskSetValidation:
@@ -28,7 +30,9 @@ class TestScheduledTaskSetValidation:
         loop."""
         tool = self._tool()
         r = await tool.execute(
-            name="daily", description="d", schedule="0 9 * * *",
+            name="daily",
+            description="d",
+            schedule="0 9 * * *",
             timezone="Not/AZone",
         )
         assert "invalid timezone" in r
@@ -53,7 +57,9 @@ class TestScheduledTaskSetValidation:
         tool = self._tool()
         for empty in ("", "   "):
             assert "description is required" in await tool.execute(
-                name="daily", description=empty, schedule="0 9 * * *",
+                name="daily",
+                description=empty,
+                schedule="0 9 * * *",
             )
 
     @pytest.mark.asyncio
@@ -64,6 +70,8 @@ class TestScheduledTaskSetValidation:
         unknown NAME is refused one layer up, by the registry."""
         tool = self._tool()
         r = await tool.execute(
-            name="daily", prompt="reply OK", schedule="0 9 * * *",
+            name="daily",
+            prompt="reply OK",
+            schedule="0 9 * * *",
         )
         assert "description is required" in r

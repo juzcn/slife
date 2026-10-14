@@ -130,23 +130,24 @@ import os
 import socket
 import sys
 import traceback
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING
 
 from fastmcp.server.middleware import Middleware
 from mcp.shared.subscriptions import ToolsListChanged
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.logfmt import (
-    SessionFormatter,
     FILE_LOG_FORMAT,
+    SessionFormatter,
     log_stamp,
     resolve_log_dir,
     set_session_id,
     silence_noisy_loggers,
 )
 from slife.paths import agent_name
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 # FastMCP rewrites its own logging when it is imported: it installs a rich
 # handler on its own loggers and resets their level.  This module is where it
@@ -268,11 +269,13 @@ def tools_changed_bus(server) -> "SubscriptionBus":
     inner = getattr(server, "_mcp_server", server)
     try:
         inner.add_request_handler(
-            "subscriptions/listen", SubscriptionsListenRequestParams, ListenHandler(bus),
+            "subscriptions/listen",
+            SubscriptionsListenRequestParams,
+            ListenHandler(bus),
         )
     except Exception:
         logger.debug("listen_handler_attach_failed", exc_info=True)
-    setattr(server, "_slife_subscriptions", bus)
+    server._slife_subscriptions = bus
     logger.debug("listen_handler_attached server=%s", getattr(server, "name", "?"))
     return bus
 
@@ -291,7 +294,9 @@ def request_tools_changed(notifier: "ToolsChangedNotifier") -> None:
 class _WarmAfterReady(Middleware):
     """Middleware that runs a background warm-up after the first tools/list."""
 
-    def __init__(self, factory: "Callable[[], Awaitable[None]]", delay: float, name: str):
+    def __init__(
+        self, factory: "Callable[[], Awaitable[None]]", delay: float, name: str
+    ):
         self._factory = factory
         self._delay = delay
         self._name = name
@@ -425,26 +430,32 @@ def install_uncaught_exception_cleanup() -> None:
     global _uncaught_cleanup_installed
     if _uncaught_cleanup_installed:
         return
+
     def _hook(exc_type, exc, tb) -> None:
         # Full traceback only into the session log FILE handler(s) (devs);
         # stderr gets the single actionable line the host relays.
         try:
             _tb = "".join(traceback.format_exception(exc_type, exc, tb))
-        except Exception:
+        except Exception:  # noqa: BLE001 — sys.excepthook safety net must never raise
             _tb = str(exc)
         try:
             _record = logging.LogRecord(
-                "plugin_fatal", logging.ERROR, "", 0,
-                "plugin_fatal: %s", (_tb,), None,
+                "plugin_fatal",
+                logging.ERROR,
+                "",
+                0,
+                "plugin_fatal: %s",
+                (_tb,),
+                None,
             )
             for _h in list(logging.getLogger().handlers):
                 if isinstance(_h, logging.FileHandler):
                     _h.emit(_record)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — sys.excepthook safety net must never raise
             pass
         try:
             print(f"[plugin] {exc_type.__name__}: {exc}", file=sys.stderr)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — sys.excepthook safety net must never raise
             pass
 
     sys.excepthook = _hook
@@ -464,7 +475,7 @@ def shutdown_server_logging() -> None:
         try:
             handler.flush()
             handler.close()
-        except Exception:
+        except (OSError, ValueError):
             pass
     _root.handlers.clear()
 
@@ -643,10 +654,13 @@ def run_plugin_server(
     _ready_callback = lambda: signal_port(port)
     try:
         if sockets:
-            logger.info("plugin_ready transport=streamable-http sockets=%d",
-                        len(sockets))
+            logger.info(
+                "plugin_ready transport=streamable-http sockets=%d", len(sockets)
+            )
             mcp_server.run(
-                transport="streamable-http", host=host, sockets=sockets,
+                transport="streamable-http",
+                host=host,
+                sockets=sockets,
                 show_banner=show_banner,
                 # SSE mode (NOT a single JSON body per POST): the modern
                 # era's change notifications ride a `subscriptions/listen`
@@ -659,9 +673,11 @@ def run_plugin_server(
         else:
             logger.info("plugin_ready transport=streamable-http port=%s", port)
             mcp_server.run(
-                transport="streamable-http", host=host, port=port,
+                transport="streamable-http",
+                host=host,
+                port=port,
                 show_banner=show_banner,
-                json_response=False,   # see the sockets branch above
+                json_response=False,  # see the sockets branch above
                 uvicorn_config={"log_config": None},
             )
     finally:

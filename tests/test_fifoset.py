@@ -5,10 +5,11 @@ set (cancelled tasks / late results / poll-mode task ids) could drop a
 just-added id while an old one survives.  FifoSet drops the OLDEST.
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
+import pytest
 
 from slife.fifoset import FifoSet
+
+pytestmark = pytest.mark.unit
 
 
 def test_plain_set_api_preserved():
@@ -43,11 +44,11 @@ def test_readd_is_noop_position():
     s = FifoSet(["a", "b", "c"])
     s.add("a")
     s.add("c")
-    s.add("b")          # b exists — no-op, keeps first-insert position
+    s.add("b")  # b exists — no-op, keeps first-insert position
     s.evict_to(2)
     assert s == {"b", "c"}  # oldest a evicted first; b never re-advanced
 
-    s.add("b")          # still no-op even after an eviction cycle
+    s.add("b")  # still no-op even after an eviction cycle
     s.add("x")
     s.evict_to(2)
     assert s == {"c", "x"}

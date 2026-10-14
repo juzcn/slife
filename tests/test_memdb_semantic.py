@@ -4,9 +4,6 @@ Covers the binary gate (only writer), blocking enable/disable, the
 event-driven index drainer (no polling), and the atomic batch commit.
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
 from collections import deque
 from itertools import cycle
@@ -17,12 +14,21 @@ import pytest
 from slife import timeouts as _t
 from slife.plugins.memdb.semantic import SemanticManager
 
+pytestmark = pytest.mark.unit
 
 _DEFAULT = object()  # sentinel: distinguish "no override" from "embed returns None"
 
 
-def _embedder(*, available=True, backend="api", model="bge-m3", dim=1024,
-              load_ok=True, embed_result=_DEFAULT, embed_sleep=0.0):
+def _embedder(
+    *,
+    available=True,
+    backend="api",
+    model="bge-m3",
+    dim=1024,
+    load_ok=True,
+    embed_result=_DEFAULT,
+    embed_sleep=0.0,
+):
     """A fake EmbeddingClient.
 
     ``embed_result=None`` means embed() returns None (a failing embedder);
@@ -50,8 +56,13 @@ def _embedder(*, available=True, backend="api", model="bge-m3", dim=1024,
 
 
 def _doc(**kw):
-    t = {"doc_id": 1, "text": "hello world",
-         "summary": "", "tags": "", "created_at": "2026-01-01T00:00:00+00:00"}
+    t = {
+        "doc_id": 1,
+        "text": "hello world",
+        "summary": "",
+        "tags": "",
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }
     t.update(kw)
     return t
 
@@ -101,7 +112,7 @@ class TestStatePublication:
                 raise RuntimeError("db down")
 
         m = _Broken(AsyncMock())
-        await m._set_state("ready")          # must not raise
+        await m._set_state("ready")  # must not raise
 
         assert m.state == "ready" and published == ["ready"]
 
@@ -113,8 +124,9 @@ class TestEnable:
         store.reconfigure_for_embedding = AsyncMock()
         m = SemanticManager(store)
         emb = _embedder()
-        with patch("slife.plugins.memdb.semantic.EmbeddingClient.from_config",
-                   return_value=emb):
+        with patch(
+            "slife.plugins.memdb.semantic.EmbeddingClient.from_config", return_value=emb
+        ):
             status = await m.enable()
 
         assert status["status"] == "ok"
@@ -131,8 +143,9 @@ class TestEnable:
         store = AsyncMock()
         m = SemanticManager(store)
         emb = _embedder(available=False)
-        with patch("slife.plugins.memdb.semantic.EmbeddingClient.from_config",
-                   return_value=emb):
+        with patch(
+            "slife.plugins.memdb.semantic.EmbeddingClient.from_config", return_value=emb
+        ):
             status = await m.enable()
 
         assert status["status"] == "degraded"
@@ -146,8 +159,9 @@ class TestEnable:
         store = AsyncMock()
         m = SemanticManager(store)
         emb = _embedder(load_ok=False)
-        with patch("slife.plugins.memdb.semantic.EmbeddingClient.from_config",
-                   return_value=emb):
+        with patch(
+            "slife.plugins.memdb.semantic.EmbeddingClient.from_config", return_value=emb
+        ):
             status = await m.enable()
 
         assert status["status"] == "degraded"
@@ -162,14 +176,16 @@ class TestEnable:
         store.reconfigure_for_embedding = AsyncMock()
         m = SemanticManager(store)
         emb = _embedder()
-        with patch("slife.plugins.memdb.semantic.EmbeddingClient.from_config",
-                   return_value=emb):
+        with patch(
+            "slife.plugins.memdb.semantic.EmbeddingClient.from_config", return_value=emb
+        ):
             await m.enable()
         first_task = m._drain_task
         assert first_task is not None
 
-        with patch("slife.plugins.memdb.semantic.EmbeddingClient.from_config",
-                   return_value=emb):
+        with patch(
+            "slife.plugins.memdb.semantic.EmbeddingClient.from_config", return_value=emb
+        ):
             await m.enable()
         assert m._drain_task is not None
         assert m._drain_task is not first_task  # replaced, not stacked
@@ -182,8 +198,9 @@ class TestDisable:
         store = AsyncMock()
         m = SemanticManager(store)
         emb = _embedder()
-        with patch("slife.plugins.memdb.semantic.EmbeddingClient.from_config",
-                   return_value=emb):
+        with patch(
+            "slife.plugins.memdb.semantic.EmbeddingClient.from_config", return_value=emb
+        ):
             await m.enable()
         assert m._drain_task is not None
 
@@ -230,8 +247,7 @@ class TestDrainerGate:
         # embed is paced (embed_sleep) so the drainer can't busy-spin and
         # balloon the mocks' call-records while we observe the state.
         store = AsyncMock()
-        store.count_unembedded = AsyncMock(
-            side_effect=lambda: next(cycle([1, 1, 1])))
+        store.count_unembedded = AsyncMock(side_effect=lambda: next(cycle([1, 1, 1])))
         store.get_unembedded_docs = AsyncMock(return_value=[_doc()])
         store.replace_embedding_chunks = AsyncMock()
         m = SemanticManager(store)
@@ -261,19 +277,23 @@ class TestDrainerGate:
         store = AsyncMock()
         store.count_unembedded = AsyncMock(side_effect=lambda: state["remaining"])
         store.get_unembedded_docs = AsyncMock(
-            side_effect=lambda limit=100: [_doc()] if state["remaining"] else [])
+            side_effect=lambda limit=100: [_doc()] if state["remaining"] else []
+        )
         store.replace_embedding_chunks = AsyncMock(
-            side_effect=lambda *a, **kw: state.__setitem__("remaining", 0))
+            side_effect=lambda *a, **kw: state.__setitem__("remaining", 0)
+        )
         m = SemanticManager(store)
         m._enabled = True
         m._embedder = _embedder(embed_result=None)  # embed fails persistently
 
-        with patch.object(_t.timeouts.ready, "watchdog_backoff_initial", 0.0), \
-                patch.object(_t.timeouts.ready, "watchdog_backoff_max", 0.0), \
-                patch("slife.plugins.memdb.semantic.MAX_REINDEX_NO_PROGRESS", 3):
+        with (
+            patch.object(_t.timeouts.ready, "watchdog_backoff_initial", 0.0),
+            patch.object(_t.timeouts.ready, "watchdog_backoff_max", 0.0),
+            patch("slife.plugins.memdb.semantic.MAX_REINDEX_NO_PROGRESS", 3),
+        ):
             m._drain_task = asyncio.create_task(m._drain_loop())
             try:
-                for _ in range(200):          # burn the budget → stall
+                for _ in range(200):  # burn the budget → stall
                     await asyncio.sleep(0.005)
                     if m.state == "stalled":
                         break
@@ -313,11 +333,13 @@ class TestDrainerGate:
         store.get_unembedded_docs = AsyncMock(return_value=[_doc()])
         m = SemanticManager(store)
         m._enabled = True
-        m._embedder = None                     # nothing to embed with
+        m._embedder = None  # nothing to embed with
 
-        with patch.object(_t.timeouts.ready, "watchdog_backoff_initial", 0.0), \
-                patch.object(_t.timeouts.ready, "watchdog_backoff_max", 0.0), \
-                patch("slife.plugins.memdb.semantic.MAX_REINDEX_NO_PROGRESS", 3):
+        with (
+            patch.object(_t.timeouts.ready, "watchdog_backoff_initial", 0.0),
+            patch.object(_t.timeouts.ready, "watchdog_backoff_max", 0.0),
+            patch("slife.plugins.memdb.semantic.MAX_REINDEX_NO_PROGRESS", 3),
+        ):
             m._drain_task = asyncio.create_task(m._drain_loop())
             try:
                 for _ in range(200):
@@ -342,15 +364,17 @@ class TestDrainerGate:
         m = SemanticManager(AsyncMock())
         fake = MagicMock()
         fake.sleep = AsyncMock()
-        with patch("slife.plugins.memdb.semantic.asyncio", fake), \
-                patch.object(_t.timeouts.ready, "watchdog_backoff_multiplier", 2.0), \
-                patch.object(_t.timeouts.ready, "watchdog_backoff_max", 5.0):
+        with (
+            patch("slife.plugins.memdb.semantic.asyncio", fake),
+            patch.object(_t.timeouts.ready, "watchdog_backoff_multiplier", 2.0),
+            patch.object(_t.timeouts.ready, "watchdog_backoff_max", 5.0),
+        ):
             b = await m._pace_retry(1.0)
             assert b == 2.0
             b = await m._pace_retry(b)
             assert b == 4.0
             b = await m._pace_retry(b)
-            assert b == 5.0                    # capped at the registry max
+            assert b == 5.0  # capped at the registry max
         assert [c.args[0] for c in fake.sleep.await_args_list] == [1.0, 2.0, 4.0]
 
 
@@ -358,9 +382,11 @@ class TestProcessBatch:
     @pytest.mark.asyncio
     async def test_counts_full_success_and_preserves_summary_tags(self):
         store = AsyncMock()
-        store.get_unembedded_docs = AsyncMock(return_value=[
-            _doc(doc_id=1, summary="s", tags="t"),
-        ])
+        store.get_unembedded_docs = AsyncMock(
+            return_value=[
+                _doc(doc_id=1, summary="s", tags="t"),
+            ]
+        )
         store.count_unembedded = AsyncMock(side_effect=[1, 0])
         store.replace_embedding_chunks = AsyncMock()
         m = SemanticManager(store)
@@ -403,5 +429,3 @@ class TestOnSaved:
         m._enabled = False
         m.on_saved()
         assert not m._work_event.is_set()
-
-

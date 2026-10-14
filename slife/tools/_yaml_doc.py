@@ -2,9 +2,9 @@
 
 ``write_config`` used to parse a config into a dict and dump the dict back,
 which silently deleted every comment in the file.  For slife's configs that is
-most of their value: ``sharefile.yaml`` is 77% comments, ``local_embed.yaml``
-65% — they document ``enabled`` / ``autoload`` and each section's meaning for a
-human hand-editing them.
+most of their value: ``sharefile.yaml`` is 77% comments — they document
+``enabled`` / ``autoload`` and each section's meaning for a human
+hand-editing them.
 
 So a write now edits the **document**: the file's current text is loaded as a
 round-trip document, the difference from the incoming dict is applied to that
@@ -84,8 +84,11 @@ def _apply(doc, old: dict, new: dict) -> None:
         if old[key] == value:
             continue
         current = doc[key]
-        if (isinstance(value, dict) and isinstance(old[key], dict)
-                and isinstance(current, CommentedMap)):
+        if (
+            isinstance(value, dict)
+            and isinstance(old[key], dict)
+            and isinstance(current, CommentedMap)
+        ):
             _apply(current, old[key], value)
         else:
             # A list is replaced wholesale: element-wise identity is not
@@ -119,6 +122,6 @@ def render_document(current: str, new: dict) -> str:
                 # comment-losing fallback.
                 if yaml.load(edited) == yaml.load(render(new)):
                     return edited
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — comment-preserving YAML edit is best-effort; any failure falls back to a clean render
             pass
     return render(new)

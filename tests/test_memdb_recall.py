@@ -5,11 +5,16 @@ ordering contract and the override semantics are all testable without a store,
 a server or an embedding backend.
 """
 
-import pytest; pytestmark = pytest.mark.unit
+import pytest
 
 from slife.plugins.memdb.recall import (
-    RecallPolicy, fit_budget, fit_window, gate_turns,
+    RecallPolicy,
+    fit_budget,
+    fit_window,
+    gate_turns,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _hit(turn_id, similarity=None):

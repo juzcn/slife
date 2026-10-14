@@ -1,12 +1,10 @@
 """Tests for slife_memdb.search — merge_hybrid RRF algorithm."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import pytest
 
-from slife.plugins.memdb.search import annotate_scores, merge_hybrid, RRF_K
+from slife.plugins.memdb.search import RRF_K, annotate_scores, merge_hybrid
 
+pytestmark = pytest.mark.unit
 
 # ── merge_hybrid ─────────────────────────────────────────────────────────────
 
@@ -20,8 +18,20 @@ class TestMergeHybrid:
 
     def test_only_keyword_results(self):
         kw = [
-            {"turn_id": 1, "title": "Chat 1", "summary": "S1", "tags": "", "created_at": "2024-01-01"},
-            {"turn_id": 2, "title": "Chat 2", "summary": "S2", "tags": "", "created_at": "2024-01-02"},
+            {
+                "turn_id": 1,
+                "title": "Chat 1",
+                "summary": "S1",
+                "tags": "",
+                "created_at": "2024-01-01",
+            },
+            {
+                "turn_id": 2,
+                "title": "Chat 2",
+                "summary": "S2",
+                "tags": "",
+                "created_at": "2024-01-02",
+            },
         ]
         result = merge_hybrid(kw, [])
         assert len(result) == 2
@@ -32,7 +42,14 @@ class TestMergeHybrid:
 
     def test_only_semantic_results(self):
         sem = [
-            {"turn_id": 10, "title": "S Chat 1", "summary": "S1", "tags": "", "created_at": "2024-01-01", "distance": 0.1},
+            {
+                "turn_id": 10,
+                "title": "S Chat 1",
+                "summary": "S1",
+                "tags": "",
+                "created_at": "2024-01-01",
+                "distance": 0.1,
+            },
         ]
         result = merge_hybrid([], sem)
         assert len(result) == 1
@@ -43,10 +60,23 @@ class TestMergeHybrid:
 
     def test_merge_both_lists(self):
         kw = [
-            {"turn_id": 1, "title": "K1", "summary": "KS1", "tags": "", "created_at": "2024-01-01"},
+            {
+                "turn_id": 1,
+                "title": "K1",
+                "summary": "KS1",
+                "tags": "",
+                "created_at": "2024-01-01",
+            },
         ]
         sem = [
-            {"turn_id": 2, "title": "S1", "summary": "SS1", "tags": "", "created_at": "2024-01-02", "distance": 0.2},
+            {
+                "turn_id": 2,
+                "title": "S1",
+                "summary": "SS1",
+                "tags": "",
+                "created_at": "2024-01-02",
+                "distance": 0.2,
+            },
         ]
         result = merge_hybrid(kw, sem)
         assert len(result) == 2
@@ -56,11 +86,31 @@ class TestMergeHybrid:
     def test_same_item_in_both_boosted(self):
         """An item appearing in BOTH lists gets a higher RRF score."""
         kw = [
-            {"turn_id": 1, "title": "Important", "summary": "S", "tags": "", "created_at": "2024-01-01", "snippet": "match..."},
-            {"turn_id": 2, "title": "K only", "summary": "S", "tags": "", "created_at": "2024-01-02"},
+            {
+                "turn_id": 1,
+                "title": "Important",
+                "summary": "S",
+                "tags": "",
+                "created_at": "2024-01-01",
+                "snippet": "match...",
+            },
+            {
+                "turn_id": 2,
+                "title": "K only",
+                "summary": "S",
+                "tags": "",
+                "created_at": "2024-01-02",
+            },
         ]
         sem = [
-            {"turn_id": 1, "title": "Important", "summary": "S", "tags": "", "created_at": "2024-01-01", "distance": 0.05},
+            {
+                "turn_id": 1,
+                "title": "Important",
+                "summary": "S",
+                "tags": "",
+                "created_at": "2024-01-01",
+                "distance": 0.05,
+            },
         ]
         result = merge_hybrid(kw, sem)
         assert len(result) == 2
@@ -88,18 +138,29 @@ class TestMergeHybrid:
     def test_skips_items_without_turn_id(self):
         kw = [
             {"title": "no turn_id"},
-            {"turn_id": 1, "title": "has turn_id", "summary": "", "tags": "", "created_at": ""},
+            {
+                "turn_id": 1,
+                "title": "has turn_id",
+                "summary": "",
+                "tags": "",
+                "created_at": "",
+            },
         ]
         result = merge_hybrid(kw, [])
         assert len(result) == 1
         assert result[0]["turn_id"] == 1
 
     def test_info_populated_from_keyword(self):
-        kw = [{
-            "turn_id": 42, "user_message": "My Chat", "summary": "Great chat",
-            "tags": "ai,Slife", "created_at": "2024-06-01T10:00:00",
-            "snippet": "matched text...",
-        }]
+        kw = [
+            {
+                "turn_id": 42,
+                "user_message": "My Chat",
+                "summary": "Great chat",
+                "tags": "ai,Slife",
+                "created_at": "2024-06-01T10:00:00",
+                "snippet": "matched text...",
+            }
+        ]
         result = merge_hybrid(kw, [])
         r = result[0]
         assert r["user_message"] == "My Chat"
@@ -110,11 +171,16 @@ class TestMergeHybrid:
         assert r["distance"] is None
 
     def test_info_populated_from_semantic(self):
-        sem = [{
-            "turn_id": 7, "user_message": "Semantic", "summary": "Sem summary",
-            "tags": "sem", "created_at": "2024-07-01",
-            "distance": 0.123,
-        }]
+        sem = [
+            {
+                "turn_id": 7,
+                "user_message": "Semantic",
+                "summary": "Sem summary",
+                "tags": "sem",
+                "created_at": "2024-07-01",
+                "distance": 0.123,
+            }
+        ]
         result = merge_hybrid([], sem)
         r = result[0]
         assert r["user_message"] == "Semantic"

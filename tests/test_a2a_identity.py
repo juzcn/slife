@@ -1,18 +1,16 @@
 """Tests for slife.a2a.identity — AgentName, AgentMessage, HUMAN, WECHAT."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import pytest
 
 from slife.a2a.identity import (
-    AgentName,
-    AgentMessage,
-    Channel,
     HUMAN,
     WECHAT,
+    AgentMessage,
+    AgentName,
+    Channel,
 )
 
+pytestmark = pytest.mark.unit
 
 # ── AgentName ──────────────────────────────────────────────────────────────
 
@@ -89,6 +87,7 @@ class TestAgentMessage:
 
     def test_full_creation(self):
         """All fields can be set explicitly."""
+
         async def my_reply(text: str) -> None:
             pass
 
@@ -165,7 +164,9 @@ class TestChannel:
         """Subagent channel carries name/task_id/scheduled_task."""
         ch = Channel.subagent("w1", task_id="t9", scheduled_task="daily")
         assert ch.data == {
-            "name": "w1", "task_id": "t9", "scheduled_task": "daily",
+            "name": "w1",
+            "task_id": "t9",
+            "scheduled_task": "daily",
         }
 
     def test_display_prefixes(self):
@@ -191,14 +192,16 @@ class TestChannel:
         task name as the worker's (they were the same name then), so they
         restore under the prefix they were written with."""
         ch = Channel.from_db(
-            "subagent", {"name": "daily", "task_id": "t9", "scheduled": True},
+            "subagent",
+            {"name": "daily", "task_id": "t9", "scheduled": True},
         )
         assert ch.display_prefix() == "Subagent(daily)> "
 
     def test_to_db_a2a_keeps_peer_as_identity(self):
         """A2A identity stays the peer name (FTS-searchable), name in data."""
         assert Channel.a2a("Jack").to_db() == (
-            "Jack", {"agent_name": "Jack", "a2a": True},
+            "Jack",
+            {"agent_name": "Jack", "a2a": True},
         )
 
     def test_to_db_builtins(self):
@@ -224,9 +227,14 @@ class TestChannel:
 
     def test_from_db_round_trip(self):
         """to_db → from_db round-trips every kind unchanged."""
-        for ch in (Channel.human(), Channel.wechat(),
-                   Channel.heartbeat(), Channel.subagent("w1"),
-                   Channel.a2a("Jack"), Channel.system()):
+        for ch in (
+            Channel.human(),
+            Channel.wechat(),
+            Channel.heartbeat(),
+            Channel.subagent("w1"),
+            Channel.a2a("Jack"),
+            Channel.system(),
+        ):
             identity, data = ch.to_db()
             restored = Channel.from_db(identity, data)
             assert restored == ch

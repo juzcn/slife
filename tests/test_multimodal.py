@@ -1,20 +1,19 @@
 """Tests for slife.agent.multimodal — image URL generation for vision APIs."""
 
 import base64
-import pytest; pytestmark = pytest.mark.unit
-
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from slife.agent.multimodal import (
+    _ensure_mimetypes,
     include_image_url,
     include_image_urls,
     is_image_source,
-    _ensure_mimetypes,
 )
 
+pytestmark = pytest.mark.unit
 
 # ── _ensure_mimetypes ─────────────────────────────────────────────────
 
@@ -24,6 +23,7 @@ class TestEnsureMimetypes:
 
     def test_initializes_once(self):
         import mimetypes
+
         mimetypes.inited = False
         _ensure_mimetypes()
         assert mimetypes.inited is True
@@ -32,6 +32,7 @@ class TestEnsureMimetypes:
 
     def test_already_initialized_does_not_reinit(self):
         import mimetypes
+
         mimetypes.init()
         with patch.object(mimetypes, "init") as mock_init:
             _ensure_mimetypes()
@@ -80,7 +81,7 @@ class TestIncludeImageUrl:
         url = result["image_url"]["url"]
         assert url.startswith("data:image/png;base64,")
         # Verify the base64 payload decodes back to original.
-        encoded = url[len("data:image/png;base64,"):]
+        encoded = url[len("data:image/png;base64,") :]
         assert base64.b64decode(encoded) == data
 
     def test_jpg_detected_from_magic(self, tmp_path):
@@ -117,7 +118,9 @@ class TestIncludeImageUrl:
         img = tmp_path / "data.bin"
         img.write_bytes(b"binary stuff")
 
-        with patch("mimetypes.guess_type", return_value=("application/octet-stream", None)):
+        with patch(
+            "mimetypes.guess_type", return_value=("application/octet-stream", None)
+        ):
             result = include_image_url(img)
 
         assert result is not None
@@ -144,11 +147,13 @@ class TestIncludeImageUrls:
         img = tmp_path / "a.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
 
-        blocks, failed = include_image_urls([
-            str(img),
-            "https://example.com/b.png",
-            "data:image/png;base64,AAAA",
-        ])
+        blocks, failed = include_image_urls(
+            [
+                str(img),
+                "https://example.com/b.png",
+                "data:image/png;base64,AAAA",
+            ]
+        )
         assert failed == []
         assert len(blocks) == 3
         assert blocks[0]["type"] == "image_url"
@@ -160,10 +165,12 @@ class TestIncludeImageUrls:
         img = tmp_path / "a.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
 
-        blocks, failed = include_image_urls([
-            str(img),
-            str(tmp_path / "missing.png"),
-        ])
+        blocks, failed = include_image_urls(
+            [
+                str(img),
+                str(tmp_path / "missing.png"),
+            ]
+        )
         assert len(blocks) == 1
         assert failed == [str(tmp_path / "missing.png")]
 

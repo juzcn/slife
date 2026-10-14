@@ -27,9 +27,8 @@ import logging
 from typing import Any
 
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
-
-from slife.plugins.memdb.embeddings import EmbeddingClient
 from slife.plugins.memdb.embedding_config import read_embedding_config
+from slife.plugins.memdb.embeddings import EmbeddingClient
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +55,10 @@ def _backend_unavailable_reason(embedder: EmbeddingClient) -> str:
     """Human reason why the configured backend is unavailable."""
     backend = embedder._backend
     if backend == "api":
-        return ("api backend unavailable — base_url/api_key is missing or an "
-                "unresolved ${VAR} placeholder. Configure it with embeddings_model_set")
+        return (
+            "api backend unavailable — base_url/api_key is missing or an "
+            "unresolved ${VAR} placeholder. Configure it with embeddings_model_set"
+        )
     return "embedding backend not configured"
 
 
@@ -78,7 +79,7 @@ class SemanticManager:
         self._config_path = config_path
         self._embedder: EmbeddingClient | None = None
         self._semantic_ready = False
-        self._state = "disabled"   # disabled | loading | indexing | ready | stalled
+        self._state = "disabled"  # disabled | loading | indexing | ready | stalled
         self._reason = ""
         self._enabled = False
         self._drain_task: asyncio.Task | None = None
@@ -116,7 +117,7 @@ class SemanticManager:
             return
         try:
             await close()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — an embedder closing must not break the swap
             logger.debug("embedder_close_error err=%s", e)
 
     def _start_enabled(self) -> bool:
@@ -145,8 +146,10 @@ class SemanticManager:
         chunk and stall the drainer on a provider rejection.
         """
         from slife.plugins.memdb.store import (
-            _chunk_text, _split_chunks_to_token_limit,
+            _chunk_text,
+            _split_chunks_to_token_limit,
         )
+
         embed_text = doc["text"]
         if not embed_text.strip():
             logger.debug("reindex_skip_empty_text doc_id=%s", doc.get("doc_id"))
@@ -156,7 +159,9 @@ class SemanticManager:
         if not chunks:
             logger.debug(
                 "reindex_skip_unchunkable doc_id=%s len=%d max_tokens=%s",
-                doc.get("doc_id"), len(embed_text), embedder.max_tokens,
+                doc.get("doc_id"),
+                len(embed_text),
+                embedder.max_tokens,
             )
             return False
         # Embed one chunk per request.  A long document batched into a
@@ -190,7 +195,7 @@ class SemanticManager:
                 await self.disable()
         except asyncio.CancelledError:
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — startup must not fail on a semantic error
             logger.warning("semantic_start_error err=%s", e)
 
     async def enable(self) -> dict:
@@ -228,7 +233,8 @@ class SemanticManager:
             if not await embedder.load():
                 await self._set_state("stalled", "embedding model failed to load")
                 return self._status(
-                    status="degraded", message="Embedding model failed to load.",
+                    status="degraded",
+                    message="Embedding model failed to load.",
                 )
 
             await self._on_model_selected(embedder)
@@ -240,7 +246,9 @@ class SemanticManager:
             self._drain_task = asyncio.create_task(self._drain_loop())
             logger.info(
                 "semantic_enabled backend=%s model=%s dim=%d state=indexing",
-                embedder.backend, embedder._model, embedder.dimension,
+                embedder.backend,
+                embedder._model,
+                embedder.dimension,
             )
             return self._status(
                 status="ok",
@@ -262,7 +270,8 @@ class SemanticManager:
             await self._swap_embedder(None)
             logger.info("semantic_disabled")
             return self._status(
-                status="ok", message="Semantic search disabled. Keyword search still available.",
+                status="ok",
+                message="Semantic search disabled. Keyword search still available.",
             )
 
     def on_saved(self) -> None:
@@ -300,7 +309,7 @@ class SemanticManager:
     async def unembedded(self) -> int:
         try:
             return await self._store.count_unembedded()
-        except Exception:
+        except Exception:  # noqa: BLE001 — a store read degrades to 0, never raises
             return 0
 
     # ── internal ─────────────────────────────────────────────────────
@@ -330,8 +339,13 @@ class SemanticManager:
             "dimension": e.dimension if e is not None else 0,
         }
 
-    def _status(self, *, status: str = "ok", message: str = "",
-                embedder: EmbeddingClient | None = None) -> dict:
+    def _status(
+        self,
+        *,
+        status: str = "ok",
+        message: str = "",
+        embedder: EmbeddingClient | None = None,
+    ) -> dict:
         e = embedder if embedder is not None else self._embedder
         return {
             "status": status,
@@ -353,7 +367,7 @@ class SemanticManager:
                 await self._drain_task
             except asyncio.CancelledError:
                 pass
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — a drainer's own error is logged, not propagated
                 logger.debug("drainer_stop_error err=%s", e)
         self._drain_task = None
 
@@ -374,7 +388,7 @@ class SemanticManager:
         self._reason = reason
         try:
             await self._publish_state()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — publish is best-effort; state is already moved
             logger.debug("semantic_publish_failed state=%s err=%s", state, e)
 
     async def _publish_state(self) -> None:
@@ -429,7 +443,7 @@ class SemanticManager:
         while self._enabled:
             try:
                 unembedded = await self._store.count_unembedded()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — the drainer stalls instead of dying
                 logger.warning("drainer_aborted err=%s", e)
                 await self._enter_stall(f"semantic index unavailable: {e}")
                 if not await self._park_until_work():
@@ -464,7 +478,7 @@ class SemanticManager:
             await self._set_state("indexing", _DRAIN_INDEXING_REASON)
             try:
                 result = await self._process_batch()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — a batch error must not kill the drainer
                 # An unexpected error (e.g. a row whose messages JSON is
                 # malformed) must not kill the drainer task silently — count it
                 # as no-progress so the bound parks the loop loudly instead of
@@ -472,7 +486,8 @@ class SemanticManager:
                 self._no_progress += 1
                 logger.warning(
                     "drainer_batch_error no_progress=%d err=%s",
-                    self._no_progress, e,
+                    self._no_progress,
+                    e,
                 )
                 if self._no_progress >= MAX_REINDEX_NO_PROGRESS:
                     logger.warning(
@@ -497,7 +512,8 @@ class SemanticManager:
                     logger.warning(
                         "drainer_stalled — embedder failing persistently "
                         "(%d attempts); parked until new content arrives. "
-                        "remaining=%s stuck=%s", self._no_progress,
+                        "remaining=%s stuck=%s",
+                        self._no_progress,
                         result.get("remaining"),
                         await self._stuck_doc_ids(),
                     )
@@ -521,7 +537,7 @@ class SemanticManager:
         try:
             docs = await self._store.get_unembedded_docs(limit=limit)
             return [d.get("doc_id") for d in docs]
-        except Exception:
+        except Exception:  # noqa: BLE001 — diagnostic only; degrades to []
             return []
 
     async def _process_batch(self, batch_limit: int = REINDEX_BATCH_LIMIT) -> dict:
@@ -538,8 +554,13 @@ class SemanticManager:
             # it here reset the no-progress bound and spun the drainer at
             # sleep(0) forever — neither stalling nor ever opening the gate.
             # That was the one state MAX_REINDEX_NO_PROGRESS could not catch.
-            return {"total": 0, "indexed": 0, "remaining": 0, "complete": False,
-                    "reason": "embedder unavailable"}
+            return {
+                "total": 0,
+                "indexed": 0,
+                "remaining": 0,
+                "complete": False,
+                "reason": "embedder unavailable",
+            }
         total = await self._store.count_unembedded()
         if total == 0:
             return {"total": 0, "indexed": 0, "remaining": 0, "complete": True}
@@ -549,10 +570,12 @@ class SemanticManager:
             try:
                 if await self._embed_doc(embedder, doc):
                     indexed += 1
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — one bad document must not abort the batch
                 logger.debug("reindex_skip doc_id=%s err=%s", doc.get("doc_id"), e)
         remaining = await self._store.count_unembedded()
         return {
-            "total": total, "indexed": indexed,
-            "remaining": remaining, "complete": remaining == 0,
+            "total": total,
+            "indexed": indexed,
+            "remaining": remaining,
+            "complete": remaining == 0,
         }

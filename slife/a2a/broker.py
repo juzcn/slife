@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 
 
 async def probe_broker(
-    host: str = "localhost", port: int = 1883, timeout: float | None = None,
+    host: str = "localhost",
+    port: int = 1883,
+    timeout: float | None = None,
 ) -> bool:
     """Check whether a TCP listener is present on *host*:*port*.
 
@@ -42,7 +44,11 @@ async def probe_broker(
     # and the incident slife/threads.py documents).
     try:
         infos = await run_daemon(
-            socket.getaddrinfo, host, port, 0, socket.SOCK_STREAM,
+            socket.getaddrinfo,
+            host,
+            port,
+            0,
+            socket.SOCK_STREAM,
             name="broker-resolve",
         )
     except OSError as e:
@@ -62,12 +68,12 @@ async def probe_broker(
                 asyncio.open_connection(address, port_, **kwargs),
                 timeout=timeout,
             )
-        except Exception:
+        except OSError:
             continue
         writer.close()
         try:
             await writer.wait_closed()
-        except Exception:
+        except OSError:
             pass
         logger.info("broker_found host=%s port=%d addr=%s", host, port, address)
         return True

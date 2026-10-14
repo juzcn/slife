@@ -24,8 +24,8 @@ This module must stay import-light: ``slife.plugins.spec`` (stdlib only) and
 ``tools.system``.
 """
 
-import pkgutil
 import logging
+import pkgutil
 
 from slife.plugins.spec import PLUGIN_SPECS
 
@@ -48,9 +48,10 @@ def _server_module_exists(server_module: str) -> bool:
     was deprecated in 3.12.
     """
     import importlib.util as _util
+
     try:
         return _util.find_spec(server_module) is not None
-    except Exception:
+    except Exception:  # noqa: BLE001 — a probe: any failure reads as "not present"
         return False
 
 
@@ -72,9 +73,7 @@ def _scan_undeclared() -> list[tuple[str, str]]:
 
     plugins: list[tuple[str, str]] = []
 
-    for _, name, is_pkg in pkgutil.iter_modules(
-        _pkg.__path__, _pkg.__name__ + "."
-    ):
+    for _, name, is_pkg in pkgutil.iter_modules(_pkg.__path__, _pkg.__name__ + "."):
         if not is_pkg:
             continue
         leaf = name.split(".")[-1]
@@ -115,6 +114,7 @@ def discover_plugins() -> list[tuple[str, str]]:
             plugins.append((name, module))
             seen.add(name)
 
-    logger.debug("plugins_discovered count=%d names=%s",
-                 len(plugins), [n for n, _ in plugins])
+    logger.debug(
+        "plugins_discovered count=%d names=%s", len(plugins), [n for n, _ in plugins]
+    )
     return plugins

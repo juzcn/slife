@@ -7,10 +7,9 @@ config that now owns the ``mcp`` section).
 from __future__ import annotations
 
 import logging
-import platform
 import os
+import platform
 from dataclasses import dataclass, field
-
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +51,10 @@ class A2AConfig:
 
     @classmethod
     def from_dict(
-        cls, data: dict | None, agent_name: str = "slife",
-    ) -> "A2AConfig":
+        cls,
+        data: dict | None,
+        agent_name: str = "slife",
+    ) -> A2AConfig:
         """Parse the ``a2a`` section from slife.yaml.
 
         A2A over MQTT is enabled **at runtime** when Mosquitto is detected
@@ -73,7 +74,9 @@ class A2AConfig:
         """
         broker = {}
         if isinstance(data, dict):
-            broker = data.get("broker", {}) if isinstance(data.get("broker"), dict) else {}
+            broker = (
+                data.get("broker", {}) if isinstance(data.get("broker"), dict) else {}
+            )
 
         # The a2a section provides connection details only.
         # A2A enablement is decided at runtime by the Mosquitto TCP probe —

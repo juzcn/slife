@@ -1,5 +1,15 @@
 # Slife
 
+> ### There is a v2 — [**juzcn/slife2**](https://github.com/juzcn/slife2)
+>
+> A clean-slate rebuild of this agent. Same idea, different architecture:
+> **every plugin is its own MCP server process**, and the full set is
+> installed rather than bundled — a key then exists only inside the process
+> that needs it, and the agent loop imports no provider SDK.
+>
+> This repository (v1) is still maintained and installable. slife2 is where
+> the redesign lives; if you are starting fresh, look there first.
+
 **Terminal-based AI agent** — a function-calling loop with minimum harness. Chat with an LLM that calls tools, remembers every turn forever, and orchestrates other agents.
 
 ```
@@ -46,7 +56,7 @@ That's it. With no extra configuration you get the core loop: chat, tool calls, 
 <a id="install" name="install"></a>
 ## Install
 
-**Zero prerequisites, fully out-of-the-box.** The install script fetches the latest `main`, builds slife **from source** (workspace wheels — no PyPI, always the newest code), and installs it with uv into an isolated tool venv. It auto-installs what's missing — uv, Node.js (`npx`), bun, and Mosquitto — and puts the bundled configs, skills and sample jobs in place, so a first-time user gets the full tool set — local embeddings, external MCP servers, yt-dlp, browser-harness, the A2A mesh — with nothing to configure by hand. On WSL it uses Linux-native runtimes (Windows executables cannot receive custom env vars via WSL interop).
+**Zero prerequisites, fully out-of-the-box.** The install script fetches the latest `main`, builds slife **from source** (its own wheel — the newest `main`, not the release on PyPI), and installs it with uv into an isolated tool venv. It auto-installs what's missing — uv, Node.js (`npx`), bun, and Mosquitto — and puts the bundled configs, skills and sample jobs in place, so a first-time user gets the full tool set — local embeddings, external MCP servers, yt-dlp, browser-harness, the A2A mesh — with nothing to configure by hand. On WSL it uses Linux-native runtimes (Windows executables cannot receive custom env vars via WSL interop).
 
 The **semantic embedding backend and model are deliberately not part of the install** — the backend is env-specific (CPU / CUDA / Metal) and the model download is ~2 GB, so it's a user-run step. Follow the **[Semantic Memory Search — Installation Guide](#semantic-memory-search--installation-guide)** below: install one backend, download the model weights, configure `HF_HUB_CACHE` / `BGE_M3_GGUF_PATH`, then verify the service is ready.
 
@@ -64,7 +74,7 @@ The installer is best-effort: it uses standard paths, tries several install rout
 | `ssh` | ships with the OS (Windows: the optional *OpenSSH Client* capability) | `sharefile`'s `localhost.run` tunnel provider — **detection only**; enabling the Windows capability needs administrator |
 | `unzip` (Linux) | package manager | bun installer dependency |
 
-**Installed by default:** `yt-dlp` and `browser-harness` (both skipped by `--core`), Mosquitto and `cloudflared` (attempted unless `--core`), the **four configs** (`slife.yaml`, `tools.yaml` and `sharefile.yaml` → `~/.slife/`, `local_embed.yaml` → `~/.local-embed/`) seeded from bundled defaults, and the bundled skills (`~/.slife/skills/`) plus sample jobs (`~/.slife/jobs/`).
+**Installed by default:** `yt-dlp` and `browser-harness` (both skipped by `--core`), Mosquitto and `cloudflared` (attempted unless `--core`), the **three configs** (`slife.yaml`, `tools.yaml` and `sharefile.yaml` → `~/.slife/`) seeded from bundled defaults, and the bundled skills (`~/.slife/skills/`) plus sample jobs (`~/.slife/jobs/`).
 
 If a runtime can't be installed, the installer **warns and continues** — slife itself still installs; only the features needing that runtime are unavailable. For example, on a Linux box older than **glibc 2.28 / libstdc++ 3.4.29**, the Node rootless tarball fallback won't run (the installer reports the missing `GLIBC_2.28` / `GLIBCXX_3.4.xx` symbols). The supported route is **not** an older Node — it's a Node built for your distro (e.g. `module load nodejs` on HPC clusters, or your distro's package). Install that, then re-run this installer — it detects an existing `npx` and skips its own Node install.
 
@@ -125,7 +135,7 @@ uv run pytest
 uv run pytest --cov --cov-report=term-missing
 ```
 
-`uv sync` is **exact**: it prunes the checkout's `.venv` to the lock, and no embedding backend is in the lock (they are per-platform manual installs — see [Re-adding a backend (manual installs)](local-embed/README.md#re-adding-a-backend-manual-installs)). If you keep `llama-cpp-python` or `sentence-transformers` in a dev venv for real end-to-end runs, either pass `uv sync --inexact` or reinstall the backend after syncing.
+`uv sync` is **exact**: it prunes the checkout's `.venv` to the lock, and no embedding backend is in the lock (they are per-platform manual installs — see [Re-adding a backend (manual installs)](https://github.com/juzcn/local-embed/blob/main/README.md#re-adding-a-backend-manual-installs)). If you keep `llama-cpp-python` or `sentence-transformers` in a dev venv for real end-to-end runs, either pass `uv sync --inexact` or reinstall the backend after syncing.
 
 From the source tree, data files stay in the project directory; every installed copy keeps using `~/.slife/`.
 
@@ -164,18 +174,18 @@ The uninstaller removes the `slife` and `credstore` tool commands (they share on
 
 ### Related tools
 
-Besides slife itself, the repo ships three standalone packages, each with its own one-click installer:
+Three of the tools slife uses are projects in their own right, each with its own repository and one-click installer:
 
 | Package | Install | Purpose |
 |---------|---------|---------|
 | `slife` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh \| bash` | The agent (this README) |
-| `credstore` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.sh \| bash` | Cross-platform credential storage |
-| `cc-switch` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.sh \| bash` | Generate `~/.claude/settings.json` |
-| `local-embed` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/local-embed/install.sh \| bash` | Local embedding endpoint service |
+| `credstore` | `curl -fsSL https://raw.githubusercontent.com/juzcn/credstore/main/install.sh \| bash` | Cross-platform credential storage |
+| `cc-switch` | `curl -fsSL https://raw.githubusercontent.com/juzcn/cc-switch/main/install.sh \| bash` | Generate `~/.claude/settings.json` |
+| `local-embed` | `curl -fsSL https://raw.githubusercontent.com/juzcn/local-embed/main/install.sh \| bash` | Local embedding endpoint service |
 
-Installing slife depends on [credstore](credstore/README.md) — it does **not** install cc-switch. See the [cc-switch](cc-switch/README.md), [credstore](credstore/README.md), and [local-embed](local-embed/README.md) READMEs for details.
+Installing slife pulls in [credstore](https://github.com/juzcn/credstore) and [local-embed](https://github.com/juzcn/local-embed) from PyPI as ordinary dependencies; it does **not** install [cc-switch](https://github.com/juzcn/cc-switch). All three used to be subdirectories of this repository.
 
-Two of these also ship **inside** slife: the MCP gateway is an internal plugin, and `local-embed` is one too — Slife starts it for you, or uses the instance you started yourself rather than starting a second one.
+The MCP gateway still ships **inside** slife as an internal plugin, and slife drives local-embed as a child process — it either starts it for you or adopts the instance you started yourself, rather than starting a second one.
 
 <a id="configuration" name="configuration"></a>
 ## Configuration
@@ -205,7 +215,7 @@ An `api_key` field (models, embeddings) additionally accepts a `keyring:service/
 2. **Keep managing in credstore cryptfile mode, but inject to env** — store credentials as usual, then push them into the environment so Slife sees them: `credstore inject DEEPSEEK_API_KEY BAILIAN_API_KEY` (prompts for the master password in cryptfile-only mode), then restart the shell or `eval "$(credstore inject DEEPSEEK_API_KEY)"`.
 3. **Plaintext in the config file** (tolerated, not recommended) — a literal `api_key` in `slife.yaml` works, but the secret sits in plaintext on disk (`~/.slife/slife.yaml`, chmod 0600).
 
-`credstore` itself works fully in cryptfile-only mode (`set-password`, `set`, `get -p`, `inject`, `status` — see [credstore/README.md](credstore/README.md)).
+`credstore` itself works fully in cryptfile-only mode (`set-password`, `set`, `get -p`, `inject`, `status` — see [credstore's README](https://github.com/juzcn/credstore)).
 
 ### Model providers
 
@@ -426,7 +436,7 @@ All messages — human, WeChat, MQTT, subagent results — flow through a single
 Semantic (hybrid) memory search — recall by meaning across `memdb` turns, `memfiles` notes and the tool catalog — needs a local embedding **backend** and the **model weights**, which the one-click installer deliberately does not bring. Keyword search (`grep` / `fts5`) works without them, and every piece is fail-open: a missing backend leaves a working keyword-only core.
 
 **Full guide — backend install per platform, weights, `local_embed.yaml`, verification, troubleshooting:**
-**[local-embed/README.md](local-embed/README.md)** — the `local-embed` service is the endpoint slife embeds against, and that file is its manual.
+**[local-embed's README](https://github.com/juzcn/local-embed)** — the `local-embed` service is the endpoint slife embeds against, and that is its manual.
 
 <a id="usage-reference" name="usage-reference"></a>
 ## Usage Reference
@@ -481,7 +491,7 @@ Isolation follows the **data directory**, not `--agent`. Two instances pointed a
 
 | Per agent | Shared |
 |---|---|
-| turns database `<agent>.db`, memory files `<agent>.files/`, tool catalog `<agent>.tools.db`, A2A inbound ledger `a2a_inbound_<agent>.yaml`, WeChat session `wechat_<agent>.yaml`, log and session-marker filenames | `slife.yaml`, `tools.yaml`, `sharefile.yaml`, `local_embed.yaml`, `skills/`, `jobs/`, the `logs/` directory |
+| turns database `<agent>.db`, memory files `<agent>.files/`, tool catalog `<agent>.tools.db`, A2A inbound ledger `a2a_inbound_<agent>.yaml`, WeChat session `wechat_<agent>.yaml`, log and session-marker filenames | `slife.yaml`, `tools.yaml`, `sharefile.yaml`, `skills/`, `jobs/`, the `logs/` directory |
 
 Sharing the configs means sharing *state*, and that is this layout's price:
 

@@ -45,7 +45,7 @@ class AgentCard:
     status: str = "idle"  # "online" or "offline"
 
 
-def format_presence_line(card: "AgentCard", event: str) -> str | None:
+def format_presence_line(card: AgentCard, event: str) -> str | None:
     """Render a presence event exactly as the TUI shows it.
 
     Returns ``None`` for events that are not user-visible transitions

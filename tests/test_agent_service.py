@@ -1,8 +1,5 @@
 """Tests for Slife.agent.service — AgentService lifecycle and message processing."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
 import json as _json
 from contextlib import nullcontext
@@ -11,18 +8,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from slife.a2a.identity import HUMAN, WECHAT
+from slife.agent.inbox import MemorySaveError
+from slife.agent.llm_client import TokenUsage
+from slife.agent.plugins import PluginStartStatus
 from slife.agent.service import (
     AgentService,
     _extract_turn_annotation,
     _short_reason,
     compact_tool_results,
 )
-from slife.agent.inbox import MemorySaveError
 from slife.ui.i18n import t
-from slife.agent.plugins import PluginStartStatus
-from slife.agent.llm_client import TokenUsage
-from slife.a2a.identity import HUMAN, WECHAT
 
+pytestmark = pytest.mark.unit
 
 # ── AgentService initialisation ─────────────────────────────────────────────
 
@@ -79,7 +77,9 @@ class TestAgentServiceClear:
     def test_clear_resets_usage(self, sample_config):
         service = AgentService(sample_config)
         service.session_usage = TokenUsage(
-            prompt_tokens=500, completion_tokens=300, total_tokens=800,
+            prompt_tokens=500,
+            completion_tokens=300,
+            total_tokens=800,
         )
 
         service.clear()
@@ -157,35 +157,48 @@ class TestAgentServiceMCPEnrichment:
         service = AgentService(sample_config)
         client = AsyncMock()
         client.is_connected = True
-        client.call_tool = AsyncMock(return_value=_json.dumps([
-            {"name": "autol", "enabled": True, "auto_load": True},
-            {"name": "ondemand", "enabled": True, "auto_load": False},
-            {"auto_load": True, "enabled": True},          # no name at all
-            {"name": "disabled", "enabled": False, "auto_load": True},
-        ]))
+        client.call_tool = AsyncMock(
+            return_value=_json.dumps(
+                [
+                    {"name": "autol", "enabled": True, "auto_load": True},
+                    {"name": "ondemand", "enabled": True, "auto_load": False},
+                    {"auto_load": True, "enabled": True},  # no name at all
+                    {"name": "disabled", "enabled": False, "auto_load": True},
+                ]
+            )
+        )
         service._plugins["mcp-gateway"].client = client
 
         with patch.object(
-            service, "_discover_and_register_external_tools", AsyncMock(),
+            service,
+            "_discover_and_register_external_tools",
+            AsyncMock(),
         ) as mock_reg:
             await service._sync_mcp_proxies()
 
         client.call_tool.assert_any_await("__mcp_list")
         assert {c.kwargs["server_name"] for c in mock_reg.await_args_list} == {
-            "autol", "ondemand",   # auto_load no longer decides
+            "autol",
+            "ondemand",  # auto_load no longer decides
         }
         # Nothing asked for the disabled server's tool list — asking is what
         # would spawn it.
         assert not any(
-            c.args and c.args[0] == "__mcp_list_tools"
+            c.args
+            and c.args[0] == "__mcp_list_tools"
             and c.args[1].get("server") == "disabled"
             for c in client.call_tool.await_args_list
         )
 
     @staticmethod
-    def _fake_gateway(tools_server: str, *, enabled: bool = True,
-                      listed: bool = True, reachable: bool = True,
-                      spawn_settled: bool = True):
+    def _fake_gateway(
+        tools_server: str,
+        *,
+        enabled: bool = True,
+        listed: bool = True,
+        reachable: bool = True,
+        spawn_settled: bool = True,
+    ):
         """A gateway client whose __mcp_list holds one server, whose tool list
         holds one tool.  ``tools_server`` is stamped onto the tool dict because
         the registering path (``create_proxy_tools``) reads it, exactly as the
@@ -203,38 +216,64 @@ class TestAgentServiceMCPEnrichment:
 
         async def fake_call_tool(name, arguments=None):
             if name == "__mcp_list":
-                return _json.dumps([
-                    {"name": tools_server, "enabled": enabled, "auto_load": False},
-                ])
+                return _json.dumps(
+                    [
+                        {"name": tools_server, "enabled": enabled, "auto_load": False},
+                    ]
+                )
             if name == "__check":
-                return _json.dumps({
-                    "servers": [
-                        {"name": tools_server, "tools_ok": listed,
-                         "reachable": reachable},
-                    ],
-                    "spawn_settled": spawn_settled,
-                })
+                return _json.dumps(
+                    {
+                        "servers": [
+                            {
+                                "name": tools_server,
+                                "tools_ok": listed,
+                                "reachable": reachable,
+                            },
+                        ],
+                        "spawn_settled": spawn_settled,
+                    }
+                )
             if name in ("mcp_list_tools", "__mcp_list_tools"):
-                return _json.dumps({
-                    "server": tools_server, "connected": listed,
-                    "tools": [] if not listed else [
-                        {"server": tools_server, "name": "search",
-                         "description": "Search stuff",
-                         "inputSchema": {"type": "object",
-                                         "properties": {"q": {"type": "string"}}}},
-                    ],
-                    "tool_count": 0 if not listed else 1,
-                })
+                return _json.dumps(
+                    {
+                        "server": tools_server,
+                        "connected": listed,
+                        "tools": []
+                        if not listed
+                        else [
+                            {
+                                "server": tools_server,
+                                "name": "search",
+                                "description": "Search stuff",
+                                "inputSchema": {
+                                    "type": "object",
+                                    "properties": {"q": {"type": "string"}},
+                                },
+                            },
+                        ],
+                        "tool_count": 0 if not listed else 1,
+                    }
+                )
             raise AssertionError(f"unexpected tool call: {name} {arguments}")
 
         client.call_tool = fake_call_tool
         return client
 
-    async def _sync_with_catalog(self, sample_config, tmp_path, server: str, *,
-                                 enabled: bool = True, activity=None,
-                                 listed: bool = True, reachable: bool = True,
-                                 spawn_settled: bool = True, seed=None,
-                                 fail_check: bool = False):
+    async def _sync_with_catalog(
+        self,
+        sample_config,
+        tmp_path,
+        server: str,
+        *,
+        enabled: bool = True,
+        activity=None,
+        listed: bool = True,
+        reachable: bool = True,
+        spawn_settled: bool = True,
+        seed=None,
+        fail_check: bool = False,
+    ):
         """Run one reconcile against a real catalog; return (service, store).
 
         *activity* is registered BEFORE that pass, so a test can observe the
@@ -267,7 +306,10 @@ class TestAgentServiceMCPEnrichment:
         service._catalog = ToolCatalogService(store, write_owner=True)
         service._catalog_semantic = None
         service._plugins["mcp-gateway"].client = self._fake_gateway(
-            server, enabled=enabled, listed=listed, reachable=reachable,
+            server,
+            enabled=enabled,
+            listed=listed,
+            reachable=reachable,
             spawn_settled=spawn_settled,
         )
         if activity is not None:
@@ -285,16 +327,25 @@ class TestAgentServiceMCPEnrichment:
         # MagicMock and every caller of it would read nonsense.
         check = (
             patch.object(
-                service, "_mark_server_connectivity",
+                service,
+                "_mark_server_connectivity",
                 AsyncMock(side_effect=RuntimeError("boom")),
             )
-            if fail_check else nullcontext()
+            if fail_check
+            else nullcontext()
         )
-        with patch(
-            "slife.plugins.mcp_gateway.config.servers", return_value={server: {}},
-        ), patch.object(
-            AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
-        ), check:
+        with (
+            patch(
+                "slife.plugins.mcp_gateway.config.servers",
+                return_value={server: {}},
+            ),
+            patch.object(
+                AgentService,
+                "_refresh_local_rows_if_changed",
+                AsyncMock(),
+            ),
+            check,
+        ):
             if fail_check:
                 with pytest.raises(RuntimeError, match="boom"):
                     await service._sync_mcp_proxies()
@@ -304,7 +355,9 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_sync_proxies_registers_on_demand_server_proxies(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """An ENABLED on-demand server gets proxies at reconcile time, not just
         catalog rows.
@@ -316,7 +369,9 @@ class TestAgentServiceMCPEnrichment:
         see ``test_tools_catalog_injection`` for how a call is refused.)
         """
         service, store = await self._sync_with_catalog(
-            sample_config, tmp_path, "ondemand",
+            sample_config,
+            tmp_path,
+            "ondemand",
         )
         try:
             names = {t.name for t in service.tool_registry.list_tools()}
@@ -352,7 +407,9 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_sync_reports_the_tool_set_once_then_only_on_change(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """The user is waiting to know when tools are callable, so the pass
         that converges reports with its duration — and it is the ONLY pass that
@@ -363,7 +420,10 @@ class TestAgentServiceMCPEnrichment:
         # before the helper's pass so this observes the FIRST reconcile.
         events = AsyncMock()
         service, store = await self._sync_with_catalog(
-            sample_config, tmp_path, "svc", activity=events,
+            sample_config,
+            tmp_path,
+            "svc",
+            activity=events,
         )
         try:
             assert events.await_count == 1
@@ -386,14 +446,16 @@ class TestAgentServiceMCPEnrichment:
             assert kw["error"] == ""
             assert isinstance(kw["seconds"], float)
 
-            await service._sync_mcp_proxies()   # unchanged re-run
-            assert events.await_count == 1      # ...and stays quiet
+            await service._sync_mcp_proxies()  # unchanged re-run
+            assert events.await_count == 1  # ...and stays quiet
         finally:
             await store.close()
 
     @pytest.mark.asyncio
     async def test_the_op_delta_spans_every_pass_not_just_the_reporting_one(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """The line reports the whole startup, so an earlier pass's rows count.
 
@@ -408,45 +470,58 @@ class TestAgentServiceMCPEnrichment:
         from slife.tools.catalog import CatalogStore
         from slife.tools.catalog_service import ToolCatalogService
 
-        listed = {"a": True, "b": False}   # "b" answers only on the later pass
+        listed = {"a": True, "b": False}  # "b" answers only on the later pass
 
         client = AsyncMock()
         client.is_connected = True
 
         async def call_tool(name, arguments=None):
             if name == "__mcp_list":
-                return _json.dumps([
-                    {"name": "a", "enabled": True, "auto_load": False},
-                    {"name": "b", "enabled": True, "auto_load": False},
-                ])
+                return _json.dumps(
+                    [
+                        {"name": "a", "enabled": True, "auto_load": False},
+                        {"name": "b", "enabled": True, "auto_load": False},
+                    ]
+                )
             if name == "__check":
-                return _json.dumps({
-                    "servers": [
-                        {"name": "a", "tools_ok": True, "reachable": True},
-                        {"name": "b", "tools_ok": listed["b"],
-                         "reachable": True},
-                    ],
-                    "spawn_settled": True,
-                })
+                return _json.dumps(
+                    {
+                        "servers": [
+                            {"name": "a", "tools_ok": True, "reachable": True},
+                            {"name": "b", "tools_ok": listed["b"], "reachable": True},
+                        ],
+                        "spawn_settled": True,
+                    }
+                )
             if name in ("mcp_list_tools", "__mcp_list_tools"):
                 server = (arguments or {}).get("server", "")
                 ok = listed.get(server, False)
-                return _json.dumps({
-                    "server": server, "connected": ok,
-                    "tools": [] if not ok else [
-                        {"server": server, "name": "search",
-                         "description": "Search stuff",
-                         "inputSchema": {"type": "object",
-                                         "properties": {"q": {"type": "string"}}}},
-                    ],
-                    "tool_count": 1 if ok else 0,
-                })
+                return _json.dumps(
+                    {
+                        "server": server,
+                        "connected": ok,
+                        "tools": []
+                        if not ok
+                        else [
+                            {
+                                "server": server,
+                                "name": "search",
+                                "description": "Search stuff",
+                                "inputSchema": {
+                                    "type": "object",
+                                    "properties": {"q": {"type": "string"}},
+                                },
+                            },
+                        ],
+                        "tool_count": 1 if ok else 0,
+                    }
+                )
             raise AssertionError(f"unexpected tool call: {name} {arguments}")
 
         client.call_tool = call_tool
         store = CatalogStore(tmp_path / "tools.db")
         await store.open()
-        store.begin_ops()          # where _init_catalog arms it
+        store.begin_ops()  # where _init_catalog arms it
         service = AgentService(sample_config)
         service._catalog = ToolCatalogService(store, write_owner=True)
         service._catalog_semantic = None
@@ -454,11 +529,16 @@ class TestAgentServiceMCPEnrichment:
         service.on_activity(events)
         service._plugins["mcp-gateway"].client = client
         try:
-            with patch(
-                "slife.plugins.mcp_gateway.config.servers",
-                return_value={"a": {}, "b": {}},
-            ), patch.object(
-                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            with (
+                patch(
+                    "slife.plugins.mcp_gateway.config.servers",
+                    return_value={"a": {}, "b": {}},
+                ),
+                patch.object(
+                    AgentService,
+                    "_refresh_local_rows_if_changed",
+                    AsyncMock(),
+                ),
             ):
                 # Pass 1: "a" mirrors, "b" is still starting — so silence.
                 await service._sync_mcp_proxies()
@@ -474,7 +554,9 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_total_counts_the_registry_less_families_too(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """``total`` is what is USABLE — and a skill row is usable.
 
@@ -485,16 +567,28 @@ class TestAgentServiceMCPEnrichment:
         registry promised "N 个工具可用" while reporting instances, so the line
         read 1575 against a catalog it had just been written 1586 rows into.
         """
+
         async def seed(store):
-            await store.reconcile([{
-                "name": "browser-use", "description": "Drive a browser",
-                "category": "skill", "source_id": "skill",
-                "schema": "# browser-use\n", "status": "enabled",
-            }])
+            await store.reconcile(
+                [
+                    {
+                        "name": "browser-use",
+                        "description": "Drive a browser",
+                        "category": "skill",
+                        "source_id": "skill",
+                        "schema": "# browser-use\n",
+                        "status": "enabled",
+                    }
+                ]
+            )
 
         events = AsyncMock()
         service, store = await self._sync_with_catalog(
-            sample_config, tmp_path, "svc", activity=events, seed=seed,
+            sample_config,
+            tmp_path,
+            "svc",
+            activity=events,
+            seed=seed,
         )
         try:
             # Usable, and out of the registry by construction: there is no
@@ -509,19 +603,23 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_sync_stays_silent_when_a_later_pass_moves_tools(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """One line per process.  A later pass that really does move tools —
         the server left the config, so its proxies are unregistered and its
         rows purged — still says nothing: that line belongs to startup, and a
         session that keeps talking about its tool set is a heartbeat."""
         service, store = await self._sync_with_catalog(
-            sample_config, tmp_path, "svc",
+            sample_config,
+            tmp_path,
+            "svc",
         )
         try:
             events = AsyncMock()
             service.on_activity(events)
-            await service._sync_mcp_proxies()   # already reported by the helper
+            await service._sync_mcp_proxies()  # already reported by the helper
             events.reset_mock()
 
             client = service._plugins["mcp-gateway"].client
@@ -542,8 +640,9 @@ class TestAgentServiceMCPEnrichment:
     # ── The partial line, and the one correction it is owed ─────────
 
     @staticmethod
-    def _pool_client(servers, listed, *, down=frozenset(), spawn_settled=True,
-                     check_error=False):
+    def _pool_client(
+        servers, listed, *, down=frozenset(), spawn_settled=True, check_error=False
+    ):
         """A gateway client over *servers* — the multi-pass shape.
 
         *listed* maps server → whether it answers ``tools/list``, and it is
@@ -559,41 +658,62 @@ class TestAgentServiceMCPEnrichment:
 
         async def call_tool(name, arguments=None):
             if name == "__mcp_list":
-                return _json.dumps([
-                    {"name": s, "enabled": True, "auto_load": False}
-                    for s in servers
-                ])
+                return _json.dumps(
+                    [{"name": s, "enabled": True, "auto_load": False} for s in servers]
+                )
             if name == "__check":
                 if check_error:
                     raise RuntimeError("check boom")
-                return _json.dumps({
-                    "servers": [
-                        {"name": s, "tools_ok": listed.get(s, False),
-                         "reachable": s not in down}
-                        for s in servers
-                    ],
-                    "spawn_settled": spawn_settled,
-                })
+                return _json.dumps(
+                    {
+                        "servers": [
+                            {
+                                "name": s,
+                                "tools_ok": listed.get(s, False),
+                                "reachable": s not in down,
+                            }
+                            for s in servers
+                        ],
+                        "spawn_settled": spawn_settled,
+                    }
+                )
             if name in ("mcp_list_tools", "__mcp_list_tools"):
                 server = (arguments or {}).get("server", "")
                 ok = listed.get(server, False)
-                return _json.dumps({
-                    "server": server, "connected": ok,
-                    "tools": [] if not ok else [{
-                        "server": server, "name": f"{server}_tool",
-                        "description": "d",
-                        "inputSchema": {"type": "object", "properties": {}},
-                    }],
-                    "tool_count": 1 if ok else 0,
-                })
+                return _json.dumps(
+                    {
+                        "server": server,
+                        "connected": ok,
+                        "tools": []
+                        if not ok
+                        else [
+                            {
+                                "server": server,
+                                "name": f"{server}_tool",
+                                "description": "d",
+                                "inputSchema": {"type": "object", "properties": {}},
+                            }
+                        ],
+                        "tool_count": 1 if ok else 0,
+                    }
+                )
             raise AssertionError(f"unexpected tool call: {name} {arguments}")
 
         client.call_tool = call_tool
         return client
 
-    async def _pool_build(self, sample_config, tmp_path, servers, listed, *,
-                          down=frozenset(), spawn_settled=True, events=None,
-                          check_error=False):
+    async def _pool_build(
+        self,
+        sample_config,
+        tmp_path,
+        servers,
+        listed,
+        *,
+        down=frozenset(),
+        spawn_settled=True,
+        events=None,
+        check_error=False,
+    ):
         """Wire a multi-server pool and hand back (service, store).
 
         The store outlives the pass, because these tests drive SEVERAL — the
@@ -604,14 +724,17 @@ class TestAgentServiceMCPEnrichment:
 
         store = CatalogStore(tmp_path / "tools.db")
         await store.open()
-        store.begin_ops()                      # where _init_catalog arms it
+        store.begin_ops()  # where _init_catalog arms it
         service = AgentService(sample_config)
         service._catalog = ToolCatalogService(store, write_owner=True)
         service._catalog_semantic = None
         if events is not None:
             service.on_activity(events)
         service._plugins["mcp-gateway"].client = self._pool_client(
-            servers, listed, down=down, spawn_settled=spawn_settled,
+            servers,
+            listed,
+            down=down,
+            spawn_settled=spawn_settled,
             check_error=check_error,
         )
         return service, store
@@ -619,17 +742,24 @@ class TestAgentServiceMCPEnrichment:
     @staticmethod
     async def _pool_pass(service, servers):
         """One reconcile over a pinned config view — the pass's own wiring."""
-        with patch(
-            "slife.plugins.mcp_gateway.config.servers",
-            return_value={s: {} for s in servers},
-        ), patch.object(
-            AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+        with (
+            patch(
+                "slife.plugins.mcp_gateway.config.servers",
+                return_value={s: {} for s in servers},
+            ),
+            patch.object(
+                AgentService,
+                "_refresh_local_rows_if_changed",
+                AsyncMock(),
+            ),
         ):
             await service._sync_mcp_proxies()
 
     @pytest.mark.asyncio
     async def test_a_partial_line_is_corrected_once_the_set_stops_growing(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """The line that went out over an incomplete set is not the last word.
 
@@ -651,30 +781,35 @@ class TestAgentServiceMCPEnrichment:
         listed = {"a": True, "b": False}
         events = AsyncMock()
         service, store = await self._pool_build(
-            sample_config, tmp_path, servers, listed, down={"b"}, events=events,
+            sample_config,
+            tmp_path,
+            servers,
+            listed,
+            down={"b"},
+            events=events,
         )
         try:
             await self._pool_pass(service, servers)
 
             assert events.await_count == 1
             first = events.await_args.kwargs
-            assert first["unanswered"] == 1     # …and the line says so
+            assert first["unanswered"] == 1  # …and the line says so
             assert first["corrected"] is False
-            assert first["added"] == 1          # "a" only
+            assert first["added"] == 1  # "a" only
             assert first["total"] == 1
             assert service._tool_sync_partial is True
             # The correction is owed the same question, so the window opens
             # again: its delta is what arrives from here on.
             assert store._ops is not None
 
-            listed["b"] = True                  # the retry finally lists it
+            listed["b"] = True  # the retry finally lists it
             await self._pool_pass(service, servers)
 
             assert events.await_count == 2
             correction = events.await_args.kwargs
             assert correction["corrected"] is True
             assert correction["unanswered"] == 0
-            assert correction["added"] == 1     # b's tool — SINCE the first line
+            assert correction["added"] == 1  # b's tool — SINCE the first line
             assert correction["total"] == 2
             assert service._tool_sync_partial is False
             # Nothing further is owed, so the window closes for good with it.
@@ -687,7 +822,9 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_a_server_that_never_comes_up_does_not_block_the_correction(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """The correction waits for the set to stop GROWING, not to be complete.
 
@@ -702,14 +839,19 @@ class TestAgentServiceMCPEnrichment:
         listed = {"a": True, "b": False}
         events = AsyncMock()
         service, store = await self._pool_build(
-            sample_config, tmp_path, servers, listed, down={"b"}, events=events,
+            sample_config,
+            tmp_path,
+            servers,
+            listed,
+            down={"b"},
+            events=events,
         )
         try:
             await self._pool_pass(service, servers)
             assert events.await_count == 1
             assert events.await_args.kwargs["unanswered"] == 1
 
-            await self._pool_pass(service, servers)   # no progress at all
+            await self._pool_pass(service, servers)  # no progress at all
 
             assert events.await_count == 2
             correction = events.await_args.kwargs
@@ -723,7 +865,9 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_a_probe_that_read_nothing_does_not_disarm_the_correction(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """An unread probe is a THIRD answer, not "nothing is missing".
 
@@ -735,7 +879,11 @@ class TestAgentServiceMCPEnrichment:
         servers = ["a"]
         events = AsyncMock()
         service, store = await self._pool_build(
-            sample_config, tmp_path, servers, {"a": True}, events=events,
+            sample_config,
+            tmp_path,
+            servers,
+            {"a": True},
+            events=events,
             check_error=True,
         )
         try:
@@ -743,12 +891,13 @@ class TestAgentServiceMCPEnrichment:
 
             assert events.await_count == 1
             first = events.await_args.kwargs
-            assert first["unanswered"] == 0     # nothing read ⇒ nothing to say
+            assert first["unanswered"] == 0  # nothing read ⇒ nothing to say
             assert first["corrected"] is False
-            assert service._tool_sync_partial is True    # …but not settled either
+            assert service._tool_sync_partial is True  # …but not settled either
 
             service._plugins["mcp-gateway"].client = self._pool_client(
-                servers, {"a": True},                # the probe answers now
+                servers,
+                {"a": True},  # the probe answers now
             )
             await self._pool_pass(service, servers)
 
@@ -759,7 +908,10 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_a_settled_pass_waits_one_listing_not_the_startup_budget(
-        self, sample_config, tmp_path, monkeypatch,
+        self,
+        sample_config,
+        tmp_path,
+        monkeypatch,
     ):
         """The startup budget is for the STARTUP.
 
@@ -778,12 +930,16 @@ class TestAgentServiceMCPEnrichment:
         servers = ["a"]
         events = AsyncMock()
         service, store = await self._pool_build(
-            sample_config, tmp_path, servers, {"a": True}, events=events,
+            sample_config,
+            tmp_path,
+            servers,
+            {"a": True},
+            events=events,
         )
         try:
             await self._pool_pass(service, servers)
             assert service._tool_sync_reported is True
-            assert service._tool_sync_partial is False    # the line is final
+            assert service._tool_sync_partial is False  # the line is final
 
             # A mirror that never answers, and the two bounds an order of
             # magnitude apart: which one ends the pass is the whole assertion.
@@ -802,13 +958,15 @@ class TestAgentServiceMCPEnrichment:
             await self._pool_pass(service, servers)
             elapsed = time.monotonic() - started
 
-            assert elapsed < 5.0     # one listing, not the startup budget
+            assert elapsed < 5.0  # one listing, not the startup budget
         finally:
             await store.close()
 
     @pytest.mark.asyncio
     async def test_sync_waits_for_a_server_that_has_not_listed_yet(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """A configured server that is up but has not answered ``tools/list``
         is STILL STARTING, not absent — the startup line waits for it.
@@ -819,19 +977,28 @@ class TestAgentServiceMCPEnrichment:
         """
         events = AsyncMock()
         service, store = await self._sync_with_catalog(
-            sample_config, tmp_path, "slow", activity=events, listed=False,
+            sample_config,
+            tmp_path,
+            "slow",
+            activity=events,
+            listed=False,
         )
         try:
-            events.assert_not_awaited()     # still starting — silence
+            events.assert_not_awaited()  # still starting — silence
 
             # The server finishes listing; its tools/list_changed wakes the
             # next pass, which is the one that reports.
             service._plugins["mcp-gateway"].client = self._fake_gateway("slow")
-            with patch(
-                "slife.plugins.mcp_gateway.config.servers",
-                return_value={"slow": {}},
-            ), patch.object(
-                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            with (
+                patch(
+                    "slife.plugins.mcp_gateway.config.servers",
+                    return_value={"slow": {}},
+                ),
+                patch.object(
+                    AgentService,
+                    "_refresh_local_rows_if_changed",
+                    AsyncMock(),
+                ),
             ):
                 await service._sync_mcp_proxies()
 
@@ -850,7 +1017,9 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_sync_does_not_wait_for_a_server_that_never_came_up(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """A server whose transport never came up is SETTLED, not pending: its
         tools are marked ``unavailable`` and the line reports what the set has.
@@ -861,14 +1030,18 @@ class TestAgentServiceMCPEnrichment:
         """
         events = AsyncMock()
         service, store = await self._sync_with_catalog(
-            sample_config, tmp_path, "dead", activity=events,
-            listed=False, reachable=False,
+            sample_config,
+            tmp_path,
+            "dead",
+            activity=events,
+            listed=False,
+            reachable=False,
         )
         try:
-            assert events.await_count == 1                     # no waiting
+            assert events.await_count == 1  # no waiting
             kw = events.await_args.kwargs
             assert kw["error"] == ""
-            assert kw["added"] == 0 and kw["removed"] == 0     # nothing mirrored
+            assert kw["added"] == 0 and kw["removed"] == 0  # nothing mirrored
             assert "dead__search" not in {
                 t.name for t in service.tool_registry.list_tools()
             }
@@ -880,7 +1053,9 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_sync_waits_for_the_spawn_pass_to_finish(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """The sync does not start judging until the boot pass is over.
 
@@ -892,21 +1067,33 @@ class TestAgentServiceMCPEnrichment:
         """
         events = AsyncMock()
         service, store = await self._sync_with_catalog(
-            sample_config, tmp_path, "booting", activity=events,
-            listed=False, reachable=False, spawn_settled=False,
+            sample_config,
+            tmp_path,
+            "booting",
+            activity=events,
+            listed=False,
+            reachable=False,
+            spawn_settled=False,
         )
         try:
-            events.assert_not_awaited()     # unjudged — the spawn may still win
+            events.assert_not_awaited()  # unjudged — the spawn may still win
 
             # ...and the boot pass finishes without that server coming up.
             service._plugins["mcp-gateway"].client = self._fake_gateway(
-                "booting", listed=False, reachable=False,
+                "booting",
+                listed=False,
+                reachable=False,
             )
-            with patch(
-                "slife.plugins.mcp_gateway.config.servers",
-                return_value={"booting": {}},
-            ), patch.object(
-                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            with (
+                patch(
+                    "slife.plugins.mcp_gateway.config.servers",
+                    return_value={"booting": {}},
+                ),
+                patch.object(
+                    AgentService,
+                    "_refresh_local_rows_if_changed",
+                    AsyncMock(),
+                ),
             ):
                 await service._sync_mcp_proxies()
 
@@ -917,7 +1104,9 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_sync_reports_a_failure_rather_than_going_silent(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """Silence has to keep meaning 'still syncing' — a STARTUP that blew up
         must say so, or a dead sync reads exactly like a slow one.
@@ -930,8 +1119,11 @@ class TestAgentServiceMCPEnrichment:
         """
         events = []
         service, store = await self._sync_with_catalog(
-            sample_config, tmp_path, "svc",
-            activity=lambda kind, **kw: events.append(kw), fail_check=True,
+            sample_config,
+            tmp_path,
+            "svc",
+            activity=lambda kind, **kw: events.append(kw),
+            fail_check=True,
         )
         try:
             assert len(events) == 1
@@ -944,25 +1136,32 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_a_failure_after_the_line_is_out_stays_silent(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """…and the other half of that rule: once the startup has spoken, a
         later pass blowing up is mid-session sync trouble with its own
         surfaces (system_health, the mcp_* warnings).  Re-reporting it per
         pass is exactly the heartbeat this line is not."""
         service, store = await self._sync_with_catalog(
-            sample_config, tmp_path, "svc",
+            sample_config,
+            tmp_path,
+            "svc",
         )
         try:
             assert service._tool_sync_reported is True
             events = []
             service.on_activity(lambda kind, **kw: events.append(kw))
-            with patch.object(
-                service, "_mark_server_connectivity",
-                AsyncMock(side_effect=RuntimeError("boom")),
+            with (
+                patch.object(
+                    service,
+                    "_mark_server_connectivity",
+                    AsyncMock(side_effect=RuntimeError("boom")),
+                ),
+                pytest.raises(RuntimeError),
             ):
-                with pytest.raises(RuntimeError):
-                    await service._sync_mcp_proxies()
+                await service._sync_mcp_proxies()
 
             assert events == []
         finally:
@@ -970,7 +1169,11 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_a_mirror_that_never_answers_is_bounded_and_still_reports(
-        self, sample_config, tmp_path, monkeypatch, caplog,
+        self,
+        sample_config,
+        tmp_path,
+        monkeypatch,
+        caplog,
     ):
         """One server that never answers must not hold the whole pass open.
 
@@ -1003,30 +1206,41 @@ class TestAgentServiceMCPEnrichment:
 
         async def fake_call_tool(name, arguments=None):
             if name == "__mcp_list":
-                return _json.dumps([
-                    {"name": "quick", "enabled": True, "auto_load": False},
-                    {"name": "wedged", "enabled": True, "auto_load": False},
-                ])
+                return _json.dumps(
+                    [
+                        {"name": "quick", "enabled": True, "auto_load": False},
+                        {"name": "wedged", "enabled": True, "auto_load": False},
+                    ]
+                )
             if name == "__check":
                 # Both transports are up; only one will manage a listing.
-                return _json.dumps({
-                    "servers": [
-                        {"name": "quick", "tools_ok": True, "reachable": True},
-                        {"name": "wedged", "tools_ok": False, "reachable": True},
-                    ],
-                    "spawn_settled": True,
-                })
+                return _json.dumps(
+                    {
+                        "servers": [
+                            {"name": "quick", "tools_ok": True, "reachable": True},
+                            {"name": "wedged", "tools_ok": False, "reachable": True},
+                        ],
+                        "spawn_settled": True,
+                    }
+                )
             if name == "__mcp_list_tools":
                 if arguments["server"] == "wedged":
-                    await asyncio.sleep(3600)   # never answers
-                return _json.dumps({
-                    "server": "quick", "connected": True,
-                    "tools": [{"server": "quick", "name": "search",
-                               "description": "Search stuff",
-                               "inputSchema": {"type": "object",
-                                               "properties": {}}}],
-                    "tool_count": 1,
-                })
+                    await asyncio.sleep(3600)  # never answers
+                return _json.dumps(
+                    {
+                        "server": "quick",
+                        "connected": True,
+                        "tools": [
+                            {
+                                "server": "quick",
+                                "name": "search",
+                                "description": "Search stuff",
+                                "inputSchema": {"type": "object", "properties": {}},
+                            }
+                        ],
+                        "tool_count": 1,
+                    }
+                )
             raise AssertionError(f"unexpected tool call: {name} {arguments}")
 
         client.call_tool = fake_call_tool
@@ -1035,11 +1249,17 @@ class TestAgentServiceMCPEnrichment:
         events = AsyncMock()
         service.on_activity(events)
         try:
-            with caplog.at_level(logging.WARNING), patch(
-                "slife.plugins.mcp_gateway.config.servers",
-                return_value={"quick": {}, "wedged": {}},
-            ), patch.object(
-                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            with (
+                caplog.at_level(logging.WARNING),
+                patch(
+                    "slife.plugins.mcp_gateway.config.servers",
+                    return_value={"quick": {}, "wedged": {}},
+                ),
+                patch.object(
+                    AgentService,
+                    "_refresh_local_rows_if_changed",
+                    AsyncMock(),
+                ),
             ):
                 # The bound, seen from outside: a pass that hangs here is the
                 # bug this test exists for.
@@ -1054,7 +1274,7 @@ class TestAgentServiceMCPEnrichment:
             assert events.await_count == 1
             kw = events.await_args.kwargs
             assert kw["error"] == ""
-            assert kw["added"] == 1                 # the server that answered
+            assert kw["added"] == 1  # the server that answered
             assert await store.get_tool("quick__search") is not None
             assert await store.get_tool("wedged__search") is None
             # …and the guard is released, so the next notification gets in
@@ -1064,7 +1284,9 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_the_reconcile_guard_is_not_a_latch(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """A wedged pass must not disable the mid-session sync.
 
@@ -1076,6 +1298,7 @@ class TestAgentServiceMCPEnrichment:
         takes over from a SILENT one — and only from a silent one.
         """
         import time
+
         import slife.timeouts as _T
 
         service, store = await self._sync_with_catalog(sample_config, tmp_path, "svc")
@@ -1086,14 +1309,19 @@ class TestAgentServiceMCPEnrichment:
             service._mcp_reconcile_progress_at = (
                 time.monotonic() - 10 * _T.timeouts.ready.reconcile_guard
             )
-            with patch(
-                "slife.plugins.mcp_gateway.config.servers",
-                return_value={"svc": {}},
-            ), patch.object(
-                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            with (
+                patch(
+                    "slife.plugins.mcp_gateway.config.servers",
+                    return_value={"svc": {}},
+                ),
+                patch.object(
+                    AgentService,
+                    "_refresh_local_rows_if_changed",
+                    AsyncMock(),
+                ),
             ):
                 await service._sync_mcp_proxies()
-            assert service._mcp_reconcile_owner is None   # taken over, released
+            assert service._mcp_reconcile_owner is None  # taken over, released
 
             # A live one still coalesces: the same pass must not run twice —
             # but the trigger is REMEMBERED now, not swallowed, so the pass
@@ -1111,7 +1339,9 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_the_guard_reads_its_own_budget_not_the_tool_sync_one(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """The threshold is a value of its own, not a borrowed one.
 
@@ -1128,6 +1358,7 @@ class TestAgentServiceMCPEnrichment:
         whole assertion.
         """
         import time
+
         import slife.timeouts as _T
 
         service, store = await self._sync_with_catalog(sample_config, tmp_path, "svc")
@@ -1139,16 +1370,21 @@ class TestAgentServiceMCPEnrichment:
             holder = object()
             service._mcp_reconcile_owner = holder
             service._mcp_reconcile_progress_at = time.monotonic() - stalled_for
-            with patch(
-                "slife.plugins.mcp_gateway.config.servers",
-                return_value={"svc": {}},
-            ), patch.object(
-                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            with (
+                patch(
+                    "slife.plugins.mcp_gateway.config.servers",
+                    return_value={"svc": {}},
+                ),
+                patch.object(
+                    AgentService,
+                    "_refresh_local_rows_if_changed",
+                    AsyncMock(),
+                ),
             ):
                 await service._sync_mcp_proxies()
 
-            assert service._mcp_reconcile_owner is holder   # not taken over
-            assert service._mcp_reconcile_pending is True   # owed a pass
+            assert service._mcp_reconcile_owner is holder  # not taken over
+            assert service._mcp_reconcile_pending is True  # owed a pass
         finally:
             service._mcp_reconcile_owner = None
             service._mcp_reconcile_pending = False
@@ -1156,7 +1392,10 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_every_await_a_pass_completes_restarts_its_idle_clock(
-        self, sample_config, tmp_path, monkeypatch,
+        self,
+        sample_config,
+        tmp_path,
+        monkeypatch,
     ):
         """What makes it an IDLE clock: the pass ticks as it goes.
 
@@ -1180,7 +1419,10 @@ class TestAgentServiceMCPEnrichment:
 
         servers = ["a", "b"]
         service, store = await self._pool_build(
-            sample_config, tmp_path, servers, {"a": True, "b": True},
+            sample_config,
+            tmp_path,
+            servers,
+            {"a": True, "b": True},
         )
         try:
             await self._pool_pass(service, servers)
@@ -1190,11 +1432,13 @@ class TestAgentServiceMCPEnrichment:
         # taking the guard, __mcp_list, the first projection, one per mirror
         # (gathered, so two), the re-projection.
         assert len(ticks) == 6
-        assert ticks == sorted(ticks)      # each tick is a reset, never a rewind
+        assert ticks == sorted(ticks)  # each tick is a reset, never a rewind
 
     @pytest.mark.asyncio
     async def test_a_trigger_during_a_pass_is_redeemed_not_dropped(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """A change that lands mid-pass gets its OWN pass — the 2026-09-25 case.
 
@@ -1225,54 +1469,75 @@ class TestAgentServiceMCPEnrichment:
 
         async def fake_call_tool(name, arguments=None):
             if name == "__mcp_list":
-                return _json.dumps([
-                    {"name": "svc", "enabled": True, "auto_load": False},
-                ])
+                return _json.dumps(
+                    [
+                        {"name": "svc", "enabled": True, "auto_load": False},
+                    ]
+                )
             if name == "__check":
-                return _json.dumps({
-                    "servers": [
-                        {"name": "svc", "tools_ok": True, "reachable": True},
-                    ],
-                    "spawn_settled": True,
-                })
+                return _json.dumps(
+                    {
+                        "servers": [
+                            {"name": "svc", "tools_ok": True, "reachable": True},
+                        ],
+                        "spawn_settled": True,
+                    }
+                )
             if name == "__mcp_list_tools":
                 reads["n"] += 1
                 if reads["n"] == 1:
-                    await held.wait()          # still fetching the spec
-                    return _json.dumps({
-                        "server": "svc", "connected": False,
-                        "tools": [], "tool_count": 0,
-                    })
-                return _json.dumps({
-                    "server": "svc", "connected": True, "tool_count": 1,
-                    "tools": [{"server": "svc", "name": "endpoint",
-                               "description": "An endpoint",
-                               "inputSchema": {"type": "object",
-                                               "properties": {}}}],
-                })
+                    await held.wait()  # still fetching the spec
+                    return _json.dumps(
+                        {
+                            "server": "svc",
+                            "connected": False,
+                            "tools": [],
+                            "tool_count": 0,
+                        }
+                    )
+                return _json.dumps(
+                    {
+                        "server": "svc",
+                        "connected": True,
+                        "tool_count": 1,
+                        "tools": [
+                            {
+                                "server": "svc",
+                                "name": "endpoint",
+                                "description": "An endpoint",
+                                "inputSchema": {"type": "object", "properties": {}},
+                            }
+                        ],
+                    }
+                )
             raise AssertionError(f"unexpected tool call: {name} {arguments}")
 
         client.call_tool = fake_call_tool
         service._plugins["mcp-gateway"].client = client
         try:
-            with patch(
-                "slife.plugins.mcp_gateway.config.servers",
-                return_value={"svc": {}},
-            ), patch.object(
-                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            with (
+                patch(
+                    "slife.plugins.mcp_gateway.config.servers",
+                    return_value={"svc": {}},
+                ),
+                patch.object(
+                    AgentService,
+                    "_refresh_local_rows_if_changed",
+                    AsyncMock(),
+                ),
             ):
                 first = asyncio.create_task(service._sync_mcp_proxies())
                 for _ in range(1000):
                     if reads["n"]:
                         break
-                    await asyncio.sleep(0)     # let it reach its tool list
+                    await asyncio.sleep(0)  # let it reach its tool list
                 assert reads["n"] == 1, "the pass never reached its tool list"
 
                 # The change lands mid-pass: the wrapper registers its tools
                 # and pushes the standard notification.
                 await service._on_mcp_tools_changed()
 
-                assert service._mcp_reconcile_pending is True   # remembered
+                assert service._mcp_reconcile_pending is True  # remembered
                 assert await store.get_tool("svc__endpoint") is None  # not yet
                 held.set()
                 await first
@@ -1297,10 +1562,12 @@ class TestAgentServiceMCPEnrichment:
         async def fake_call_tool(name, arguments=None):
             asked.append((name, (arguments or {}).get("server")))
             if name == "__mcp_list":
-                return _json.dumps([
-                    {"name": "live", "enabled": True},
-                    {"name": "off", "enabled": False},
-                ])
+                return _json.dumps(
+                    [
+                        {"name": "live", "enabled": True},
+                        {"name": "off", "enabled": False},
+                    ]
+                )
             if name == "__check":
                 return _json.dumps({"servers": [], "spawn_settled": True})
             raise AssertionError(f"unexpected tool call: {name} {arguments}")
@@ -1311,22 +1578,29 @@ class TestAgentServiceMCPEnrichment:
         service._plugins["mcp-gateway"].client = client
 
         with patch.object(
-            service, "_discover_and_register_external_tools", AsyncMock(),
+            service,
+            "_discover_and_register_external_tools",
+            AsyncMock(),
         ):
             await service._sync_mcp_proxies()
 
-        assert ("__mcp_list", None) in asked       # the pass did run
+        assert ("__mcp_list", None) in asked  # the pass did run
         assert ("__mcp_list_tools", "off") not in asked
 
     @pytest.mark.asyncio
     async def test_sync_proxies_leaves_a_disabled_server_alone(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """A disabled server is not mirrored, so a fresh catalog has no rows
         for it — the rows a *previously enabled* one keeps are the catalog's,
         not the reconcile's (see the test below)."""
         service, store = await self._sync_with_catalog(
-            sample_config, tmp_path, "off", enabled=False,
+            sample_config,
+            tmp_path,
+            "off",
+            enabled=False,
         )
         try:
             assert "off__search" not in {
@@ -1338,7 +1612,9 @@ class TestAgentServiceMCPEnrichment:
 
     @pytest.mark.asyncio
     async def test_sync_proxies_keeps_the_rows_of_a_server_just_disabled(
-        self, sample_config, tmp_path,
+        self,
+        sample_config,
+        tmp_path,
     ):
         """Disabling a server keeps the rows it mirrored while enabled.
 
@@ -1347,7 +1623,10 @@ class TestAgentServiceMCPEnrichment:
         go away.  Nothing re-reads the server to keep that true.
         """
         service, store = await self._sync_with_catalog(
-            sample_config, tmp_path, "off", enabled=True,
+            sample_config,
+            tmp_path,
+            "off",
+            enabled=True,
         )
         try:
             assert await store.get_tool("off__search") is not None
@@ -1355,13 +1634,19 @@ class TestAgentServiceMCPEnrichment:
             # alone.  The helper's patches are re-applied because this pass
             # purges the sources tools.yaml does not name.
             service._plugins["mcp-gateway"].client = self._fake_gateway(
-                "off", enabled=False,
+                "off",
+                enabled=False,
             )
-            with patch(
-                "slife.plugins.mcp_gateway.config.servers",
-                return_value={"off": {}},
-            ), patch.object(
-                AgentService, "_refresh_local_rows_if_changed", AsyncMock(),
+            with (
+                patch(
+                    "slife.plugins.mcp_gateway.config.servers",
+                    return_value={"off": {}},
+                ),
+                patch.object(
+                    AgentService,
+                    "_refresh_local_rows_if_changed",
+                    AsyncMock(),
+                ),
             ):
                 await service._sync_mcp_proxies()
 
@@ -1379,12 +1664,16 @@ class TestAgentServiceMCPEnrichment:
         client = AsyncMock()
         client.is_connected = False
         service._plugins["mcp-gateway"].client = client
-        with patch.object(service, "_discover_and_register_external_tools", AsyncMock()) as mock_reg:
+        with patch.object(
+            service, "_discover_and_register_external_tools", AsyncMock()
+        ) as mock_reg:
             await service._sync_mcp_proxies()
         mock_reg.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_sync_proxies_reconcile_keeps_disabled_loaded_proxy(self, sample_config):
+    async def test_sync_proxies_reconcile_keeps_disabled_loaded_proxy(
+        self, sample_config
+    ):
         """A configured server's on-demand-loaded proxy is KEPT even when its
         server is disabled — the catalog's effective-status join hides it
         (disable ≠ remove; remove is the only unregister path)."""
@@ -1396,15 +1685,24 @@ class TestAgentServiceMCPEnrichment:
 
         async def fake_call_tool(name, arguments=None):
             if name == "__mcp_list":
-                return _json.dumps([{"name": "foo", "enabled": False, "auto_load": False}])
+                return _json.dumps(
+                    [{"name": "foo", "enabled": False, "auto_load": False}]
+                )
             raise AssertionError(f"unexpected tool call: {name} {arguments}")
 
         client.call_tool = fake_call_tool
         service._plugins["mcp-gateway"].client = client
-        proxy = create_proxy_tools(client, [
-            {"server": "foo", "name": "t1", "description": "",
-             "inputSchema": {"type": "object", "properties": {}}},
-        ])[0]
+        proxy = create_proxy_tools(
+            client,
+            [
+                {
+                    "server": "foo",
+                    "name": "t1",
+                    "description": "",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+            ],
+        )[0]
         service.tool_registry.register(proxy)
 
         await service._sync_mcp_proxies()
@@ -1413,7 +1711,9 @@ class TestAgentServiceMCPEnrichment:
         assert "foo__t1" in names
 
     @pytest.mark.asyncio
-    async def test_sync_proxies_reconcile_keeps_enabled_loaded_proxy(self, sample_config):
+    async def test_sync_proxies_reconcile_keeps_enabled_loaded_proxy(
+        self, sample_config
+    ):
         """An enabled on-demand-loaded proxy survives the reconcile."""
         from slife.mcp.tool_adapter import create_proxy_tools
 
@@ -1423,15 +1723,24 @@ class TestAgentServiceMCPEnrichment:
 
         async def fake_call_tool(name, arguments=None):
             if name == "__mcp_list":
-                return _json.dumps([{"name": "foo", "enabled": True, "auto_load": False}])
+                return _json.dumps(
+                    [{"name": "foo", "enabled": True, "auto_load": False}]
+                )
             raise AssertionError(f"unexpected tool call: {name} {arguments}")
 
         client.call_tool = fake_call_tool
         service._plugins["mcp-gateway"].client = client
-        proxy = create_proxy_tools(client, [
-            {"server": "foo", "name": "t1", "description": "",
-             "inputSchema": {"type": "object", "properties": {}}},
-        ])[0]
+        proxy = create_proxy_tools(
+            client,
+            [
+                {
+                    "server": "foo",
+                    "name": "t1",
+                    "description": "",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+            ],
+        )[0]
         service.tool_registry.register(proxy)
 
         await service._sync_mcp_proxies()
@@ -1440,7 +1749,9 @@ class TestAgentServiceMCPEnrichment:
         assert "foo__t1" in names
 
     @pytest.mark.asyncio
-    async def test_sync_proxies_reconcile_drops_removed_server_proxy(self, sample_config):
+    async def test_sync_proxies_reconcile_drops_removed_server_proxy(
+        self, sample_config
+    ):
         """A proxy whose server left the CONFIG is unregistered — removal is
         the only unregister path (mcp_remove)."""
         from slife.mcp.tool_adapter import create_proxy_tools
@@ -1456,10 +1767,17 @@ class TestAgentServiceMCPEnrichment:
 
         client.call_tool = fake_call_tool
         service._plugins["mcp-gateway"].client = client
-        proxy = create_proxy_tools(client, [
-            {"server": "foo", "name": "t1", "description": "",
-             "inputSchema": {"type": "object", "properties": {}}},
-        ])[0]
+        proxy = create_proxy_tools(
+            client,
+            [
+                {
+                    "server": "foo",
+                    "name": "t1",
+                    "description": "",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+            ],
+        )[0]
         service.tool_registry.register(proxy)
 
         await service._sync_mcp_proxies()
@@ -1501,7 +1819,8 @@ class TestAgentServiceMCPDiscovery:
     async def test_discover_empty_tools_leaves_registry_untouched(self, sample_config):
         service = AgentService(sample_config)
         service._plugins["mcp-gateway"].client = self._client_with(
-            status_servers=[], tools_by_server={},
+            status_servers=[],
+            tools_by_server={},
         )
         service.tool_registry.register(SimpleNamespace(name="foo__keep"))
 
@@ -1531,9 +1850,12 @@ class TestAgentServiceMCPDiscovery:
         ``mcp_servers/ok`` with replace=True, so the health store itself
         reflects the recovery, not just the live check_mcp diff."""
         from slife.health import record
+
         record(
-            "mcp_servers", "warning",
-            key="foo", value="connect_pending",
+            "mcp_servers",
+            "warning",
+            key="foo",
+            value="connect_pending",
             hint="enabled but not yet connected; retrying in background.",
         )
         service = AgentService(sample_config)
@@ -1545,6 +1867,7 @@ class TestAgentServiceMCPDiscovery:
         await service._discover_and_register_external_tools("foo")
 
         from slife.health import get_report
+
         recs = [e for e in get_report() if e.get("key") == "foo"]
         assert len(recs) == 1  # the warning was replaced, not appended
         assert recs[0]["level"] == "ok"
@@ -1563,22 +1886,27 @@ class TestAgentServiceMCPDiscovery:
         left as whatever an earlier one said.
         """
         from slife.health import record
+
         record(
-            "mcp_servers", "warning",
-            key="foo", value="connect_pending",
+            "mcp_servers",
+            "warning",
+            key="foo",
+            value="connect_pending",
             hint="enabled but not yet connected; retrying in background.",
         )
         service = AgentService(sample_config)
         service._plugins["mcp-gateway"].client = self._client_with(
-            status_servers=[], tools_by_server={},
+            status_servers=[],
+            tools_by_server={},
         )
         service.tool_registry.register(SimpleNamespace(name="foo__keep"))
 
         await service._discover_and_register_external_tools("foo")
 
         from slife.health import get_report
+
         recs = [e for e in get_report() if e.get("key") == "foo"]
-        assert len(recs) == 1            # replaced, not appended — no flicker
+        assert len(recs) == 1  # replaced, not appended — no flicker
         assert recs[0]["level"] == "warning"
         assert recs[0]["value"] == "no tool list"
         # The tools that were already registered are untouched: a not-ready
@@ -1587,16 +1915,19 @@ class TestAgentServiceMCPDiscovery:
 
     @pytest.mark.asyncio
     async def test_a_server_that_lists_later_supersedes_the_no_tool_list_record(
-        self, sample_config,
+        self,
+        sample_config,
     ):
         """…and the record is self-clearing: the same (component, key) the
         success path writes is what the warning occupied, so the store heals
         itself as the wrapper's retry lands — no reader has to know the state
         ever existed."""
         from slife.health import get_report
+
         service = AgentService(sample_config)
         service._plugins["mcp-gateway"].client = self._client_with(
-            status_servers=[], tools_by_server={},
+            status_servers=[],
+            tools_by_server={},
         )
 
         await service._discover_and_register_external_tools("foo")
@@ -1606,7 +1937,8 @@ class TestAgentServiceMCPDiscovery:
 
         # The background retry finally lists it.
         service._plugins["mcp-gateway"].client = self._client_with(
-            status_servers=[], tools_by_server={"foo": [self._tool("foo", "t1")]},
+            status_servers=[],
+            tools_by_server={"foo": [self._tool("foo", "t1")]},
         )
         await service._discover_and_register_external_tools("foo")
 
@@ -1633,9 +1965,7 @@ class TestAgentServicePluginRescan:
     def _client_withtools(self, names):
         client = AsyncMock()
         client.is_connected = True
-        client.list_tools = AsyncMock(
-            return_value=[self._tool(n) for n in names]
-        )
+        client.list_tools = AsyncMock(return_value=[self._tool(n) for n in names])
         return client
 
     def _service_with(self, config, names, registered=None):
@@ -1666,7 +1996,9 @@ class TestAgentServicePluginRescan:
         # State is consistent before the rescan: both tools registered + the
         # recorded set match; the plugin no longer reports "gone".
         service = self._service_with(
-            sample_config, names=["translate"], registered={"translate", "gone"},
+            sample_config,
+            names=["translate"],
+            registered={"translate", "gone"},
         )
         service.tool_registry.register(SimpleNamespace(name="translate"))
         service.tool_registry.register(SimpleNamespace(name="gone"))
@@ -1712,10 +2044,16 @@ class TestAgentServiceConnectPluginHttp:
         lifecycle = PluginLifecycle(plugin_name, service)
         client = AsyncMock()
         client.is_connected = True
-        client.list_tools = AsyncMock(return_value=[
-            {"server": plugin_name, "name": "my_tool",
-             "description": "", "inputSchema": {"type": "object", "properties": {}}},
-        ])
+        client.list_tools = AsyncMock(
+            return_value=[
+                {
+                    "server": plugin_name,
+                    "name": "my_tool",
+                    "description": "",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+            ]
+        )
         lifecycle.client = client
         service._plugins[plugin_name] = lifecycle
         return service, client
@@ -1726,7 +2064,9 @@ class TestAgentServiceConnectPluginHttp:
         its health-check client — media has no bespoke wrapper anymore."""
         service, _ = self._service_with(sample_config, "media")
         with patch.object(
-            service._plugins["media"].__class__, "connect_http", AsyncMock(),
+            service._plugins["media"].__class__,
+            "connect_http",
+            AsyncMock(),
         ):
             await service.connect_plugin_http("media", 12345)
         assert any(t.name == "my_tool" for t in service.tool_registry.list_tools())
@@ -1738,9 +2078,14 @@ class TestAgentServiceConnectPluginHttp:
         _on_mcp_tools_changed; initial connect also re-syncs external proxies
         (chosen by spec.gateway, not a name branch)."""
         service, client = self._service_with(sample_config, "mcp-gateway")
-        with patch.object(
-            service._plugins["mcp-gateway"].__class__, "connect_http", AsyncMock(),
-        ), patch.object(service, "_sync_mcp_proxies", AsyncMock()) as mock_sync:
+        with (
+            patch.object(
+                service._plugins["mcp-gateway"].__class__,
+                "connect_http",
+                AsyncMock(),
+            ),
+            patch.object(service, "_sync_mcp_proxies", AsyncMock()) as mock_sync,
+        ):
             await service.connect_plugin_http("mcp-gateway", 12345)
         assert client.on_notification.__self__ is service
         assert client.on_notification.__func__ is AgentService._on_mcp_tools_changed
@@ -1759,9 +2104,14 @@ class TestAgentServiceConnectPluginHttp:
         always said "also"; the branch said otherwise.
         """
         service, client = self._service_with(sample_config, "mcp-gateway")
-        with patch.object(
-            service._plugins["mcp-gateway"].__class__, "connect_http", AsyncMock(),
-        ), patch.object(service, "_sync_mcp_proxies", AsyncMock()):
+        with (
+            patch.object(
+                service._plugins["mcp-gateway"].__class__,
+                "connect_http",
+                AsyncMock(),
+            ),
+            patch.object(service, "_sync_mcp_proxies", AsyncMock()),
+        ):
             await service.connect_plugin_http("mcp-gateway", 12345)
 
         assert service._tool_ctx.mcp_client is client
@@ -1772,7 +2122,9 @@ class TestAgentServiceConnectPluginHttp:
         dynamic tools stay live under a subagent)."""
         service, client = self._service_with(sample_config, "job-coding")
         with patch.object(
-            service._plugins["job-coding"].__class__, "connect_http", AsyncMock(),
+            service._plugins["job-coding"].__class__,
+            "connect_http",
+            AsyncMock(),
         ):
             await service.connect_plugin_http("job-coding", 12345)
         assert client.on_notification is not None
@@ -1792,12 +2144,22 @@ class TestAgentServiceConnectPluginHttp:
         lifecycle = PluginLifecycle("media", service)
         client = AsyncMock()
         client.is_connected = True
-        client.list_tools = AsyncMock(return_value=[
-            {"server": "media", "name": "keep",
-             "description": "", "inputSchema": {"type": "object", "properties": {}}},
-            {"server": "media", "name": "drop",
-             "description": "", "inputSchema": {"type": "object", "properties": {}}},
-        ])
+        client.list_tools = AsyncMock(
+            return_value=[
+                {
+                    "server": "media",
+                    "name": "keep",
+                    "description": "",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+                {
+                    "server": "media",
+                    "name": "drop",
+                    "description": "",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+            ]
+        )
         lifecycle.client = client
         service._plugins["media"] = lifecycle
 
@@ -1808,10 +2170,16 @@ class TestAgentServiceConnectPluginHttp:
         # The plugin restarted and dropped "drop".
         client2 = AsyncMock()
         client2.is_connected = True
-        client2.list_tools = AsyncMock(return_value=[
-            {"server": "media", "name": "keep",
-             "description": "", "inputSchema": {"type": "object", "properties": {}}},
-        ])
+        client2.list_tools = AsyncMock(
+            return_value=[
+                {
+                    "server": "media",
+                    "name": "keep",
+                    "description": "",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+            ]
+        )
         lifecycle.client = client2
         with patch.object(lifecycle.__class__, "connect_http", AsyncMock()):
             await service.connect_plugin_http("media", 12346)
@@ -1841,13 +2209,16 @@ class TestAgentServiceMemory:
         service.config.memdb_config = MagicMock()
         mock_client = MagicMock()
 
-        with patch.object(
-            service, "_spawn_plugin_generic", AsyncMock(return_value=True)
-        ) as mock_spawn, \
-             patch.object(service, "_arm_watchdog", MagicMock()):
+        with (
+            patch.object(
+                service, "_spawn_plugin_generic", AsyncMock(return_value=True)
+            ) as mock_spawn,
+            patch.object(service, "_arm_watchdog", MagicMock()),
+        ):
             service._plugins["memdb"].client = mock_client
             result = await service._start_plugin_server_impl(
-                "memdb", "slife.plugins.memdb.server",
+                "memdb",
+                "slife.plugins.memdb.server",
             )
 
         mock_spawn.assert_called_once_with("memdb", "slife.plugins.memdb.server")
@@ -1906,7 +2277,9 @@ class TestAgentServiceMemory:
 
         with pytest.raises(MemorySaveError):
             await service.save_to_memory(
-                user_message="hi", token_count=10, history=conv,
+                user_message="hi",
+                token_count=10,
+                history=conv,
             )
 
         # Not the DB-hard-stop path: no frozen inbox.
@@ -1937,8 +2310,11 @@ class TestAgentServiceMemory:
 
         ts = datetime(2026, 8, 12, 14, 32, 9).astimezone()
         await service.save_to_memory(
-            user_message="hi", token_count=10,
-            history=conv, channel="human", created_at=ts,
+            user_message="hi",
+            token_count=10,
+            history=conv,
+            channel="human",
+            created_at=ts,
         )
 
         mock_client.call_tool.assert_awaited_once()
@@ -1965,7 +2341,9 @@ class TestAgentServiceMemory:
         conv.add_assistant_message("hello back")
 
         await service.save_to_memory(
-            user_message="hi", token_count=10, history=conv,
+            user_message="hi",
+            token_count=10,
+            history=conv,
         )
         tool_name, args = mock_client.call_tool.await_args.args
         assert tool_name == "__memory_save_turn"
@@ -1988,7 +2366,8 @@ class TestAgentServiceMemory:
         conv.add_assistant_message("got it")
 
         await service.save_to_memory(
-            user_message=f"my key is {secret}", history=conv,
+            user_message=f"my key is {secret}",
+            history=conv,
         )
 
         mock_client.call_tool.assert_awaited_once()
@@ -2032,7 +2411,9 @@ class TestAgentServiceMemory:
         service.on_memory_broken(surfaced.append)
 
         await service.save_to_memory(
-            user_message="hi", token_count=10, history=conv,
+            user_message="hi",
+            token_count=10,
+            history=conv,
         )
 
         assert "database is locked" in service._memory_error
@@ -2063,7 +2444,9 @@ class TestAgentServiceMemory:
 
         with pytest.raises(MemorySaveError):
             await service.save_to_memory(
-                user_message="hi", token_count=10, history=conv,
+                user_message="hi",
+                token_count=10,
+                history=conv,
             )
 
         assert service.inbox._frozen is False
@@ -2078,7 +2461,7 @@ class TestAgentServiceMemory:
         service = AgentService(sample_config)
         mock_client = AsyncMock()
         mock_client.is_connected = True
-        mock_client.call_tool = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_client.call_tool = AsyncMock(side_effect=TimeoutError())
         service._plugins["memdb"].client = mock_client
 
         conv = service.message_history
@@ -2087,7 +2470,9 @@ class TestAgentServiceMemory:
 
         with pytest.raises(MemorySaveError):
             await service.save_to_memory(
-                user_message="hi", token_count=10, history=conv,
+                user_message="hi",
+                token_count=10,
+                history=conv,
             )
 
         assert service.inbox._frozen is False
@@ -2111,7 +2496,9 @@ class TestAgentServiceMemory:
 
         with pytest.raises(MemorySaveError):
             await service.save_to_memory(
-                user_message="hi", token_count=10, history=conv,
+                user_message="hi",
+                token_count=10,
+                history=conv,
             )
 
         assert service.inbox._frozen is False
@@ -2131,8 +2518,14 @@ class TestAgentServiceMemory:
         conv = service.message_history
         conv.add_user_message("read the big file")
         conv.add_assistant_message(
-            "", tool_calls=[{"id": "call_1", "type": "function",
-                             "function": {"name": "read_file", "arguments": "{}"}}],
+            "",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+            ],
         )
         conv.add_tool_result("call_1", big)
         conv.add_assistant_message("the file is huge.")
@@ -2163,8 +2556,14 @@ class TestAgentServiceMemory:
         conv = service.message_history
         conv.add_user_message("hi")
         conv.add_assistant_message(
-            "", tool_calls=[{"id": "call_1", "type": "function",
-                             "function": {"name": "check", "arguments": "{}"}}],
+            "",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "check", "arguments": "{}"},
+                }
+            ],
         )
         conv.add_tool_result("call_1", small)
         conv.add_assistant_message("checked.")
@@ -2194,13 +2593,13 @@ class TestAgentServiceMemory:
         await service.save_to_memory(user_message="hi", history=conv)
 
         # The live history still carries the note...
-        assert "oldest turns have been removed from context" in conv.messages[-1]["content"]
+        assert (
+            "oldest turns have been removed from context"
+            in conv.messages[-1]["content"]
+        )
         # ...but the persisted turn is clean.
         _, args = mock_client.call_tool.await_args.args
-        assert all(
-            "[INFO: " not in (m.get("content") or "")
-            for m in args["messages"]
-        )
+        assert all("[INFO: " not in (m.get("content") or "") for m in args["messages"])
 
     @pytest.mark.asyncio
     async def test_saved_turn_annotated_with_footnote(self, sample_config):
@@ -2301,13 +2700,17 @@ class TestAgentServiceMemory:
         conv = service.message_history
         conv.add_user_message("hi")
         conv.add_assistant_message(
-            "", tool_calls=[{
-                "id": "c1", "type": "function",
-                "function": {
-                    "name": "turn_summarize",
-                    "arguments": '{"summary": "switched model", "tags": "model,vision"}',
-                },
-            }],
+            "",
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {
+                        "name": "turn_summarize",
+                        "arguments": '{"summary": "switched model", "tags": "model,vision"}',
+                    },
+                }
+            ],
         )
         conv.add_tool_result("c1", '{"status": "captured"}')
         conv.add_assistant_message("done")
@@ -2329,8 +2732,15 @@ class TestCompactToolResults:
 
     def test_compacts_oversized_result_to_head_tail(self):
         messages = [
-            {"role": "assistant", "tool_calls": [
-                {"id": "c1", "function": {"name": "run_python_script", "arguments": "{}"}}]},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "function": {"name": "run_python_script", "arguments": "{}"},
+                    }
+                ],
+            },
             {"role": "tool", "tool_call_id": "c1", "content": "A" * 1000 + "B" * 1000},
         ]
         n = compact_tool_results(messages, budget_chars=200)
@@ -2376,14 +2786,18 @@ class TestExtractTurnAnnotation:
 
     @staticmethod
     def _call(args_json: str):
-        return [{
-            "role": "assistant",
-            "tool_calls": [{
-                "id": "c1", "type": "function",
-                "function": {"name": "turn_summarize",
-                             "arguments": args_json},
-            }],
-        }]
+        return [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "turn_summarize", "arguments": args_json},
+                    }
+                ],
+            }
+        ]
 
     def test_rowidless_captures_summary_and_tags(self):
         msgs = self._call('{"summary": "switched model", "tags": "model,vision"}')
@@ -2398,24 +2812,36 @@ class TestExtractTurnAnnotation:
         """A legacy ``{server}__turn_summarize`` call (split("__")[-1]) still
         matches — the matcher is suffix-based, so the prefixed historical form
         keeps working even though built-ins now register bare."""
-        msgs = [{
-            "role": "assistant",
-            "tool_calls": [{
-                "id": "c1", "type": "function",
-                "function": {"name": "memdb__turn_summarize",
-                             "arguments": '{"tags": "a,b"}'},
-            }],
-        }]
+        msgs = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {
+                            "name": "memdb__turn_summarize",
+                            "arguments": '{"tags": "a,b"}',
+                        },
+                    }
+                ],
+            }
+        ]
         assert _extract_turn_annotation(msgs) == (None, "a,b")
 
     def test_unrelated_tools_ignored(self):
-        msgs = [{
-            "role": "assistant",
-            "tool_calls": [{
-                "id": "c1", "type": "function",
-                "function": {"name": "read_file", "arguments": "{}"},
-            }],
-        }]
+        msgs = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            }
+        ]
         assert _extract_turn_annotation(msgs) == (None, None)
 
 
@@ -2440,15 +2866,20 @@ class TestAgentServiceA2A:
         skipped (A2A disabled at runtime), never reported as a crash.
         """
         from slife.a2a.config import A2AConfig
+
         service = AgentService(sample_config)
         service.config.a2a_config = A2AConfig(
-            enabled=True, broker_host="localhost", broker_port=1883,
+            enabled=True,
+            broker_host="localhost",
+            broker_port=1883,
         )
         with patch(
-            "slife.a2a.broker.probe_broker", AsyncMock(return_value=False),
+            "slife.a2a.broker.probe_broker",
+            AsyncMock(return_value=False),
         ):
             result = await service.start_plugin_server(
-                "a2a", "slife.plugins.a2a.server",
+                "a2a",
+                "slife.plugins.a2a.server",
             )
         assert result is PluginStartStatus.SKIPPED
         assert service._plugins["a2a"].process is None
@@ -2474,19 +2905,29 @@ class TestAgentServiceA2A:
             if name == "__a2a_drain_incoming":
                 calls[0] += 1
                 if calls[0] == 1:
-                    return _json.dumps({
-                        "tasks": [{
-                            "source": "Jack", "content": "do X",
-                            "correlation_id": "cid-1",
-                        }],
-                        "presence": [], "cancellations": [],
-                        "task_completions": [],
-                    })
+                    return _json.dumps(
+                        {
+                            "tasks": [
+                                {
+                                    "source": "Jack",
+                                    "content": "do X",
+                                    "correlation_id": "cid-1",
+                                }
+                            ],
+                            "presence": [],
+                            "cancellations": [],
+                            "task_completions": [],
+                        }
+                    )
                 service._plugins["a2a"].client = None  # end the loop
-                return _json.dumps({
-                    "tasks": [], "presence": [],
-                    "cancellations": [], "task_completions": [],
-                })
+                return _json.dumps(
+                    {
+                        "tasks": [],
+                        "presence": [],
+                        "cancellations": [],
+                        "task_completions": [],
+                    }
+                )
             return "{}"
 
         mock_a2a.call_tool = mock_call_tool
@@ -2501,8 +2942,7 @@ class TestAgentServiceA2A:
 
         assert len(posted) == 1
         assert posted[0].content == (
-            '[A2A:{"from": "Jack", "type": "task_request", "task_id": "cid-1"}] '
-            "do X"
+            '[A2A:{"from": "Jack", "type": "task_request", "task_id": "cid-1"}] do X'
         )
         assert posted[0].correlation_id == "cid-1"
         # Completion is the model's explicit job (a task may take many turns):
@@ -2527,19 +2967,30 @@ class TestAgentServiceA2A:
             if name == "__a2a_drain_incoming":
                 calls[0] += 1
                 if calls[0] == 1:
-                    return _json.dumps({
-                        "tasks": [],
-                        "events": [{
-                            "source": "Jack", "content": "all hands on deck",
-                        }],
-                        "presence": [], "cancellations": [],
-                        "task_completions": [],
-                    })
+                    return _json.dumps(
+                        {
+                            "tasks": [],
+                            "events": [
+                                {
+                                    "source": "Jack",
+                                    "content": "all hands on deck",
+                                }
+                            ],
+                            "presence": [],
+                            "cancellations": [],
+                            "task_completions": [],
+                        }
+                    )
                 service._plugins["a2a"].client = None  # end the loop
-                return _json.dumps({
-                    "tasks": [], "events": [], "presence": [],
-                    "cancellations": [], "task_completions": [],
-                })
+                return _json.dumps(
+                    {
+                        "tasks": [],
+                        "events": [],
+                        "presence": [],
+                        "cancellations": [],
+                        "task_completions": [],
+                    }
+                )
             return "{}"
 
         mock_a2a.call_tool = mock_call_tool
@@ -2553,7 +3004,10 @@ class TestAgentServiceA2A:
         await service._a2a_poll_loop(interval=0.001)  # noqa-timeout
 
         assert len(posted) == 1
-        assert posted[0].content == '[A2A:{"from": "Jack", "type": "broadcast"}] all hands on deck'
+        assert (
+            posted[0].content
+            == '[A2A:{"from": "Jack", "type": "broadcast"}] all hands on deck'
+        )
         assert posted[0].on_reply is None
         assert posted[0].metadata.get("a2a_kind") == "event"
 
@@ -2578,18 +3032,29 @@ class TestAgentServiceA2A:
             if name == "__a2a_drain_incoming":
                 calls[0] += 1
                 if calls[0] == 1:
-                    return _json.dumps({
-                        "tasks": [],
-                        "cancellations": [{
-                            "type": "cancel", "corr_id": "t-9", "peer": "Jack",
-                        }],
-                        "presence": [], "task_completions": [],
-                    })
+                    return _json.dumps(
+                        {
+                            "tasks": [],
+                            "cancellations": [
+                                {
+                                    "type": "cancel",
+                                    "corr_id": "t-9",
+                                    "peer": "Jack",
+                                }
+                            ],
+                            "presence": [],
+                            "task_completions": [],
+                        }
+                    )
                 service._plugins["a2a"].client = None  # end the loop
-                return _json.dumps({
-                    "tasks": [], "cancellations": [], "presence": [],
-                    "task_completions": [],
-                })
+                return _json.dumps(
+                    {
+                        "tasks": [],
+                        "cancellations": [],
+                        "presence": [],
+                        "task_completions": [],
+                    }
+                )
             return "{}"
 
         mock_a2a.call_tool = mock_call_tool
@@ -2635,18 +3100,29 @@ class TestAgentServiceA2A:
             if name == "__a2a_drain_incoming":
                 calls[0] += 1
                 if calls[0] == 1:
-                    return _json.dumps({
-                        "tasks": [],
-                        "cancellations": [{
-                            "type": "cancel", "corr_id": "t-4", "peer": "Jill",
-                        }],
-                        "presence": [], "task_completions": [],
-                    })
+                    return _json.dumps(
+                        {
+                            "tasks": [],
+                            "cancellations": [
+                                {
+                                    "type": "cancel",
+                                    "corr_id": "t-4",
+                                    "peer": "Jill",
+                                }
+                            ],
+                            "presence": [],
+                            "task_completions": [],
+                        }
+                    )
                 service._plugins["a2a"].client = None  # end the loop
-                return _json.dumps({
-                    "tasks": [], "cancellations": [], "presence": [],
-                    "task_completions": [],
-                })
+                return _json.dumps(
+                    {
+                        "tasks": [],
+                        "cancellations": [],
+                        "presence": [],
+                        "task_completions": [],
+                    }
+                )
             return "{}"
 
         mock_a2a.call_tool = mock_call_tool
@@ -2678,22 +3154,42 @@ class TestAgentServiceA2A:
             if name == "__a2a_drain_incoming":
                 calls[0] += 1
                 if calls[0] == 1:
-                    return _json.dumps({
-                        "tasks": [], "presence": [], "cancellations": [],
-                        "task_completions": [
-                            {"corr_id": "c-task", "result": "the answer",
-                             "cancelled": False, "peer": "peer-1"},
-                            {"corr_id": "c-cancel", "result": "",
-                             "cancelled": True, "peer": "peer-3"},
-                            {"corr_id": "c-empty", "result": "",
-                             "cancelled": False, "peer": "peer-4"},
-                        ],
-                    })
+                    return _json.dumps(
+                        {
+                            "tasks": [],
+                            "presence": [],
+                            "cancellations": [],
+                            "task_completions": [
+                                {
+                                    "corr_id": "c-task",
+                                    "result": "the answer",
+                                    "cancelled": False,
+                                    "peer": "peer-1",
+                                },
+                                {
+                                    "corr_id": "c-cancel",
+                                    "result": "",
+                                    "cancelled": True,
+                                    "peer": "peer-3",
+                                },
+                                {
+                                    "corr_id": "c-empty",
+                                    "result": "",
+                                    "cancelled": False,
+                                    "peer": "peer-4",
+                                },
+                            ],
+                        }
+                    )
                 service._plugins["a2a"].client = None  # end the loop
-                return _json.dumps({
-                    "tasks": [], "presence": [],
-                    "cancellations": [], "task_completions": [],
-                })
+                return _json.dumps(
+                    {
+                        "tasks": [],
+                        "presence": [],
+                        "cancellations": [],
+                        "task_completions": [],
+                    }
+                )
             return "{}"
 
         mock_a2a.call_tool = mock_call_tool
@@ -2756,8 +3252,11 @@ class TestAgentServiceSubagent:
                     return '{"id": 1, "name": "daily_report"}'
                 if name == "__scheduled_run_status":
                     return _json.dumps(
-                        {"task_id": 1, "due_at": arguments.get("due_at"),
-                         "status": status}
+                        {
+                            "task_id": 1,
+                            "due_at": arguments.get("due_at"),
+                            "status": status,
+                        }
                     )
                 if name == "__scheduled_mark_run_failed":
                     marked.setdefault("calls", []).append(arguments)
@@ -2805,8 +3304,11 @@ class TestAgentServiceSubagent:
             assert "report was not saved" in content
             assert "failed" in content
             assert marked2["calls"] == [
-                {"task_id": 1, "due_at": due,
-                 "error": "worker finished without confirming the run"},
+                {
+                    "task_id": 1,
+                    "due_at": due,
+                    "error": "worker finished without confirming the run",
+                },
             ]
 
             # A task id announced once is not a scheduled completion again:
@@ -2859,6 +3361,7 @@ class TestAgentServiceCallbacks:
         await service._notify_activity("event")
 
         good_cb.assert_called_once()
+
 
 # ── AgentService process_message ────────────────────────────────────────────
 
@@ -2990,11 +3493,8 @@ class TestAgentServiceInbox:
 
         # Create a real cancellable task
         async def _fake_run():
-            try:
-                while True:
-                    await asyncio.sleep(60)
-            except asyncio.CancelledError:
-                raise
+            while True:
+                await asyncio.sleep(60)
 
         service._inbox_task = asyncio.create_task(_fake_run())
         await asyncio.sleep(0)  # let it start
@@ -3065,18 +3565,22 @@ class TestAgentServiceWeChat:
         mock_wechat_client.call_tool = AsyncMock(return_value="{}")
         service._plugins["wechat"].client = mock_wechat_client  # pyright: ignore[reportAttributeAccessIssue]
 
-        with patch.object(
-            service, "_spawn_plugin_generic", AsyncMock(return_value=True)
-        ) as mock_spawn, \
-             patch.object(service, "_arm_watchdog", MagicMock()), \
-             patch.object(service, "_wechat_restore_session", AsyncMock()), \
-             patch.object(service, "_wechat_poll_loop", AsyncMock()):
+        with (
+            patch.object(
+                service, "_spawn_plugin_generic", AsyncMock(return_value=True)
+            ) as mock_spawn,
+            patch.object(service, "_arm_watchdog", MagicMock()),
+            patch.object(service, "_wechat_restore_session", AsyncMock()),
+            patch.object(service, "_wechat_poll_loop", AsyncMock()),
+        ):
             result = await service.start_plugin_server(
-                "wechat", "slife.plugins.wechat.server",
+                "wechat",
+                "slife.plugins.wechat.server",
             )
 
             mock_spawn.assert_called_once_with(
-                "wechat", "slife.plugins.wechat.server",
+                "wechat",
+                "slife.plugins.wechat.server",
             )
             assert result is PluginStartStatus.STARTED
             # Poll loop scheduled as a background task by the after-ready glue.
@@ -3090,11 +3594,8 @@ class TestAgentServiceWeChat:
 
         # Set up a fake poll task
         async def _fake_poll():
-            try:
-                while True:
-                    await asyncio.sleep(60)
-            except asyncio.CancelledError:
-                raise
+            while True:
+                await asyncio.sleep(60)
 
         service._plugins["wechat"].poll_task = asyncio.create_task(_fake_poll())
 
@@ -3132,11 +3633,17 @@ class TestAgentServiceWeChat:
             if tool_name == "__wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
-                    return _json.dumps({"messages": [{
-                        "to_user_id": "wx_user_123",
-                        "context_token": "ctx_abc",
-                        "text": "你好",
-                    }]})
+                    return _json.dumps(
+                        {
+                            "messages": [
+                                {
+                                    "to_user_id": "wx_user_123",
+                                    "context_token": "ctx_abc",
+                                    "text": "你好",
+                                }
+                            ]
+                        }
+                    )
                 # Disconnect after first poll to exit the loop cleanly
                 mock_wc.is_connected = False
                 return _json.dumps({"messages": []})
@@ -3200,9 +3707,12 @@ class TestAgentServiceWeChat:
 
         await service._wechat_poll_loop(interval=0.001)  # noqa-timeout
 
-        seen = [c.kwargs["logged_in"] for c in events.await_args_list
-                if c.args[0] == "wechat_status"]
-        assert seen == [True, False]   # the repeat "ok" is not re-announced
+        seen = [
+            c.kwargs["logged_in"]
+            for c in events.await_args_list
+            if c.args[0] == "wechat_status"
+        ]
+        assert seen == [True, False]  # the repeat "ok" is not re-announced
 
     @pytest.mark.asyncio
     async def test_wechat_poll_never_logged_in_stays_silent(self, sample_config):
@@ -3238,8 +3748,11 @@ class TestAgentServiceWeChat:
         await service._wechat_poll_loop(interval=0.001)  # noqa-timeout
 
         # The two "not_logged_in" drains are silent; only the login is news.
-        seen = [c.kwargs["logged_in"] for c in events.await_args_list
-                if c.args[0] == "wechat_status"]
+        seen = [
+            c.kwargs["logged_in"]
+            for c in events.await_args_list
+            if c.args[0] == "wechat_status"
+        ]
         assert seen == [True]
 
     @pytest.mark.asyncio
@@ -3269,8 +3782,7 @@ class TestAgentServiceWeChat:
         await service._wechat_poll_loop(interval=0.001)  # noqa-timeout
 
         assert service._wechat_logged_in is None
-        assert [c for c in events.await_args_list
-                if c.args[0] == "wechat_status"] == []
+        assert [c for c in events.await_args_list if c.args[0] == "wechat_status"] == []
 
     @pytest.mark.asyncio
     async def test_wechat_poll_skips_empty_text(self, sample_config):
@@ -3286,10 +3798,22 @@ class TestAgentServiceWeChat:
             if tool_name == "__wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
-                    return _json.dumps({"messages": [
-                        {"to_user_id": "wx_1", "context_token": "c1", "text": "   "},
-                        {"to_user_id": "wx_2", "context_token": "c2", "text": "real"},
-                    ]})
+                    return _json.dumps(
+                        {
+                            "messages": [
+                                {
+                                    "to_user_id": "wx_1",
+                                    "context_token": "c1",
+                                    "text": "   ",
+                                },
+                                {
+                                    "to_user_id": "wx_2",
+                                    "context_token": "c2",
+                                    "text": "real",
+                                },
+                            ]
+                        }
+                    )
                 mock_wc.is_connected = False
                 return _json.dumps({"messages": []})
             return "{}"
@@ -3329,11 +3853,17 @@ class TestAgentServiceWeChat:
             if tool_name == "__wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
-                    return _json.dumps({"messages": [{
-                        "to_user_id": "wx_123",
-                        "context_token": "ctx_xyz",
-                        "text": "帮我查一下天气",
-                    }]})
+                    return _json.dumps(
+                        {
+                            "messages": [
+                                {
+                                    "to_user_id": "wx_123",
+                                    "context_token": "ctx_xyz",
+                                    "text": "帮我查一下天气",
+                                }
+                            ]
+                        }
+                    )
                 mock_wc.is_connected = False
                 return _json.dumps({"messages": []})
             return "{}"
@@ -3371,11 +3901,17 @@ class TestAgentServiceWeChat:
             if tool_name == "__wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
-                    return _json.dumps({"messages": [{
-                        "to_user_id": "wx_1",
-                        "context_token": "ctx_1",
-                        "text": "hello",
-                    }]})
+                    return _json.dumps(
+                        {
+                            "messages": [
+                                {
+                                    "to_user_id": "wx_1",
+                                    "context_token": "ctx_1",
+                                    "text": "hello",
+                                }
+                            ]
+                        }
+                    )
                 mock_wc.is_connected = False
                 return _json.dumps({"messages": []})
             return "{}"
@@ -3413,7 +3949,7 @@ class TestAgentServiceWeChat:
             if tool_name == "__wechat_drain_incoming":
                 call_count[0] += 1
                 if call_count[0] == 1:
-                    raise Exception("network error")
+                    raise RuntimeError("network error")
                 # Second call succeeds but disconnects
                 mock_wc.is_connected = False
                 return _json.dumps({"messages": []})
@@ -3442,8 +3978,20 @@ def _two_model_config():
 
     return Config(
         models=[
-            ModelConfig(ref="deepseek/dsf", provider="deepseek", api_model="dsf", display_name="DSF", api_key="k"),
-            ModelConfig(ref="openai/gpt", provider="openai", api_model="gpt", display_name="GPT", api_key="k"),
+            ModelConfig(
+                ref="deepseek/dsf",
+                provider="deepseek",
+                api_model="dsf",
+                display_name="DSF",
+                api_key="k",
+            ),
+            ModelConfig(
+                ref="openai/gpt",
+                provider="openai",
+                api_model="gpt",
+                display_name="GPT",
+                api_key="k",
+            ),
         ],
         active_model_ref="deepseek/dsf",
         tools=[],
@@ -3465,7 +4013,9 @@ class TestSwitchModel:
         config = _two_model_config()
         path = tmp_path / "slife.yaml"
         config._path = path
-        write_config(path, {"models": {"providers": {}}, "active_model": "deepseek/dsf"})
+        write_config(
+            path, {"models": {"providers": {}}, "active_model": "deepseek/dsf"}
+        )
         service = AgentService(config)
 
         service.switch_model("openai/gpt")
@@ -3495,6 +4045,7 @@ class TestAnnotateSavedTurn:
     @staticmethod
     def _history(user_text: str):
         from slife.agent.message_history import MessageHistory
+
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message(user_text)
         conv.add_assistant_message("reply")
@@ -3502,6 +4053,7 @@ class TestAnnotateSavedTurn:
 
     def test_footnote_and_structural_id(self, sample_config):
         from datetime import datetime
+
         from slife.agent.service import AgentService
 
         srv = AgentService(sample_config)
@@ -3522,6 +4074,7 @@ class TestAnnotateSavedTurn:
         and never by the decision.
         """
         from datetime import datetime
+
         from slife.agent.service import AgentService
 
         srv = AgentService(sample_config)
@@ -3535,6 +4088,7 @@ class TestAnnotateSavedTurn:
 
     def test_no_rowid_stamps_nothing(self, sample_config):
         from datetime import datetime
+
         from slife.agent.service import AgentService
 
         srv = AgentService(sample_config)
@@ -3681,12 +4235,16 @@ class TestGetExitContextTurns:
 
     @pytest.mark.asyncio
     async def test_broken_db_raises_memory_error(
-        self, sample_config, tmp_path, monkeypatch,
+        self,
+        sample_config,
+        tmp_path,
+        monkeypatch,
     ):
         """A present-but-broken memory DB raises MemoryDatabaseError —
         restore treats it as fatal (startup abort) instead of silently
         returning [] and starting a memory-less session."""
         import sqlite3
+
         from slife.agent.service import AgentService, MemoryDatabaseError
 
         # Old-schema DB — missing the `context_tokens` column the store SELECTs.
@@ -3732,13 +4290,17 @@ class TestSpawnPluginCancellationCleanup:
         # task mid-await; _spawn_plugin_generic must still clean up.
         client.list_tools.side_effect = asyncio.CancelledError()
 
-        with patch(
-            "slife.plugins.mcp_gateway.process.MCPWrapperProcess", return_value=fake_process,
+        with (
+            patch(
+                "slife.plugins.mcp_gateway.process.MCPWrapperProcess",
+                return_value=fake_process,
+            ),
+            pytest.raises(asyncio.CancelledError),
         ):
-            with pytest.raises(asyncio.CancelledError):
-                await service._spawn_plugin_generic(
-                    "memdb", "slife.plugins.memdb.server",
-                )
+            await service._spawn_plugin_generic(
+                "memdb",
+                "slife.plugins.memdb.server",
+            )
 
         fake_process.stop.assert_awaited()
         assert service._plugins["memdb"].client is None
@@ -3760,10 +4322,13 @@ class TestSpawnPluginListToolsRetry:
         first_client = AsyncMock()
         first_client.list_tools.side_effect = TimeoutError("list_tools timed out")
         second_client = AsyncMock()
-        second_client.list_tools.return_value = [{
-            "name": "turn_search", "description": "d",
-            "inputSchema": {"type": "object", "properties": {}},
-        }]
+        second_client.list_tools.return_value = [
+            {
+                "name": "turn_search",
+                "description": "d",
+                "inputSchema": {"type": "object", "properties": {}},
+            }
+        ]
         second_client.call_tool = AsyncMock(
             # Readiness handshake runs at the end of the spawn.
             return_value='{"ready": true, "detail": "store ok"}',
@@ -3771,10 +4336,12 @@ class TestSpawnPluginListToolsRetry:
         fake_process.create_client.side_effect = [first_client, second_client]
 
         with patch(
-            "slife.plugins.mcp_gateway.process.MCPWrapperProcess", return_value=fake_process,
+            "slife.plugins.mcp_gateway.process.MCPWrapperProcess",
+            return_value=fake_process,
         ):
             started = await service._spawn_plugin_generic(
-                "memdb", "slife.plugins.memdb.server",
+                "memdb",
+                "slife.plugins.memdb.server",
             )
 
         assert started is True
@@ -3795,13 +4362,17 @@ class TestSpawnPluginListToolsRetry:
         second_client.list_tools.side_effect = TimeoutError("list_tools timed out")
         fake_process.create_client.side_effect = [first_client, second_client]
 
-        with patch(
-            "slife.plugins.mcp_gateway.process.MCPWrapperProcess", return_value=fake_process,
+        with (
+            patch(
+                "slife.plugins.mcp_gateway.process.MCPWrapperProcess",
+                return_value=fake_process,
+            ),
+            pytest.raises(TimeoutError),
         ):
-            with pytest.raises(TimeoutError):
-                await service._spawn_plugin_generic(
-                    "memdb", "slife.plugins.memdb.server",
-                )
+            await service._spawn_plugin_generic(
+                "memdb",
+                "slife.plugins.memdb.server",
+            )
 
         first_client.disconnect.assert_awaited()
         fake_process.stop.assert_awaited()
@@ -3822,10 +4393,14 @@ class TestSharefileTunnelWatch:
         cb = MagicMock()
         service.on_tunnel_down(cb)
         client = AsyncMock()
-        client.call_tool.return_value = _json.dumps({
-            "active": False, "state": "failed", "url": "",
-            "reason": "File sharing tunnel unavailable.",
-        })
+        client.call_tool.return_value = _json.dumps(
+            {
+                "active": False,
+                "state": "failed",
+                "url": "",
+                "reason": "File sharing tunnel unavailable.",
+            }
+        )
 
         await service._check_sharefile_tunnel(client)
 
@@ -3839,9 +4414,13 @@ class TestSharefileTunnelWatch:
         cb = MagicMock()
         service.on_tunnel_down(cb)
         client = AsyncMock()
-        client.call_tool.return_value = _json.dumps({
-            "active": True, "state": "active", "url": "https://x.ngrok-free.dev",
-        })
+        client.call_tool.return_value = _json.dumps(
+            {
+                "active": True,
+                "state": "active",
+                "url": "https://x.ngrok-free.dev",
+            }
+        )
 
         await service._check_sharefile_tunnel(client)
 
@@ -3857,8 +4436,14 @@ class TestSharefileTunnelWatch:
         client = AsyncMock()
         client.call_tool.side_effect = [
             _json.dumps({"active": False, "state": "starting", "url": ""}),
-            _json.dumps({"active": False, "state": "failed", "url": "",
-                         "hint": "already online"}),
+            _json.dumps(
+                {
+                    "active": False,
+                    "state": "failed",
+                    "url": "",
+                    "hint": "already online",
+                }
+            ),
         ]
 
         with patch("asyncio.sleep", new=AsyncMock()):
@@ -3888,12 +4473,18 @@ class TestSharefileTunnelWatch:
         cb = MagicMock()
         service.on_tunnel_down(cb)
         client = AsyncMock()
-        client.call_tool.return_value = _json.dumps({
-            "active": False, "state": "starting", "url": "",
-        })
+        client.call_tool.return_value = _json.dumps(
+            {
+                "active": False,
+                "state": "starting",
+                "url": "",
+            }
+        )
 
-        with patch("asyncio.sleep", new=AsyncMock()), \
-             patch("slife.timeouts.timeouts.ready.tunnel_settle", 0.0):
+        with (
+            patch("asyncio.sleep", new=AsyncMock()),
+            patch("slife.timeouts.timeouts.ready.tunnel_settle", 0.0),
+        ):
             await service._check_sharefile_tunnel(client)
 
         cb.assert_not_called()
@@ -3910,13 +4501,17 @@ class TestSharefileTunnelWatch:
         cb = MagicMock()
         service.on_tunnel_down(cb)
         client = AsyncMock()
-        client.call_tool.return_value = _json.dumps({
-            "active": False, "state": "failed", "url": "",
-            "provider": "cloudflare",
-            "reason": "cloudflared not found ('cloudflared'). A Cloudflare Quick "
-                      "Tunnel needs the cloudflared binary — install it from "
-                      "https://developers.cloudflare.com/downloads/",
-        })
+        client.call_tool.return_value = _json.dumps(
+            {
+                "active": False,
+                "state": "failed",
+                "url": "",
+                "provider": "cloudflare",
+                "reason": "cloudflared not found ('cloudflared'). A Cloudflare Quick "
+                "Tunnel needs the cloudflared binary — install it from "
+                "https://developers.cloudflare.com/downloads/",
+            }
+        )
 
         await service._check_sharefile_tunnel(client)
 
@@ -3932,16 +4527,23 @@ class TestSharefileTunnelWatch:
         )
 
     @pytest.mark.asyncio
-    async def test_warning_without_a_reason_points_at_system_health(self, sample_config):
+    async def test_warning_without_a_reason_points_at_system_health(
+        self, sample_config
+    ):
         """Nothing to say beyond "down" — then the pointer earns its place."""
         service = AgentService(sample_config)
         cb = MagicMock()
         service.on_tunnel_down(cb)
         client = AsyncMock()
-        client.call_tool.return_value = _json.dumps({
-            "active": False, "state": "failed", "url": "",
-            "provider": "ngrok", "reason": "",
-        })
+        client.call_tool.return_value = _json.dumps(
+            {
+                "active": False,
+                "state": "failed",
+                "url": "",
+                "provider": "ngrok",
+                "reason": "",
+            }
+        )
 
         await service._check_sharefile_tunnel(client)
 
@@ -3987,18 +4589,26 @@ class TestReloadActiveModelContextUsage:
 
     def _service_with_two_models(self, sample_model_config, thinking_model_config):
         from slife.config import Config
-        return AgentService(Config(
-            models=[sample_model_config, thinking_model_config],
-            active_model_ref="deepseek/deepseek-v4-flash",
-            tools=[],
-        ))
 
-    def test_restored_session_keeps_context(self, sample_model_config, thinking_model_config):
-        service = self._service_with_two_models(sample_model_config, thinking_model_config)
+        return AgentService(
+            Config(
+                models=[sample_model_config, thinking_model_config],
+                active_model_ref="deepseek/deepseek-v4-flash",
+                tools=[],
+            )
+        )
+
+    def test_restored_session_keeps_context(
+        self, sample_model_config, thinking_model_config
+    ):
+        service = self._service_with_two_models(
+            sample_model_config, thinking_model_config
+        )
         # restore_session primes _last_usage with the previous turn's persisted
         # context_tokens and marks the history as freshly restored.
         service.agent_loop._last_usage = TokenUsage(
-            prompt_tokens=102400, total_tokens=102400,
+            prompt_tokens=102400,
+            total_tokens=102400,
         )
         service.agent_loop._just_restored_history = id(service.message_history)
 
@@ -4009,28 +4619,39 @@ class TestReloadActiveModelContextUsage:
         assert service.agent_loop._last_usage.prompt_tokens == 102400
         assert service.current_context_tokens == 102400
 
-    def test_mid_session_switch_preserves_usage(self, sample_model_config, thinking_model_config):
-        service = self._service_with_two_models(sample_model_config, thinking_model_config)
+    def test_mid_session_switch_preserves_usage(
+        self, sample_model_config, thinking_model_config
+    ):
+        service = self._service_with_two_models(
+            sample_model_config, thinking_model_config
+        )
         # A live reading from the last API call (per-history cache) plus a
         # restore-time fallback — neither is invalidated by switching.
         service.agent_loop._usage_by_history[id(service.message_history)] = TokenUsage(
-            prompt_tokens=50000, total_tokens=50500,
+            prompt_tokens=50000,
+            total_tokens=50500,
         )
         service.agent_loop._last_usage = TokenUsage(
-            prompt_tokens=102400, total_tokens=102400,
+            prompt_tokens=102400,
+            total_tokens=102400,
         )
 
         service.reload_active_model("deepseek/deepseek-v4-pro")
 
-        assert service.agent_loop._usage_by_history.get(
-            id(service.message_history)
-        ).prompt_tokens == 50000
+        assert (
+            service.agent_loop._usage_by_history.get(
+                id(service.message_history)
+            ).prompt_tokens
+            == 50000
+        )
         assert service.agent_loop._last_usage.prompt_tokens == 102400
         # …and current_context_tokens still prefers the last real API call.
         assert service.current_context_tokens == 50000
 
     def test_fresh_session_still_zero(self, sample_model_config, thinking_model_config):
-        service = self._service_with_two_models(sample_model_config, thinking_model_config)
+        service = self._service_with_two_models(
+            sample_model_config, thinking_model_config
+        )
         # Genuinely fresh start: no API call, no restore → 0, even after a switch.
         service.reload_active_model("deepseek/deepseek-v4-pro")
         assert service.current_context_tokens == 0
@@ -4052,11 +4673,17 @@ class TestReloadActiveModelHealthFact:
     @staticmethod
     def _model(ref, *, thinking, vision, context_window=131072):
         from slife.config import ModelConfig
+
         return ModelConfig(
-            ref=ref, provider="deepseek", api_model=ref.split("/", 1)[1],
-            display_name=ref, api_key="sk-x",
-            base_url="https://api.deepseek.com", api="openai-completions",
-            supports_vision=vision, thinking_enabled=thinking,
+            ref=ref,
+            provider="deepseek",
+            api_model=ref.split("/", 1)[1],
+            display_name=ref,
+            api_key="sk-x",
+            base_url="https://api.deepseek.com",
+            api="openai-completions",
+            supports_vision=vision,
+            thinking_enabled=thinking,
             context_window=context_window,
         )
 
@@ -4064,14 +4691,18 @@ class TestReloadActiveModelHealthFact:
         from slife.config import Config
         from slife.health import get_report, record_active_model
 
-        service = AgentService(Config(
-            models=[
-                self._model("deepseek/deepseek-v4-flash", thinking=False, vision=False),
-                self._model("deepseek/deepseek-v4-pro", thinking=True, vision=True),
-            ],
-            active_model_ref="deepseek/deepseek-v4-flash",
-            tools=[],
-        ))
+        service = AgentService(
+            Config(
+                models=[
+                    self._model(
+                        "deepseek/deepseek-v4-flash", thinking=False, vision=False
+                    ),
+                    self._model("deepseek/deepseek-v4-pro", thinking=True, vision=True),
+                ],
+                active_model_ref="deepseek/deepseek-v4-flash",
+                tools=[],
+            )
+        )
         # Exactly what slife/__init__ records at startup.
         record_active_model(service.config.active_model)
         assert get_report()[-1]["value"] == (

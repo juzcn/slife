@@ -19,8 +19,10 @@ def test_empty_and_invalid():
 def test_non_json_text_is_a_skill_playbook():
     """A skill row's ``schema`` is its SKILL.md verbatim: the text IS the doc,
     so it goes to the indexer instead of being dropped."""
-    assert _flatten_schema("# Deploy\nrun scripts/deploy.py") == \
-        "# Deploy\nrun scripts/deploy.py"
+    assert (
+        _flatten_schema("# Deploy\nrun scripts/deploy.py")
+        == "# Deploy\nrun scripts/deploy.py"
+    )
     assert _flatten_schema("  \n # trimmed \n ") == "# trimmed"
 
 
@@ -50,12 +52,16 @@ def test_nested_folded_one_level():
         "type": "object",
         "properties": {
             "filters": {
-                "type": "object", "description": "query filters",
-                "properties": {"archived": {
-                    "type": "boolean", "description": "only archived"}},
+                "type": "object",
+                "description": "query filters",
+                "properties": {
+                    "archived": {"type": "boolean", "description": "only archived"}
+                },
             },
-            "tags": {"type": "array", "items": {"type": "object", "properties": {
-                "name": {"type": "string"}}}},
+            "tags": {
+                "type": "array",
+                "items": {"type": "object", "properties": {"name": {"type": "string"}}},
+            },
         },
     }
     text = _flatten_schema(_to_json(schema))
@@ -64,7 +70,11 @@ def test_nested_folded_one_level():
 
 
 def test_returns_fragment():
-    obj = {"type": "object", "properties": {}, "returns": {"description": "the matched items"}}
+    obj = {
+        "type": "object",
+        "properties": {},
+        "returns": {"description": "the matched items"},
+    }
     assert _flatten_schema(_to_json(obj)) == "returns: the matched items"
     str_ret = {"type": "object", "properties": {}, "returns": "a list of ids"}
     assert _flatten_schema(_to_json(str_ret)) == "returns: a list of ids"
@@ -73,8 +83,13 @@ def test_returns_fragment():
 def test_enum_lists_omitted():
     schema = {
         "type": "object",
-        "properties": {"level": {"type": "string", "enum": ["info", "debug", "error"],
-                                 "description": "log level"}},
+        "properties": {
+            "level": {
+                "type": "string",
+                "enum": ["info", "debug", "error"],
+                "description": "log level",
+            }
+        },
     }
     text = _flatten_schema(_to_json(schema))
     assert "level (string): log level" in text
@@ -94,23 +109,34 @@ def test_full_tool_descriptor():
             "required": ["repo"],
         },
     }
-    text = _flatten_schema(json.dumps(descriptor, ensure_ascii=False, separators=(",", ":")))
+    text = _flatten_schema(
+        json.dumps(descriptor, ensure_ascii=False, separators=(",", ":"))
+    )
     assert text.splitlines()[0] == "name: search"
     assert "Search repositories on GitHub" in text
     assert "repo (string, required): repo name" in text
 
 
 def test_descriptor_without_schema_properties():
-    descriptor = {"name": "list", "description": "", "inputSchema": {"type": "object", "properties": {}}}
-    assert _flatten_schema(json.dumps(descriptor, separators=(",", ":"))) == "name: list"
+    descriptor = {
+        "name": "list",
+        "description": "",
+        "inputSchema": {"type": "object", "properties": {}},
+    }
+    assert (
+        _flatten_schema(json.dumps(descriptor, separators=(",", ":"))) == "name: list"
+    )
 
 
 def test_descriptor_with_returns():
     descriptor = {
         "name": "query",
         "description": "",
-        "inputSchema": {"type": "object", "properties": {},
-                        "returns": {"description": "the matched items"}},
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "returns": {"description": "the matched items"},
+        },
     }
     text = _flatten_schema(json.dumps(descriptor, separators=(",", ":")))
     assert "name: query" in text

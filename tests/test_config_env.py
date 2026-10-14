@@ -1,19 +1,18 @@
 """Tests for slife.tools.config — env var management tools."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import os
 from pathlib import Path
+
 import pytest
 
 from slife.tools.config import (
-    _env_section,
-    ConfigEnvSetTool,
     ConfigEnvGetTool,
     ConfigEnvRemoveTool,
+    ConfigEnvSetTool,
+    _env_section,
 )
 
+pytestmark = pytest.mark.unit
 
 # ── helpers ──────────────────────────────────────────────────
 
@@ -26,7 +25,8 @@ def _mock_config(data: dict, monkeypatch):
     monkeypatch.setattr(slife.tools.config, "read_config", lambda path: raw)
     written = []
     monkeypatch.setattr(
-        slife.tools.config, "write_config",
+        slife.tools.config,
+        "write_config",
         lambda path, r: written.append(dict(r)),
     )
     return raw, written
@@ -44,12 +44,14 @@ def _mock_credstore(monkeypatch):
 
     # Patch the credstore package — config_env imports from it locally
     import credstore
+
     monkeypatch.setattr(credstore, "get_credential", _get)
     monkeypatch.setattr(credstore, "delete_credential", _delete)
     monkeypatch.setattr(credstore, "exists_credential", lambda k: k in data)
 
     # Also patch config's helper
     import slife.config
+
     monkeypatch.setattr(slife.config, "_try_credstore_lookup", _get)
 
     return data
@@ -85,7 +87,7 @@ class TestConfigEnvSetTool:
     @pytest.mark.asyncio
     async def test_non_secret_key_writes_value(self, monkeypatch):
         """Non-secret keys still write directly."""
-        raw, written = _mock_config({}, monkeypatch)
+        raw, _written = _mock_config({}, monkeypatch)
         _mock_credstore(monkeypatch)
         tool = ConfigEnvSetTool(config_path=Path("test.yaml"))
 
@@ -97,7 +99,7 @@ class TestConfigEnvSetTool:
 
     @pytest.mark.asyncio
     async def test_non_secret_placeholder(self, monkeypatch):
-        raw, written = _mock_config({}, monkeypatch)
+        raw, _written = _mock_config({}, monkeypatch)
         _mock_credstore(monkeypatch)
         tool = ConfigEnvSetTool(config_path=Path("test.yaml"))
 
@@ -108,7 +110,7 @@ class TestConfigEnvSetTool:
 
     @pytest.mark.asyncio
     async def test_overwrite_existing(self, monkeypatch):
-        raw, written = _mock_config({"env": {"EDITOR": "nano"}}, monkeypatch)
+        raw, _written = _mock_config({"env": {"EDITOR": "nano"}}, monkeypatch)
         _mock_credstore(monkeypatch)
         tool = ConfigEnvSetTool(config_path=Path("test.yaml"))
 
@@ -123,7 +125,7 @@ class TestConfigEnvGetTool:
     @pytest.mark.asyncio
     async def test_get_from_config_fallback(self, monkeypatch):
         """When not in environ or credstore, falls back to config value."""
-        raw, _ = _mock_config({"env": {"MY_SETTING": "config_val"}}, monkeypatch)
+        _raw, _ = _mock_config({"env": {"MY_SETTING": "config_val"}}, monkeypatch)
         _mock_credstore(monkeypatch)
         tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
@@ -157,7 +159,7 @@ class TestConfigEnvGetTool:
     @pytest.mark.asyncio
     async def test_get_from_shell_takes_priority(self, monkeypatch):
         """os.environ takes priority in config_env_get."""
-        raw, _ = _mock_config({"env": {"MY_VAR": "from_config"}}, monkeypatch)
+        _raw, _ = _mock_config({"env": {"MY_VAR": "from_config"}}, monkeypatch)
         _mock_credstore(monkeypatch)
         os.environ["MY_VAR"] = "from_shell"
 
@@ -171,7 +173,7 @@ class TestConfigEnvGetTool:
 
     @pytest.mark.asyncio
     async def test_get_missing_key(self, monkeypatch):
-        raw, _ = _mock_config({"env": {}}, monkeypatch)
+        _raw, _ = _mock_config({"env": {}}, monkeypatch)
         _mock_credstore(monkeypatch)
         tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
@@ -180,7 +182,7 @@ class TestConfigEnvGetTool:
 
     @pytest.mark.asyncio
     async def test_list_all_vars(self, monkeypatch):
-        raw, _ = _mock_config({"env": {"A": "val_a", "B": "val_b"}}, monkeypatch)
+        _raw, _ = _mock_config({"env": {"A": "val_a", "B": "val_b"}}, monkeypatch)
         _mock_credstore(monkeypatch)
         tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
@@ -213,13 +215,26 @@ class TestConfigEnvGetTool:
     @pytest.mark.asyncio
     async def test_list_includes_mcp_env_sections(self, monkeypatch):
         """List-all shows env vars from mcp.servers.<name>.env sections."""
-        raw, _ = _mock_config({
-            "env": {"EDITOR": "code"},
-            "mcp": {"servers": {
-                "github": {"command": "npx", "args": [], "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}},
-                "serper": {"command": "npx", "args": [], "env": {"SERPER_API_KEY": "${SERPER_API_KEY}"}},
-            }},
-        }, monkeypatch)
+        _raw, _ = _mock_config(
+            {
+                "env": {"EDITOR": "code"},
+                "mcp": {
+                    "servers": {
+                        "github": {
+                            "command": "npx",
+                            "args": [],
+                            "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"},
+                        },
+                        "serper": {
+                            "command": "npx",
+                            "args": [],
+                            "env": {"SERPER_API_KEY": "${SERPER_API_KEY}"},
+                        },
+                    }
+                },
+            },
+            monkeypatch,
+        )
         _mock_credstore(monkeypatch)
         tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
@@ -243,12 +258,21 @@ class TestConfigEnvGetTool:
         rather than assumed absent.
         """
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        raw, _ = _mock_config({
-            "env": {},
-            "mcp": {"servers": {
-                "github": {"command": "npx", "args": [], "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}},
-            }},
-        }, monkeypatch)
+        _raw, _ = _mock_config(
+            {
+                "env": {},
+                "mcp": {
+                    "servers": {
+                        "github": {
+                            "command": "npx",
+                            "args": [],
+                            "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"},
+                        },
+                    }
+                },
+            },
+            monkeypatch,
+        )
         _mock_credstore(monkeypatch)
         tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
 
@@ -259,7 +283,7 @@ class TestConfigEnvGetTool:
 
     @pytest.mark.asyncio
     async def test_list_empty(self, monkeypatch):
-        raw, _ = _mock_config({}, monkeypatch)
+        _raw, _ = _mock_config({}, monkeypatch)
         _mock_credstore(monkeypatch)
         tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
         result = await tool.execute()
@@ -284,7 +308,7 @@ class TestConfigEnvRemoveTool:
 
     @pytest.mark.asyncio
     async def test_remove_missing_var(self, monkeypatch):
-        raw, written = _mock_config({"env": {}}, monkeypatch)
+        _raw, _written = _mock_config({"env": {}}, monkeypatch)
         tool = ConfigEnvRemoveTool(config_path=Path("test.yaml"))
 
         result = await tool.execute(key="NOT_THERE")
@@ -304,7 +328,7 @@ class TestConfigEnvRemoveTool:
 
     @pytest.mark.asyncio
     async def test_remove_not_in_config_is_noop(self, monkeypatch):
-        raw, _ = _mock_config({"env": {}}, monkeypatch)
+        _raw, _ = _mock_config({"env": {}}, monkeypatch)
         os.environ["ONLY_IN_ENV"] = "temp"
         tool = ConfigEnvRemoveTool(config_path=Path("test.yaml"))
 
@@ -322,7 +346,7 @@ class TestConfigEnvGetMasking:
     @pytest.mark.asyncio
     async def test_single_key_secret_shown_as_is(self, monkeypatch):
         """Values are shown in full — the harness masks them before LLM sees them."""
-        raw, _ = _mock_config({"env": {}}, monkeypatch)
+        _raw, _ = _mock_config({"env": {}}, monkeypatch)
         _mock_credstore(monkeypatch)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-longsecret12345678")
         tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
@@ -334,7 +358,7 @@ class TestConfigEnvGetMasking:
     @pytest.mark.asyncio
     async def test_single_key_non_secret_shown_plaintext(self, monkeypatch):
         """Non-secret values from shell env are shown in full."""
-        raw, _ = _mock_config({"env": {}}, monkeypatch)
+        _raw, _ = _mock_config({"env": {}}, monkeypatch)
         _mock_credstore(monkeypatch)
         monkeypatch.setenv("EDITOR", "vim")
         tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
@@ -346,12 +370,15 @@ class TestConfigEnvGetMasking:
     @pytest.mark.asyncio
     async def test_list_all_shows_full_values(self, monkeypatch):
         """List-all shows full values — harness masks secrets in output."""
-        raw, _ = _mock_config({
-            "env": {
-                "EDITOR": "code",
-                "DEEPSEEK_API_KEY": "${DEEPSEEK_API_KEY}",
+        _raw, _ = _mock_config(
+            {
+                "env": {
+                    "EDITOR": "code",
+                    "DEEPSEEK_API_KEY": "${DEEPSEEK_API_KEY}",
+                },
             },
-        }, monkeypatch)
+            monkeypatch,
+        )
         _mock_credstore(monkeypatch)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-very-secret-key-here-98765")
         tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
@@ -363,9 +390,12 @@ class TestConfigEnvGetMasking:
     @pytest.mark.asyncio
     async def test_list_all_non_secrets_shown(self, monkeypatch):
         """List-all shows non-secrets normally."""
-        raw, _ = _mock_config({
-            "env": {"EDITOR": "vim", "LOG_LEVEL": "${LOG_LEVEL}"},
-        }, monkeypatch)
+        _raw, _ = _mock_config(
+            {
+                "env": {"EDITOR": "vim", "LOG_LEVEL": "${LOG_LEVEL}"},
+            },
+            monkeypatch,
+        )
         _mock_credstore(monkeypatch)
         monkeypatch.setenv("LOG_LEVEL", "debug")
         tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
@@ -376,7 +406,7 @@ class TestConfigEnvGetMasking:
     @pytest.mark.asyncio
     async def test_token_key_shown_as_is(self, monkeypatch):
         """Values are passed through — no tool-level masking."""
-        raw, _ = _mock_config({"env": {}}, monkeypatch)
+        _raw, _ = _mock_config({"env": {}}, monkeypatch)
         _mock_credstore(monkeypatch)
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_notarealtokenatall12345678")
         tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
@@ -387,7 +417,7 @@ class TestConfigEnvGetMasking:
     @pytest.mark.asyncio
     async def test_password_key_shown_as_is(self, monkeypatch):
         """Values are passed through — no tool-level masking."""
-        raw, _ = _mock_config({"env": {}}, monkeypatch)
+        _raw, _ = _mock_config({"env": {}}, monkeypatch)
         _mock_credstore(monkeypatch)
         monkeypatch.setenv("DB_PASSWORD", "super-secret-db-password-longstr")
         tool = ConfigEnvGetTool(config_path=Path("test.yaml"))
@@ -398,7 +428,7 @@ class TestConfigEnvGetMasking:
     @pytest.mark.asyncio
     async def test_auth_key_shown_as_is(self, monkeypatch):
         """Values are passed through — no tool-level masking."""
-        raw, _ = _mock_config({"env": {}}, monkeypatch)
+        _raw, _ = _mock_config({"env": {}}, monkeypatch)
         _mock_credstore(monkeypatch)
         monkeypatch.setenv("AUTH_TOKEN", "abcdef1234567890abcdef1234567890ab")
         tool = ConfigEnvGetTool(config_path=Path("test.yaml"))

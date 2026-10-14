@@ -6,10 +6,12 @@ silently fall back — a typo'd key is a bug to surface, not hide).  Also the
 OS query that picks the initial language, since it is hand-rolled stdlib.
 """
 
-import pytest; pytestmark = pytest.mark.unit
+import pytest
 
 from slife.ui import i18n
-from slife.ui.i18n import t, set_language
+from slife.ui.i18n import set_language, t
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
@@ -59,6 +61,7 @@ class TestTranslation:
     def test_all_keys_have_both_languages(self):
         """Every entry ships English + Chinese — no half-translated keys."""
         from slife.ui.i18n import _STRINGS
+
         for key, entry in _STRINGS.items():
             assert "en" in entry, f"{key} missing English"
             assert "zh" in entry, f"{key} missing Chinese"
@@ -104,6 +107,7 @@ class TestOsLocaleDetection:
 
     def test_a_failing_query_degrades_to_english(self, monkeypatch):
         """Detection never raises — a broken OS query still yields a TUI."""
+
         def _boom():
             raise OSError("no such API")
 

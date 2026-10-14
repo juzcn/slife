@@ -9,11 +9,11 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import pytest; pytestmark = pytest.mark.unit
+import pytest
 
-from slife.plugins.job_coding import registry, runner
-from slife.plugins.job_coding import server
+from slife.plugins.job_coding import registry, runner, server
 
+pytestmark = pytest.mark.unit
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -173,16 +173,21 @@ async def test_wrap_captures_errors_as_result():
 
 def _config_with_ref(ref: str) -> str:
     """A minimal but parseable slife.yaml with one provider/model."""
-    return json.dumps({
-        "job_coding_model": ref,
-        "models": {"providers": {
-            "dp": {
-                "base_url": "https://api.deepseek.com", "api_key": "sk-t",
-                "api": "openai-completions",
-                "models": [{"model": "dp-flash", "name": "DP Flash"}],
+    return json.dumps(
+        {
+            "job_coding_model": ref,
+            "models": {
+                "providers": {
+                    "dp": {
+                        "base_url": "https://api.deepseek.com",
+                        "api_key": "sk-t",
+                        "api": "openai-completions",
+                        "models": [{"model": "dp-flash", "name": "DP Flash"}],
+                    },
+                }
             },
-        }},
-    })
+        }
+    )
 
 
 def test_resolve_job_model_uses_job_coding_model(monkeypatch, tmp_path):
@@ -202,9 +207,11 @@ def test_resolve_job_model_falls_back_to_active_model(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "_config", None)
 
     import slife.config as sc
+
     stub = SimpleNamespace(active_model=SimpleNamespace(ref="x/y"))
     monkeypatch.setattr(
-        sc.Config, "from_yaml",
+        sc.Config,
+        "from_yaml",
         classmethod(lambda cls, *a, **k: stub),
     )
     model = runner.resolve_job_model()
@@ -220,11 +227,13 @@ async def test_llm_chat_model_param_resolves(monkeypatch):
     class _FakeLLM:
         def __init__(self, model):
             built["model"] = model
+
         async def chat_stream(self, messages, cancel_event=None):
             yield _FakeStreamChunk("do")
             yield _FakeStreamChunk("ne")
 
     import slife.agent.llm_client as lc
+
     monkeypatch.setattr(lc, "LLMClient", _FakeLLM)
     out = await runner.llm.chat(user="hi", model="dp/m2")
     assert out == "done"  # two-stream-chunk accumulation
@@ -233,12 +242,23 @@ async def test_llm_chat_model_param_resolves(monkeypatch):
 
 def test_resolve_model_ref_unknown(monkeypatch, tmp_path):
     cfg = tmp_path / "slife.yaml"
-    _write(cfg, json.dumps({
-        "models": {"providers": {
-            "dp": {"base_url": "https://x", "api_key": "sk", "api": "openai-completions",
-                   "models": [{"model": "dp-flash"}]},
-        }},
-    }))
+    _write(
+        cfg,
+        json.dumps(
+            {
+                "models": {
+                    "providers": {
+                        "dp": {
+                            "base_url": "https://x",
+                            "api_key": "sk",
+                            "api": "openai-completions",
+                            "models": [{"model": "dp-flash"}],
+                        },
+                    }
+                },
+            }
+        ),
+    )
     monkeypatch.setattr(runner, "get_config_path", lambda: cfg)
     monkeypatch.setattr(runner, "_config", None)
     with pytest.raises(ValueError):
@@ -247,12 +267,23 @@ def test_resolve_model_ref_unknown(monkeypatch, tmp_path):
 
 def test_resolve_model_ref_accepts_bare_id(monkeypatch, tmp_path):
     cfg = tmp_path / "slife.yaml"
-    _write(cfg, json.dumps({
-        "models": {"providers": {
-            "dp": {"base_url": "https://x", "api_key": "sk", "api": "openai-completions",
-                   "models": [{"model": "dp-flash"}]},
-        }},
-    }))
+    _write(
+        cfg,
+        json.dumps(
+            {
+                "models": {
+                    "providers": {
+                        "dp": {
+                            "base_url": "https://x",
+                            "api_key": "sk",
+                            "api": "openai-completions",
+                            "models": [{"model": "dp-flash"}],
+                        },
+                    }
+                },
+            }
+        ),
+    )
     monkeypatch.setattr(runner, "get_config_path", lambda: cfg)
     monkeypatch.setattr(runner, "_config", None)
     model = runner.resolve_model_ref("dp-flash")
@@ -331,8 +362,8 @@ async def test_a_job_is_exposed_under_the_prefixed_name(srv):
         code="def translate(text: str) -> str:\n    return text",
     )
     tools = {t.name for t in await srv.mcp.list_tools()}
-    assert "job-translate" in tools          # the job, prefixed
-    assert "translate" not in tools          # never the bare function name
+    assert "job-translate" in tools  # the job, prefixed
+    assert "translate" not in tools  # never the bare function name
     # (The four management tools are declared on the real server, not on the
     # fixture's stub instance — their names are pinned by the reserved-set
     # test in test_catalog_plugin_rows.py.)
@@ -461,17 +492,23 @@ async def test_check_reports_facts(srv):
 
 @pytest.mark.asyncio
 async def test_rescan_registers_and_unregisters(sample_config):
-    from slife.agent.service import AgentService
     from slife.agent.plugins import PluginLifecycle
+    from slife.agent.service import AgentService
 
     service = AgentService(sample_config)
     lifecycle = PluginLifecycle("job-coding", service)
     client = AsyncMock()
     client.is_connected = True
-    client.list_tools = AsyncMock(return_value=[
-        {"server": "job-coding", "name": "translate", "description": "",
-         "inputSchema": {"type": "object", "properties": {}}},
-    ])
+    client.list_tools = AsyncMock(
+        return_value=[
+            {
+                "server": "job-coding",
+                "name": "translate",
+                "description": "",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+        ]
+    )
     lifecycle.client = client
     lifecycle.registered_tools = {"gone"}
     service._plugins["job-coding"] = lifecycle
@@ -563,11 +600,16 @@ async def test_mcp_call_forwards_bare_call(monkeypatch):
 
     assert out == "R"
     assert client.urls == ["http://127.0.0.1:1234/mcp"]
-    assert client.calls == [(
-        "__mcp_call_tool",
-        {"server": "github", "tool_name": "search_code",
-         "arguments": json.dumps({"q": "abc"}, ensure_ascii=False)},
-    )]
+    assert client.calls == [
+        (
+            "__mcp_call_tool",
+            {
+                "server": "github",
+                "tool_name": "search_code",
+                "arguments": json.dumps({"q": "abc"}, ensure_ascii=False),
+            },
+        )
+    ]
     assert len(made) == 1
 
 
@@ -596,10 +638,12 @@ async def test_mcp_call_defaults_args_to_empty_json(monkeypatch):
 
     await runner.mcp.call("fs", "list_directory")
 
-    assert client.calls == [(
-        "__mcp_call_tool",
-        {"server": "fs", "tool_name": "list_directory", "arguments": "{}"},
-    )]
+    assert client.calls == [
+        (
+            "__mcp_call_tool",
+            {"server": "fs", "tool_name": "list_directory", "arguments": "{}"},
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -724,8 +768,8 @@ def test_port_resolution_prefers_the_host_push(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_push_gateway_port_to_jobs(sample_config):
-    from slife.agent.service import AgentService
     from slife.agent.plugins import PluginLifecycle
+    from slife.agent.service import AgentService
 
     service = AgentService(sample_config)
     jobs = PluginLifecycle("job-coding", service)
@@ -742,8 +786,8 @@ async def test_push_gateway_port_to_jobs(sample_config):
 
 @pytest.mark.asyncio
 async def test_push_gateway_port_skips_when_jobs_down(sample_config):
-    from slife.agent.service import AgentService
     from slife.agent.plugins import PluginLifecycle
+    from slife.agent.service import AgentService
 
     service = AgentService(sample_config)
     jobs = PluginLifecycle("job-coding", service)
@@ -756,8 +800,8 @@ async def test_push_gateway_port_skips_when_jobs_down(sample_config):
 
 @pytest.mark.asyncio
 async def test_wire_mcp_glue_pushes_port_to_jobs(sample_config, monkeypatch):
-    from slife.agent.service import AgentService
     from slife.agent.plugins import PluginLifecycle
+    from slife.agent.service import AgentService
 
     service = AgentService(sample_config)
     gw = PluginLifecycle("mcp-gateway", service)
@@ -777,7 +821,9 @@ async def test_wire_mcp_glue_pushes_port_to_jobs(sample_config, monkeypatch):
 
     await service._wire_mcp_glue()
 
-    jobs_client.call_tool.assert_awaited_once_with("__set_mcp_gateway_port", {"port": 12345})
+    jobs_client.call_tool.assert_awaited_once_with(
+        "__set_mcp_gateway_port", {"port": 12345}
+    )
 
 
 @pytest.mark.asyncio
@@ -786,8 +832,8 @@ async def test_plugin_ready_pushes_the_gateway_port(sample_config, monkeypatch):
     completes it.  Spawn order used to decide whether jobs could reach
     ``mcp.call`` at all — job-coding readied ~0.5s behind the gateway, the
     gateway-only push skipped it silently, and nothing re-pushed."""
-    from slife.agent.service import AgentService
     from slife.agent.plugins import PluginLifecycle, PluginStartStatus
+    from slife.agent.service import AgentService
 
     service = AgentService(sample_config)
     gw = PluginLifecycle("mcp-gateway", service)
@@ -803,12 +849,14 @@ async def test_plugin_ready_pushes_the_gateway_port(sample_config, monkeypatch):
     monkeypatch.setattr(service, "_arm_watchdog", lambda *a, **k: None)
 
     status = await service._start_plugin_uniform(
-        service._registry.spec("job-coding"), jobs,
+        service._registry.spec("job-coding"),
+        jobs,
     )
 
     assert status is PluginStartStatus.STARTED
     jobs_client.call_tool.assert_awaited_once_with(
-        "__set_mcp_gateway_port", {"port": 12345},
+        "__set_mcp_gateway_port",
+        {"port": 12345},
     )
 
 
@@ -816,8 +864,8 @@ async def test_plugin_ready_pushes_the_gateway_port(sample_config, monkeypatch):
 async def test_gateway_ready_leaves_the_push_to_its_glue(sample_config, monkeypatch):
     """The gateway's own ready is the glue's edge (``_wire_mcp_glue``); the
     uniform path skips it, so one connect never pushes the port twice."""
-    from slife.agent.service import AgentService
     from slife.agent.plugins import PluginBehavior, PluginLifecycle
+    from slife.agent.service import AgentService
 
     service = AgentService(sample_config)
     gw = PluginLifecycle("mcp-gateway", service)

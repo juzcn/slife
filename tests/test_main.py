@@ -1,11 +1,11 @@
 """Tests for Slife main entry point — mock heavy to avoid Textual init."""
 
-import pytest; pytestmark = [pytest.mark.integration, pytest.mark.slow]
-
-
 import signal
-import pytest
 from unittest.mock import MagicMock, call, patch
+
+import pytest
+
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
 class TestMainFunction:
@@ -14,6 +14,7 @@ class TestMainFunction:
     @pytest.fixture
     def mock_config(self):
         from slife.config import Config, ModelConfig
+
         mc = ModelConfig(
             ref="deepseek/deepseek-v4-flash",
             provider="deepseek",
@@ -29,29 +30,35 @@ class TestMainFunction:
 
     def test_main_loads_config(self, mock_config):
         """main() loads config from the given path."""
-        with patch("slife.Config.from_yaml", return_value=mock_config):
-            with patch("slife.SlifeApp") as mock_app_cls:
-                mock_app = MagicMock()
-                mock_app_cls.return_value = mock_app
+        with (
+            patch("slife.Config.from_yaml", return_value=mock_config),
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
+            mock_app = MagicMock()
+            mock_app_cls.return_value = mock_app
 
-                from slife import main
-                main("test_config.yaml")
+            from slife import main
 
-                mock_app.run.assert_called_once()
+            main("test_config.yaml")
+
+            mock_app.run.assert_called_once()
 
     def test_main_default_config_path(self, mock_config):
         """main() uses slife.yaml by default."""
-        with patch("slife.Config.from_yaml", return_value=mock_config) as mock_from:
-            with patch("slife.SlifeApp") as mock_app_cls:
-                mock_app = MagicMock()
-                mock_app_cls.return_value = mock_app
+        with (
+            patch("slife.Config.from_yaml", return_value=mock_config) as mock_from,
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
+            mock_app = MagicMock()
+            mock_app_cls.return_value = mock_app
 
-                from slife import main
-                main()
+            from slife import main
 
-                mock_from.assert_called_once()
-                mock_app_cls.assert_called_once()
-                mock_app.run.assert_called_once()
+            main()
+
+            mock_from.assert_called_once()
+            mock_app_cls.assert_called_once()
+            mock_app.run.assert_called_once()
 
     def test_main_notes_session_and_clears_it_on_exit(self, mock_config):
         """main() records the session at startup and forgets it in teardown.
@@ -60,14 +67,17 @@ class TestMainFunction:
         teardown never runs, which is what a hard kill looks like from the
         next start (bootstrap.previous_session_killed).
         """
-        with patch("slife.bootstrap.previous_session_killed", return_value=None) as prev, \
-             patch("slife.bootstrap.note_session_start") as note, \
-             patch("slife.bootstrap.clear_session_marker") as clear, \
-             patch("slife.Config.from_yaml", return_value=mock_config), \
-             patch("slife.SlifeApp") as mock_app_cls:
+        with (
+            patch("slife.bootstrap.previous_session_killed", return_value=None) as prev,
+            patch("slife.bootstrap.note_session_start") as note,
+            patch("slife.bootstrap.clear_session_marker") as clear,
+            patch("slife.Config.from_yaml", return_value=mock_config),
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
             mock_app_cls.return_value = MagicMock()
 
             from slife import main
+
             main()
 
         prev.assert_called_once()
@@ -77,29 +87,35 @@ class TestMainFunction:
     def test_main_reports_a_killed_previous_session(self, mock_config, capsys):
         """The user is told, on the terminal, that the last session was killed."""
         killed = "the last session (pid 4242) was killed from outside"
-        with patch("slife.bootstrap.previous_session_killed", return_value=killed), \
-             patch("slife.bootstrap.note_session_start"), \
-             patch("slife.bootstrap.clear_session_marker"), \
-             patch("slife.Config.from_yaml", return_value=mock_config), \
-             patch("slife.SlifeApp") as mock_app_cls:
+        with (
+            patch("slife.bootstrap.previous_session_killed", return_value=killed),
+            patch("slife.bootstrap.note_session_start"),
+            patch("slife.bootstrap.clear_session_marker"),
+            patch("slife.Config.from_yaml", return_value=mock_config),
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
             mock_app_cls.return_value = MagicMock()
 
             from slife import main
+
             main()
 
         assert "killed from outside" in capsys.readouterr().err
 
     def test_main_creates_app_with_config(self, mock_config):
         """SlifeApp is created with the loaded config."""
-        with patch("slife.Config.from_yaml", return_value=mock_config):
-            with patch("slife.SlifeApp") as mock_app_cls:
-                mock_app = MagicMock()
-                mock_app_cls.return_value = mock_app
+        with (
+            patch("slife.Config.from_yaml", return_value=mock_config),
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
+            mock_app = MagicMock()
+            mock_app_cls.return_value = mock_app
 
-                from slife import main
-                main()
+            from slife import main
 
-                mock_app_cls.assert_called_once_with(mock_config)
+            main()
+
+            mock_app_cls.assert_called_once_with(mock_config)
 
     def test_main_logs_model_info(self, mock_config):
         """The session log records model info before any host starts.
@@ -108,47 +124,56 @@ class TestMainFunction:
         both hosts share ``prepare_session``, so these lines belong to it and
         not to either entry point.
         """
-        with patch("slife.Config.from_yaml", return_value=mock_config):
-            with patch("slife.SlifeApp") as mock_app_cls:
-                mock_app = MagicMock()
-                mock_app_cls.return_value = mock_app
+        with (
+            patch("slife.Config.from_yaml", return_value=mock_config),
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
+            mock_app = MagicMock()
+            mock_app_cls.return_value = mock_app
 
-                with patch("slife.bootstrap.logger") as mock_logger:
-                    from slife import main
-                    main()
+            with patch("slife.bootstrap.logger") as mock_logger:
+                from slife import main
 
-                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
-                assert any("DeepSeek V4 Flash" in t for t in debug_texts)
+                main()
+
+            debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+            assert any("DeepSeek V4 Flash" in t for t in debug_texts)
 
     def test_main_thinking_off(self, mock_config):
         """Logs 'thinking: off' when thinking is disabled."""
         mock_config.models[0].thinking_enabled = False
 
-        with patch("slife.Config.from_yaml", return_value=mock_config):
-            with patch("slife.SlifeApp") as mock_app_cls:
-                mock_app_cls.return_value.run = MagicMock()
+        with (
+            patch("slife.Config.from_yaml", return_value=mock_config),
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
+            mock_app_cls.return_value.run = MagicMock()
 
-                with patch("slife.bootstrap.logger") as mock_logger:
-                    from slife import main
-                    main()
+            with patch("slife.bootstrap.logger") as mock_logger:
+                from slife import main
 
-                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
-                assert any("off" in t for t in debug_texts if "thinking" in t)
+                main()
+
+            debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+            assert any("off" in t for t in debug_texts if "thinking" in t)
 
     def test_main_logs_tool_count(self, mock_config):
         """Logs the number of loaded tools."""
         mock_config.tools = [{"name": "execute_shell"}, {"name": "run_python_script"}]
 
-        with patch("slife.Config.from_yaml", return_value=mock_config):
-            with patch("slife.SlifeApp") as mock_app_cls:
-                mock_app_cls.return_value.run = MagicMock()
+        with (
+            patch("slife.Config.from_yaml", return_value=mock_config),
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
+            mock_app_cls.return_value.run = MagicMock()
 
-                with patch("slife.bootstrap.logger") as mock_logger:
-                    from slife import main
-                    main()
+            with patch("slife.bootstrap.logger") as mock_logger:
+                from slife import main
 
-                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
-                assert any("2" in t for t in debug_texts if "tools" in t)
+                main()
+
+            debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+            assert any("2" in t for t in debug_texts if "tools" in t)
 
     def test_main_masks_sigint_during_teardown(self, mock_config):
         """Teardown switches SIGINT to SIG_IGN before any cleanup work.
@@ -160,35 +185,37 @@ class TestMainFunction:
         to the terminal at exit.  Masking the signal first makes the late
         interrupt a silent OS-level no-op instead.
         """
-        with patch("slife.Config.from_yaml", return_value=mock_config):
-            with patch("slife.SlifeApp") as mock_app_cls:
-                mock_app_cls.return_value.run = MagicMock()
+        with (
+            patch("slife.Config.from_yaml", return_value=mock_config),
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
+            mock_app_cls.return_value.run = MagicMock()
 
-                with patch("slife.logger"):
-                    with patch("slife.signal.signal") as mock_signal:
-                        from slife import main
-                        main()
+            with patch("slife.logger"), patch("slife.signal.signal") as mock_signal:
+                from slife import main
 
-                        assert call(signal.SIGINT, signal.SIG_IGN) in (
-                            mock_signal.call_args_list
-                        )
+                main()
+
+                assert call(signal.SIGINT, signal.SIG_IGN) in (
+                    mock_signal.call_args_list
+                )
 
     def test_main_masks_sigint_after_keyboard_interrupt(self, mock_config):
         """Ctrl+C during startup exits quietly and still masks SIGINT."""
-        with patch("slife.Config.from_yaml", return_value=mock_config):
-            with patch("slife.SlifeApp") as mock_app_cls:
-                mock_app_cls.return_value.run = MagicMock(
-                    side_effect=KeyboardInterrupt
+        with (
+            patch("slife.Config.from_yaml", return_value=mock_config),
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
+            mock_app_cls.return_value.run = MagicMock(side_effect=KeyboardInterrupt)
+
+            with patch("slife.logger"), patch("slife.signal.signal") as mock_signal:
+                from slife import main
+
+                main()  # must not propagate
+
+                assert call(signal.SIGINT, signal.SIG_IGN) in (
+                    mock_signal.call_args_list
                 )
-
-                with patch("slife.logger"):
-                    with patch("slife.signal.signal") as mock_signal:
-                        from slife import main
-                        main()  # must not propagate
-
-                        assert call(signal.SIGINT, signal.SIG_IGN) in (
-                            mock_signal.call_args_list
-                        )
 
 
 class TestHeadlessDispatch:
@@ -202,14 +229,17 @@ class TestHeadlessDispatch:
     @pytest.fixture
     def mock_config(self):
         from slife.config import Config, ModelConfig
+
         return Config(
-            models=[ModelConfig(
-                ref="test/test-model",
-                provider="test",
-                api_model="test-model",
-                display_name="Test Model",
-                api_key="sk-test",
-            )],
+            models=[
+                ModelConfig(
+                    ref="test/test-model",
+                    provider="test",
+                    api_model="test-model",
+                    display_name="Test Model",
+                    api_key="sk-test",
+                )
+            ],
             active_model_ref="test/test-model",
             tools=[],
         )
@@ -217,14 +247,17 @@ class TestHeadlessDispatch:
     def _main_with(self, argv, mock_config, run_headless):
         import sys
 
-        with patch.object(sys, "argv", argv), \
-             patch("slife.Config.from_yaml", return_value=mock_config), \
-             patch("slife.bootstrap.previous_session_killed", return_value=None), \
-             patch("slife.bootstrap.note_session_start"), \
-             patch("slife.bootstrap.clear_session_marker"), \
-             patch("slife.SlifeApp", side_effect=AssertionError("TUI must not start")), \
-             patch("slife.headless.run_headless", run_headless):
+        with (
+            patch.object(sys, "argv", argv),
+            patch("slife.Config.from_yaml", return_value=mock_config),
+            patch("slife.bootstrap.previous_session_killed", return_value=None),
+            patch("slife.bootstrap.note_session_start"),
+            patch("slife.bootstrap.clear_session_marker"),
+            patch("slife.SlifeApp", side_effect=AssertionError("TUI must not start")),
+            patch("slife.headless.run_headless", run_headless),
+        ):
             from slife import main
+
             main()
 
     def test_headless_runs_the_headless_host_not_the_tui(self, mock_config):
@@ -237,14 +270,17 @@ class TestHeadlessDispatch:
         built, so the flag is what selects the host and nothing else is."""
         import sys
 
-        with patch.object(sys, "argv", ["slife"]), \
-             patch("slife.Config.from_yaml", return_value=mock_config), \
-             patch("slife.bootstrap.previous_session_killed", return_value=None), \
-             patch("slife.bootstrap.note_session_start"), \
-             patch("slife.bootstrap.clear_session_marker"), \
-             patch("slife.headless.run_headless") as run, \
-             patch("slife.SlifeApp") as app_cls:
+        with (
+            patch.object(sys, "argv", ["slife"]),
+            patch("slife.Config.from_yaml", return_value=mock_config),
+            patch("slife.bootstrap.previous_session_killed", return_value=None),
+            patch("slife.bootstrap.note_session_start"),
+            patch("slife.bootstrap.clear_session_marker"),
+            patch("slife.headless.run_headless") as run,
+            patch("slife.SlifeApp") as app_cls,
+        ):
             from slife import main
+
             main()
 
         run.assert_not_called()
@@ -282,11 +318,17 @@ class TestHeadlessDispatch:
         )
         out = subprocess.run(
             [sys.executable, "-c", code],
-            capture_output=True, text=True, encoding="utf-8", cwd=os.getcwd(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=os.getcwd(),
+            check=False,
         )
         # `slife.ui.i18n` is the one crossing, and it is stdlib-only — the
         # same inversion slife/agent/service.py already documents.
-        assert out.stdout.strip() == "['slife.ui', 'slife.ui.i18n']", out.stdout + out.stderr
+        assert out.stdout.strip() == "['slife.ui', 'slife.ui.i18n']", (
+            out.stdout + out.stderr
+        )
 
 
 class TestCliHelp:
@@ -297,6 +339,7 @@ class TestCliHelp:
         import sys
 
         from slife import main
+
         monkeypatch.setattr(sys, "argv", ["slife", "--help"])
         with patch("slife.Config", side_effect=AssertionError("must not load config")):
             main()  # returns; never reaches the config/TUI imports
@@ -309,6 +352,7 @@ class TestCliHelp:
         import sys
 
         from slife import main
+
         monkeypatch.setattr(sys, "argv", ["slife", "-h"])
         main()
         assert "Usage: slife" in capsys.readouterr().out
@@ -318,19 +362,27 @@ class TestCliHelp:
         import sys
 
         from slife import main
+
         monkeypatch.setattr(sys, "argv", ["slife", "--help"])
         before = set(sys.modules)
         main()
-        heavy = {m for m in set(sys.modules) - before
-                 if m.split(".")[0] in ("textual", "rich") or m.startswith("slife.ui")}
+        heavy = {
+            m
+            for m in set(sys.modules) - before
+            if m.split(".")[0] in ("textual", "rich") or m.startswith("slife.ui")
+        }
         assert not heavy, heavy
 
     def test_worker_help_does_not_start_the_worker(self, capsys):
         """`python -m slife.subagent.worker --help` would otherwise sit on
         stdin waiting for a parent that is never coming."""
         from slife.subagent import worker
-        with patch.object(worker.asyncio, "run",
-                          side_effect=AssertionError("worker loop must not start")):
+
+        with patch.object(
+            worker.asyncio,
+            "run",
+            side_effect=AssertionError("worker loop must not start"),
+        ):
             worker.main(["prog", "--help"])
         assert "Usage: slife" in capsys.readouterr().out
 
@@ -341,6 +393,7 @@ class TestMainModule:
     def test_main_module_import(self):
         """__main__.py module-level code executes main() with patches."""
         from slife.config import Config, ModelConfig
+
         mc = ModelConfig(
             ref="deepseek/ds",
             provider="deepseek",
@@ -350,14 +403,17 @@ class TestMainModule:
         )
         cfg = Config(models=[mc], active_model_ref="deepseek/ds", tools=[])
 
-        with patch("slife.Config.from_yaml", return_value=cfg), \
-             patch("slife.SlifeApp") as mock_app_cls, \
-             patch("slife.logger"):
+        with (
+            patch("slife.Config.from_yaml", return_value=cfg),
+            patch("slife.SlifeApp") as mock_app_cls,
+            patch("slife.logger"),
+        ):
             mock_app = MagicMock()
             mock_app_cls.return_value = mock_app
 
             import slife.__main__
-            assert hasattr(slife.__main__, 'main')
+
+            assert hasattr(slife.__main__, "main")
 
 
 class TestMainEnvLogging:
@@ -367,6 +423,7 @@ class TestMainEnvLogging:
     def _make_config(**kwargs):
         """Build a minimal config for env logging tests."""
         from slife.config import Config, ModelConfig
+
         mc = ModelConfig(
             ref="deepseek/ds",
             provider="deepseek",
@@ -380,106 +437,124 @@ class TestMainEnvLogging:
         """API keys are masked in log output."""
         cfg = self._make_config(env={"DEEPSEEK_KEY": "sk-1234567890abcdef"})
 
-        with patch("slife.Config.from_yaml", return_value=cfg):
-            with patch("slife.SlifeApp") as mock_app_cls:
-                mock_app = MagicMock()
-                mock_app_cls.return_value = mock_app
+        with (
+            patch("slife.Config.from_yaml", return_value=cfg),
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
+            mock_app = MagicMock()
+            mock_app_cls.return_value = mock_app
 
-                with patch("slife.bootstrap.logger") as mock_logger:
-                    from slife import main
-                    main()
+            with patch("slife.bootstrap.logger") as mock_logger:
+                from slife import main
 
-                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
-                env_line = [t for t in debug_texts if "DEEPSEEK_KEY" in t]
-                assert len(env_line) == 1
-                # Should be masked — not contain the full key
-                assert "sk-1234567890abcdef" not in env_line[0]
+                main()
+
+            debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+            env_line = [t for t in debug_texts if "DEEPSEEK_KEY" in t]
+            assert len(env_line) == 1
+            # Should be masked — not contain the full key
+            assert "sk-1234567890abcdef" not in env_line[0]
 
     def test_env_secret_short_value_masked(self):
         """Short secret values (<8 chars) get fully masked."""
         cfg = self._make_config(env={"API_SECRET": "abc"})
 
-        with patch("slife.Config.from_yaml", return_value=cfg):
-            with patch("slife.SlifeApp") as mock_app_cls:
-                mock_app = MagicMock()
-                mock_app_cls.return_value = mock_app
+        with (
+            patch("slife.Config.from_yaml", return_value=cfg),
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
+            mock_app = MagicMock()
+            mock_app_cls.return_value = mock_app
 
-                with patch("slife.bootstrap.logger") as mock_logger:
-                    from slife import main
-                    main()
+            with patch("slife.bootstrap.logger") as mock_logger:
+                from slife import main
 
-                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
-                env_line = [t for t in debug_texts if "API_SECRET" in t]
-                assert len(env_line) == 1
-                assert "***" in env_line[0]
+                main()
+
+            debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+            env_line = [t for t in debug_texts if "API_SECRET" in t]
+            assert len(env_line) == 1
+            assert "***" in env_line[0]
 
     def test_env_non_secret_logged_plain(self):
         """Non-secret env vars are logged without masking."""
         cfg = self._make_config(env={"MY_VAR": "hello_world"})
 
-        with patch("slife.Config.from_yaml", return_value=cfg):
-            with patch("slife.SlifeApp") as mock_app_cls:
-                mock_app = MagicMock()
-                mock_app_cls.return_value = mock_app
+        with (
+            patch("slife.Config.from_yaml", return_value=cfg),
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
+            mock_app = MagicMock()
+            mock_app_cls.return_value = mock_app
 
-                with patch("slife.bootstrap.logger") as mock_logger:
-                    from slife import main
-                    main()
+            with patch("slife.bootstrap.logger") as mock_logger:
+                from slife import main
 
-                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
-                env_line = [t for t in debug_texts if "MY_VAR" in t]
-                assert len(env_line) == 1
-                assert "hello_world" in env_line[0]
+                main()
+
+            debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+            env_line = [t for t in debug_texts if "MY_VAR" in t]
+            assert len(env_line) == 1
+            assert "hello_world" in env_line[0]
 
     def test_env_token_masked(self):
         """TOKEN in key name triggers masking."""
         cfg = self._make_config(env={"GITHUB_TOKEN": "ghp_1234567890abcdefgh"})
 
-        with patch("slife.Config.from_yaml", return_value=cfg):
-            with patch("slife.SlifeApp") as mock_app_cls:
-                mock_app = MagicMock()
-                mock_app_cls.return_value = mock_app
+        with (
+            patch("slife.Config.from_yaml", return_value=cfg),
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
+            mock_app = MagicMock()
+            mock_app_cls.return_value = mock_app
 
-                with patch("slife.bootstrap.logger") as mock_logger:
-                    from slife import main
-                    main()
+            with patch("slife.bootstrap.logger") as mock_logger:
+                from slife import main
 
-                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
-                env_line = [t for t in debug_texts if "GITHUB_TOKEN" in t]
-                assert len(env_line) == 1
-                assert "ghp_1234567890abcdefgh" not in env_line[0]
+                main()
+
+            debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+            env_line = [t for t in debug_texts if "GITHUB_TOKEN" in t]
+            assert len(env_line) == 1
+            assert "ghp_1234567890abcdefgh" not in env_line[0]
 
     def test_env_password_masked(self):
         """PASSWORD in key name triggers masking."""
         cfg = self._make_config(env={"DB_PASSWORD": "supersecret123"})
 
-        with patch("slife.Config.from_yaml", return_value=cfg):
-            with patch("slife.SlifeApp") as mock_app_cls:
-                mock_app = MagicMock()
-                mock_app_cls.return_value = mock_app
+        with (
+            patch("slife.Config.from_yaml", return_value=cfg),
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
+            mock_app = MagicMock()
+            mock_app_cls.return_value = mock_app
 
-                with patch("slife.bootstrap.logger") as mock_logger:
-                    from slife import main
-                    main()
+            with patch("slife.bootstrap.logger") as mock_logger:
+                from slife import main
 
-                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
-                env_line = [t for t in debug_texts if "DB_PASSWORD" in t]
-                assert len(env_line) == 1
-                assert "supersecret123" not in env_line[0]
+                main()
+
+            debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+            env_line = [t for t in debug_texts if "DB_PASSWORD" in t]
+            assert len(env_line) == 1
+            assert "supersecret123" not in env_line[0]
 
     def test_no_env_vars_silent(self):
         """When config.env is empty, no env log lines are emitted."""
         cfg = self._make_config(env={})
 
-        with patch("slife.Config.from_yaml", return_value=cfg):
-            with patch("slife.SlifeApp") as mock_app_cls:
-                mock_app = MagicMock()
-                mock_app_cls.return_value = mock_app
+        with (
+            patch("slife.Config.from_yaml", return_value=cfg),
+            patch("slife.SlifeApp") as mock_app_cls,
+        ):
+            mock_app = MagicMock()
+            mock_app_cls.return_value = mock_app
 
-                with patch("slife.bootstrap.logger") as mock_logger:
-                    from slife import main
-                    main()
+            with patch("slife.bootstrap.logger") as mock_logger:
+                from slife import main
 
-                debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
-                env_lines = [t for t in debug_texts if "env " in t]
-                assert len(env_lines) == 0
+                main()
+
+            debug_texts = [str(c) for c in mock_logger.debug.call_args_list]
+            env_lines = [t for t in debug_texts if "env " in t]
+            assert len(env_lines) == 0

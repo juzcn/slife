@@ -11,18 +11,18 @@ from __future__ import annotations
 import json
 import os
 import platform
+import sqlite3
 import sys
 from datetime import datetime
-
-from slife.a2a.card import _safe_name
-from slife.logfmt import format_turn_ts
-from slife.os_detect import is_wsl
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jinja2 import Environment, FileSystemLoader
 
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.a2a.card import _safe_name
+from slife.logfmt import format_turn_ts
+from slife.os_detect import is_wsl
 from slife.paths import (
     get_data_dir,
     get_skills_dir,
@@ -76,15 +76,15 @@ def render_template(template: str, **kwargs: object) -> str:
 #: not two copies that can drift.
 RECALL_REPLY: dict[str, object] = {
     "context": "Which of the turns in hand to keep: all of them (omit or "
-               "\"keep\"), none (\"clear\"), or the turn_ids to keep, e.g. "
-               "[12, 15].",
+    '"keep"), none ("clear"), or the turn_ids to keep, e.g. '
+    "[12, 15].",
     "recall": {
         "query": "Search text. Omit for no search.",
         "since": "Lower time bound: an ISO date, or a relative phrase such "
-                 "as yesterday / last week. Omit for none.",
+        "as yesterday / last week. Omit for none.",
         "until": "Upper time bound, same grammar as since. Omit for none.",
-        "anchor": "Which end of a period to recall from, \"newest\" or "
-                  "\"oldest\". Omit for the newest end.",
+        "anchor": 'Which end of a period to recall from, "newest" or '
+        '"oldest". Omit for the newest end.',
     },
 }
 
@@ -233,8 +233,11 @@ def build_turn_prompt(
             ev_time = format_turn_ts(datetime.fromtimestamp(epoch, tz=now.tzinfo))
             rendered_presence.append({"time": ev_time, "text": text})
     rendered_schedule: list[dict] = [
-        {"name": r.get("name", ""), "due_at": r.get("due_at", ""),
-         "status": r.get("status", "")}
+        {
+            "name": r.get("name", ""),
+            "due_at": r.get("due_at", ""),
+            "status": r.get("status", ""),
+        }
         for r in (schedule_status or [])
     ]
     rendered_a2a_stale: list[dict] = [
@@ -243,26 +246,32 @@ def build_turn_prompt(
         # the same untrusted input presence lines already scrub.  This list is
         # rendered into every turn's prompt until the peer is answered, so an
         # unsanitized value here is a standing injection channel.
-        {"task_id": _safe_name(t.get("task_id", "")),
-         "peer": _safe_name(t.get("peer", "")),
-         "since": t.get("since", "")}
+        {
+            "task_id": _safe_name(t.get("task_id", "")),
+            "peer": _safe_name(t.get("peer", "")),
+            "since": t.get("since", ""),
+        }
         for t in (a2a_stale_tasks or [])
     ]
-    return _env.get_template("turn_prompt.j2").render(
-        current_datetime=format_turn_ts(now),
-        utc_offset=now.strftime("%z"),
-        last_context_tokens=f"{last_context_tokens:,}",
-        last_usage_pct=last_usage_pct,
-        model_name=model_name,
-        context_window=f"{context_window:,}" if context_window else "",
-        input_modalities=input_modalities,
-        cwd=cwd,
-        shell=shell,
-        presence_events=rendered_presence,
-        schedule_status=rendered_schedule,
-        a2a_stale_tasks=rendered_a2a_stale,
-        restarted=restarted,
-    ).strip()
+    return (
+        _env.get_template("turn_prompt.j2")
+        .render(
+            current_datetime=format_turn_ts(now),
+            utc_offset=now.strftime("%z"),
+            last_context_tokens=f"{last_context_tokens:,}",
+            last_usage_pct=last_usage_pct,
+            model_name=model_name,
+            context_window=f"{context_window:,}" if context_window else "",
+            input_modalities=input_modalities,
+            cwd=cwd,
+            shell=shell,
+            presence_events=rendered_presence,
+            schedule_status=rendered_schedule,
+            a2a_stale_tasks=rendered_a2a_stale,
+            restarted=restarted,
+        )
+        .strip()
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -285,17 +294,16 @@ def _memory_start_time(agent_name: str) -> str:
         db_path = get_db_path(agent_name)
         if not db_path.is_file():
             return ""
-        import sqlite3
-
         con = sqlite3.connect(
-            str(db_path), timeout=_timeouts.timeouts.storage.sqlite_busy,
+            str(db_path),
+            timeout=_timeouts.timeouts.storage.sqlite_busy,
         )
         try:
             row = con.execute("SELECT MIN(created_at) FROM turn").fetchone()
             return row[0] if row and row[0] else ""
         finally:
             con.close()
-    except Exception:
+    except (sqlite3.Error, OSError):
         return ""
 
 
@@ -330,7 +338,7 @@ def _user_profile(agent_name: str) -> str:
         if lines and lines[0].lstrip().startswith("#"):
             lines = lines[1:]
         return "\n".join(lines).strip()
-    except Exception:
+    except (OSError, ValueError):
         return ""
 
 

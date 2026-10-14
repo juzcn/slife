@@ -92,12 +92,14 @@ async def _hot_reload(ctx, enabled: bool = True) -> str:
             notes.append(f"{spec.name}: plugin not connected — restart to apply")
             continue
         try:
-            raw = await client.call_tool(spec.semantic_reload_tool, {"enabled": enabled})
+            raw = await client.call_tool(
+                spec.semantic_reload_tool, {"enabled": enabled}
+            )
             if isinstance(raw, str):
                 raw = json.loads(raw)
             status = raw.get("status", raw) if isinstance(raw, dict) else raw
             notes.append(f"{spec.name}: {status}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — MCP client call: best-effort semantic reload; failure is reported as a note
             logger.warning("embeddings_reload_failed plugin=%s err=%s", spec.name, e)
             notes.append(f"{spec.name}: reload failed ({e}) — restart to apply")
 
@@ -126,7 +128,7 @@ async def _reload_tool_index(ctx, enabled: bool) -> str:
             return f"{name}: no config in this context — restart to apply"
         await manager.reload(section)
         return f"{name}: {manager.state}"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort index reload; the manager can fail in several ways and reports a note
         logger.warning("embeddings_reload_failed index=%s err=%s", name, e)
         return f"{name}: reload failed ({e}) — restart to apply"
 
@@ -222,8 +224,11 @@ class ListEmbeddingsTool(_ConfigPathMixin, Tool):
                 f"(base: {base}, api_key: {key_disp})"
             )
             total += 1
-        lines.insert(0, f"**{total} embedding provider(s)** configured. "
-                        f"Active: `{active}`  enabled={enabled}")
+        lines.insert(
+            0,
+            f"**{total} embedding provider(s)** configured. "
+            f"Active: `{active}`  enabled={enabled}",
+        )
         return "\n".join(lines)
 
 
@@ -257,7 +262,7 @@ class SetEmbeddingsTool(_EmbeddingsConfigTool):
             "model": {
                 "type": "string",
                 "description": "Embedding model id on this endpoint (e.g. bge-m3); "
-                               "omitted → the endpoint default is used.",
+                "omitted → the endpoint default is used.",
             },
         },
         "required": ["provider"],
@@ -298,7 +303,9 @@ class SetEmbeddingsTool(_EmbeddingsConfigTool):
         write_config(self._config_path, raw)
         action = "Created" if created else "Updated"
         reload_note = await _apply_embeddings_change(
-            getattr(self, "_ctx", None), emb, enabled=True,
+            getattr(self, "_ctx", None),
+            emb,
+            enabled=True,
         )
         logger.info("embeddings_model_%s provider=%s", action.lower(), pid)
         return f"[OK] {action} embedding provider `{pid}`. {reload_note}"
@@ -344,7 +351,9 @@ class SwitchEmbeddingsTool(_EmbeddingsConfigTool):
         emb["active_model"] = pid
         write_config(self._config_path, raw)
         reload_note = await _apply_embeddings_change(
-            getattr(self, "_ctx", None), emb, enabled=True,
+            getattr(self, "_ctx", None),
+            emb,
+            enabled=True,
         )
         logger.info("embeddings_model_switched from=%s to=%s", old, pid)
         return f"[OK] Switched active embedding provider from `{old}` to `{pid}`. {reload_note}"
@@ -398,7 +407,9 @@ class RemoveEmbeddingsTool(_EmbeddingsConfigTool):
 
         write_config(self._config_path, raw)
         reload_note = await _apply_embeddings_change(
-            getattr(self, "_ctx", None), emb, enabled=True,
+            getattr(self, "_ctx", None),
+            emb,
+            enabled=True,
         )
         logger.info("embeddings_model_removed provider=%s", pid)
         return f"[OK] Removed `{pid}`. {reload_note}"
@@ -412,9 +423,7 @@ class EnableEmbeddingsTool(_EmbeddingsConfigTool):
 
     name: ClassVar[str] = "embeddings_enable"
     category: ClassVar[str] = "embeddings"
-    description: ClassVar[str] = (
-        "Enable or disable semantic (hybrid) search globally."
-    )
+    description: ClassVar[str] = "Enable or disable semantic (hybrid) search globally."
     parameters: ClassVar[dict] = make_params(
         enabled={
             "type": "boolean",
@@ -438,7 +447,9 @@ class EnableEmbeddingsTool(_EmbeddingsConfigTool):
         emb["enabled"] = enabled
         write_config(self._config_path, raw)
         reload_note = await _apply_embeddings_change(
-            getattr(self, "_ctx", None), emb, enabled=enabled,
+            getattr(self, "_ctx", None),
+            emb,
+            enabled=enabled,
         )
         state = "enabled" if enabled else "disabled"
         logger.info("embeddings_%s", state)

@@ -6,25 +6,33 @@ import sys
 import threading
 import traceback
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
-from slife.config import Config, ModelConfig
 from slife.agent.message_history import MessageHistory
+from slife.config import Config, ModelConfig
+from slife.tools._yaml_doc import new_yaml, render
 from slife.tools.base import Tool
 from slife.tools.registry import ToolRegistry
-from slife.tools._yaml_doc import new_yaml, render
-
 
 # ── pytest configuration ────────────────────────────────────────────────
 
 
 def pytest_configure(config):
     """Register markers for VS Code / older pytest compatibility."""
-    config.addinivalue_line("markers", "unit: fast, isolated unit test (no I/O, no subprocess)")
-    config.addinivalue_line("markers", "integration: test requiring I/O, network, or subprocess")
-    config.addinivalue_line("markers", "e2e: end-to-end test requiring a full running system")
-    config.addinivalue_line("markers", "slow: mark a test as slow (excluded from quick runs)")
+    config.addinivalue_line(
+        "markers", "unit: fast, isolated unit test (no I/O, no subprocess)"
+    )
+    config.addinivalue_line(
+        "markers", "integration: test requiring I/O, network, or subprocess"
+    )
+    config.addinivalue_line(
+        "markers", "e2e: end-to-end test requiring a full running system"
+    )
+    config.addinivalue_line(
+        "markers", "slow: mark a test as slow (excluded from quick runs)"
+    )
     _track_aiosqlite_creations()
     faulthandler.enable()
 
@@ -47,12 +55,13 @@ def pytest_configure(config):
 # test) and SLIFE_TEST_EXIT_AFTER (session end) when a legitimate test needs
 # longer.
 
+
 def _stall_after() -> float:
-    return float(os.environ.get("SLIFE_TEST_STALL_AFTER", 300))
+    return float(os.environ.get("SLIFE_TEST_STALL_AFTER", "300"))
 
 
 def _exit_after() -> float:
-    return float(os.environ.get("SLIFE_TEST_EXIT_AFTER", 60))
+    return float(os.environ.get("SLIFE_TEST_EXIT_AFTER", "60"))
 
 
 def _hang_log_path() -> Path:
@@ -81,9 +90,13 @@ def _arm_fuse(seconds: float) -> None:
     global _HANG_LOG
     if _HANG_LOG is None:
         try:
-            _HANG_LOG = open(_hang_log_path(), "w", buffering=1, encoding="utf-8")
+            # Long-lived handle on purpose: faulthandler writes stack dumps to
+            # it for the whole session, so it must stay open past this frame.
+            _HANG_LOG = open(  # noqa: SIM115 — session-scoped dump handle
+                _hang_log_path(), "w", buffering=1, encoding="utf-8"
+            )
         except OSError:
-            _HANG_LOG = sys.stderr    # captured, but better than no dump at all
+            _HANG_LOG = sys.stderr  # captured, but better than no dump at all
     faulthandler.dump_traceback_later(seconds, exit=True, file=_HANG_LOG)
 
 
@@ -167,12 +180,16 @@ def _reap_leaked_connections(deadline_s: float = 10.0) -> list[str]:  # noqa-tim
         leaks.append(
             f"  leaked aiosqlite connection — opened at "
             f"{origin[-1] if origin else '<unknown>'}"
-            + (f"\n    via {' <- '.join(reversed(origin[:-1]))}" if len(origin) > 1 else "")
+            + (
+                f"\n    via {' <- '.join(reversed(origin[:-1]))}"
+                if len(origin) > 1
+                else ""
+            )
         )
         try:
-            obj.stop()                      # closes it and breaks the worker loop
+            obj.stop()  # closes it and breaks the worker loop
             doomed.append(obj)
-        except Exception as e:  # never let cleanup mask the real failure
+        except Exception as e:  # noqa: BLE001 — never let cleanup mask the real failure
             leaks.append(f"    (reap failed: {e})")
     deadline = time.monotonic() + deadline_s
     for obj in doomed:
@@ -181,7 +198,7 @@ def _reap_leaked_connections(deadline_s: float = 10.0) -> list[str]:  # noqa-tim
             continue
         try:
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — never let cleanup mask the real failure
             leaks.append(f"    (join failed: {e})")
     stuck = [o for o in doomed if (t := getattr(o, "_thread", None)) and t.is_alive()]
     if stuck:
@@ -227,8 +244,11 @@ def pytest_sessionfinish(session, exitstatus):
             "interpreter exit):"
         )
         report.extend(stragglers)
-    print("\n\n" + "=" * 70 + "\nTEST SESSION LEAK REPORT\n" + "=" * 70,
-          file=sys.stderr, flush=True)
+    print(
+        "\n\n" + "=" * 70 + "\nTEST SESSION LEAK REPORT\n" + "=" * 70,
+        file=sys.stderr,
+        flush=True,
+    )
     print("\n".join(report), file=sys.stderr, flush=True)
 
 
@@ -248,6 +268,7 @@ def _pin_ui_language():
     i18n layer itself call ``set_language`` explicitly on top of this.
     """
     from slife.ui.i18n import set_language
+
     set_language("en")
     yield
     set_language("en")
@@ -265,6 +286,7 @@ def _isolate_health():
     any test asserting on the report's contents would depend on file order.
     """
     from slife import health
+
     with health._lock:
         health._entries.clear()
     yield
@@ -318,18 +340,20 @@ def _isolate_a2a_inbound_state(tmp_path):
 #: They must never read/write a real ``tools.yaml`` — the dev data
 #: dir (repo root) holds the git-tracked file — so every access is pointed
 #: at a throwaway file.
-_MCP_ISOLATED_MODULES = frozenset({
-    "test_mcp_config",
-    "test_embeddings",
-    "test_logging",
-    "test_mcp_client",
-    "test_mcp_connection",
-    "test_mcp_oauth",
-    "test_mcp_process",
-    "test_mcp_server",
-    "test_schema_flatten",
-    "test_tool_catalog",
-})
+_MCP_ISOLATED_MODULES = frozenset(
+    {
+        "test_mcp_config",
+        "test_embeddings",
+        "test_logging",
+        "test_mcp_client",
+        "test_mcp_connection",
+        "test_mcp_oauth",
+        "test_mcp_process",
+        "test_mcp_server",
+        "test_schema_flatten",
+        "test_tool_catalog",
+    }
+)
 
 
 @pytest.fixture(autouse=True)
@@ -348,6 +372,7 @@ def _isolate_mcp_config_path(request, tmp_path, monkeypatch):
         # Import lazily so it never runs against a half-built package.
         try:
             import slife.plugins.mcp_gateway.config as _cfg
+
             _cfg._CURRENT_PATH = None
         except ImportError:
             pass
@@ -457,9 +482,10 @@ def empty_history():
 
 class _EchoTool(Tool):
     """Test tool that echoes its arguments."""
+
     name = "echo"
     description = "Echoes back the input."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "message": {"type": "string", "description": "Message to echo."}
@@ -473,9 +499,10 @@ class _EchoTool(Tool):
 
 class _FailingTool(Tool):
     """Test tool that always raises."""
+
     name = "failer"
     description = "Always fails."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "reason": {"type": "string", "description": "Reason for failure."}
@@ -520,6 +547,7 @@ def empty_registry():
 
 class _MockChoice:
     """Mock for openai choice object."""
+
     __slots__ = ("delta",)
 
     def __init__(self, delta):
@@ -528,6 +556,7 @@ class _MockChoice:
 
 class _MockStreamEvent:
     """Mock for a streaming API event."""
+
     __slots__ = ("choices", "usage")
 
     def __init__(self, delta=None, usage=None):
@@ -537,6 +566,7 @@ class _MockStreamEvent:
 
 class _MockDelta:
     """Mock delta with optional content, reasoning, tool_calls."""
+
     __slots__ = ("content", "reasoning_content", "tool_calls")
 
     def __init__(self, content=None, reasoning_content=None, tool_calls=None):
@@ -547,7 +577,8 @@ class _MockDelta:
 
 class _MockToolCallDelta:
     """Mock for a single tool call delta."""
-    __slots__ = ("index", "id", "function")
+
+    __slots__ = ("function", "id", "index")
 
     def __init__(self, index=0, id=None, function=None):
         self.index = index
@@ -557,7 +588,8 @@ class _MockToolCallDelta:
 
 class _MockFunctionDelta:
     """Mock for function delta in tool call."""
-    __slots__ = ("name", "arguments")
+
+    __slots__ = ("arguments", "name")
 
     def __init__(self, name=None, arguments=""):
         self.name = name
@@ -566,7 +598,8 @@ class _MockFunctionDelta:
 
 class _MockUsage:
     """Mock for API usage response."""
-    __slots__ = ("prompt_tokens", "completion_tokens", "total_tokens")
+
+    __slots__ = ("completion_tokens", "prompt_tokens", "total_tokens")
 
     def __init__(self, prompt_tokens=100, completion_tokens=50, total_tokens=150):
         self.prompt_tokens = prompt_tokens
@@ -576,9 +609,11 @@ class _MockUsage:
 
 def make_async_iter(items):
     """Create an async iterator from a list of items."""
+
     async def _gen():
         for item in items:
             yield item
+
     return _gen()
 
 
@@ -593,4 +628,3 @@ def dump_config(data) -> str:
 def load_config_text(text: str) -> dict:
     """Parse config YAML text back to a dict — the read side of a fixture."""
     return new_yaml().load(text)
-

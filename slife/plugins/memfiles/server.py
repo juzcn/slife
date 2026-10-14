@@ -57,29 +57,28 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
-
 from urllib.parse import urljoin, urlparse
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.paths import get_memfiles_dir
 from slife.plugins.memdb.search import run_search
 from slife.plugins.memdb.semantic import SemanticManager
 from slife.plugins.memfiles.store import (
-    MemfilesStore,
     _KIND_NAMES,
-    _valid_kind,
+    MemfilesStore,
     _name_to_stem,
     _slugify,
     _unique_path,
+    _valid_kind,
 )
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
-from slife.timeutil import BOUND_GRAMMAR, InvalidTimeBound
 from slife.plugins.memfiles.user_profile import user_profile_path
-from slife.tools.base import require_params
 from slife.server_utils import (
     create_plugin_server,
     run_plugin_server,
     warm_after_ready,
 )
+from slife.timeutil import BOUND_GRAMMAR, InvalidTimeBound
+from slife.tools.base import require_params
 
 # Hard cap on a ``file_save`` URL download — a multi-GB public URL must not OOM
 # the plugin process by buffering the whole body.
@@ -110,7 +109,7 @@ def _decode_text(raw: bytes) -> tuple[str, str] | None:
     None rather than guessing at a binary blob.
     """
     if raw.startswith(codecs.BOM_UTF8):
-        raw = raw[len(codecs.BOM_UTF8):]
+        raw = raw[len(codecs.BOM_UTF8) :]
     elif raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
         return raw.decode("utf-16"), "utf-16"
     try:
@@ -304,16 +303,48 @@ def _saved_result(filepath: Path) -> str:
 
 #: Extension → category subfolder under ``{agent}.files/files/``.
 _FILE_CATEGORIES: dict[str, set[str]] = {
-    "images":     {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"},
-    "documents":  {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-                   ".txt", ".md", ".rtf", ".odt", ".ods", ".odp"},
-    "archives":   {".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".bz2", ".xz"},
-    "code":       {".py", ".js", ".ts", ".java", ".go", ".rs", ".c", ".cpp", ".h",
-                   ".json", ".yaml", ".yml", ".toml", ".sh", ".sql",
-                   ".html", ".css", ".xml", ".ini", ".cfg"},
-    "audio":      {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac"},
-    "video":      {".mp4", ".mov", ".avi", ".mkv", ".webm"},
-    "data":       {".csv", ".tsv", ".parquet", ".db", ".sqlite", ".jsonl", ".ndjson"},
+    "images": {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"},
+    "documents": {
+        ".pdf",
+        ".doc",
+        ".docx",
+        ".xls",
+        ".xlsx",
+        ".ppt",
+        ".pptx",
+        ".txt",
+        ".md",
+        ".rtf",
+        ".odt",
+        ".ods",
+        ".odp",
+    },
+    "archives": {".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".bz2", ".xz"},
+    "code": {
+        ".py",
+        ".js",
+        ".ts",
+        ".java",
+        ".go",
+        ".rs",
+        ".c",
+        ".cpp",
+        ".h",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".sh",
+        ".sql",
+        ".html",
+        ".css",
+        ".xml",
+        ".ini",
+        ".cfg",
+    },
+    "audio": {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac"},
+    "video": {".mp4", ".mov", ".avi", ".mkv", ".webm"},
+    "data": {".csv", ".tsv", ".parquet", ".db", ".sqlite", ".jsonl", ".ndjson"},
 }
 _DEFAULT_CATEGORY = "other"
 
@@ -341,7 +372,9 @@ def _detect_category(filename: str, override: str = "") -> str:
     ),
 )
 async def note_edit(
-    subject: str, content: str, tags: str | None = None,
+    subject: str,
+    content: str,
+    tags: str | None = None,
 ) -> str:
     """Write a private note for a subject.
 
@@ -395,7 +428,9 @@ async def note_remove(subject: str) -> str:
     ),
 )
 async def diary_write(
-    date: str | None = None, content: str = "", tags: str | None = None,
+    date: str | None = None,
+    content: str = "",
+    tags: str | None = None,
 ) -> str:
     """Write today's (or a given date's) diary entry.
 
@@ -424,8 +459,11 @@ async def diary_write(
     ),
 )
 async def file_save(
-    paths: list[str], title: str = "", tags: str | None = None,
-    summary: str = "", category: str = "",
+    paths: list[str],
+    title: str = "",
+    tags: str | None = None,
+    summary: str = "",
+    category: str = "",
 ) -> str:
     """Copy local files, or download public URLs, into the cabinet.
 
@@ -475,7 +513,11 @@ async def file_save(
             # dot is part of the name and must survive.  No title falls back to
             # src.stem verbatim — that is already a legal filename, and
             # slugifying it would spend case and CJK for nothing.
-            stem = (_name_to_stem(title, src.suffix) if title else "") or src.stem or "file"
+            stem = (
+                (_name_to_stem(title, src.suffix) if title else "")
+                or src.stem
+                or "file"
+            )
             ext = src.suffix
             display_title = title or src.name
             name = src.name
@@ -496,8 +538,12 @@ async def file_save(
                 shutil.copy2(src, saved)
             rel = saved.relative_to(mem_dir).as_posix()
             await store.add_file(
-                title=display_title, original_path=p, saved_path=rel,
-                mime=mime, size=saved.stat().st_size, tags=tags or "",
+                title=display_title,
+                original_path=p,
+                saved_path=rel,
+                mime=mime,
+                size=saved.stat().st_size,
+                tags=tags or "",
                 summary=summary,
             )
             saved_any = True
@@ -570,12 +616,11 @@ async def _download(url: str) -> tuple[bytes, str]:
                         size += len(chunk)
                         if size > _MAX_SAVE_BYTES:
                             return b"", (
-                                f"file too large "
-                                f"({size // (1024 * 1024)}MB > 50MB)"
+                                f"file too large ({size // (1024 * 1024)}MB > 50MB)"
                             )
                         chunks.append(chunk)
                     return b"".join(chunks), ""
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — returns an error tuple, never raises
         return b"", f"download failed — {e}"
     return b"", f"too many redirects — {url}"
 
@@ -617,7 +662,9 @@ def _url_name_parts(parsed, title: str) -> tuple[str, str, str, str]:
     if url_name and "." in url_name:
         # ``re.sub`` keeps ``\w`` and ``.``, so the leading dot always survives
         # and the first character is never truncated away by ``[:10]``.
-        ext = re.sub(r"[^\w.]", "", "." + url_name.rsplit(".", 1)[-1].split("?")[0])[:10]
+        ext = re.sub(r"[^\w.]", "", "." + url_name.rsplit(".", 1)[-1].split("?")[0])[
+            :10
+        ]
     else:
         ext = ""
     stem = _name_to_stem(title or url_name, ext) or "untitled"
@@ -667,7 +714,8 @@ async def cabinet_search(
     kind: Literal["note", "diary", "file", "report", "all"] = "all",
     mode: Literal["hybrid", "fts5", "grep"] = "hybrid",
     limit: int = 20,
-    since: str | None = None, until: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
 ) -> str:
     """Search the file cabinet (notes, diary, saved files and reports).
 
@@ -690,8 +738,13 @@ async def cabinet_search(
     try:
         legs = store.search_legs(kind=_valid_kind(kind))
         outcome = await run_search(
-            legs, _manager, query=query, mode=mode, limit=limit,
-            since=since, until=until,
+            legs,
+            _manager,
+            query=query,
+            mode=mode,
+            limit=limit,
+            since=since,
+            until=until,
         )
     except InvalidTimeBound as e:
         # A bound in no known grammar is the caller's to fix: saying so beats a
@@ -715,10 +768,13 @@ async def cabinet_search(
     return json.dumps(
         {
             "mode": outcome.ran_mode,
-            "query": query, "kind": kind,
-            "results": outcome.results, "hint": outcome.hint,
+            "query": query,
+            "kind": kind,
+            "results": outcome.results,
+            "hint": outcome.hint,
         },
-        ensure_ascii=False, indent=2,
+        ensure_ascii=False,
+        indent=2,
     )
 
 
@@ -732,7 +788,9 @@ async def cabinet_search(
 )
 async def cabinet_summarize(
     kind: Literal["note", "diary", "file", "report"],
-    key: str, summary: str | None = None, tags: str | None = None,
+    key: str,
+    summary: str | None = None,
+    tags: str | None = None,
 ) -> str:
     """Write a saved row's summary and/or tags.
 
@@ -755,8 +813,13 @@ async def cabinet_summarize(
         # now — wake the drainer rather than waiting for the next save.
         _manager.on_saved()
     return json.dumps(
-        {"status": "updated", "kind": info["kind"], "key": info["key"],
-         "tags": info["tags"], "summary": info["summary"]},
+        {
+            "status": "updated",
+            "kind": info["kind"],
+            "key": info["key"],
+            "tags": info["tags"],
+            "summary": info["summary"],
+        },
         ensure_ascii=False,
     )
 
@@ -778,7 +841,7 @@ async def __check() -> str:
     """
     try:
         await _ensure_store()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — health probe reports store init failure, never raises
         return json.dumps(
             {"ok": False, "state": "store_error", "reason": f"store init failed: {e}"},
             ensure_ascii=False,
@@ -791,8 +854,9 @@ async def __check() -> str:
         # Whether the vector index can exist in this process, and why not when
         # it cannot — independent of the embedding endpoint.
         "vec_available": bool(store is not None and store._vec_available),
-        "vec_reason": (store._vec_reason if store is not None
-                       and not store._vec_available else ""),
+        "vec_reason": (
+            store._vec_reason if store is not None and not store._vec_available else ""
+        ),
         "state": manager.state if manager is not None else "no_manager",
         "semantic_ready": bool(manager is not None and manager.semantic_ready),
         "unembedded": await manager.unembedded() if manager is not None else 0,
@@ -818,7 +882,9 @@ async def __memfiles_reload_semantic(enabled: bool = True) -> str:
         if enabled:
             status = await manager.enable()
             status["status"] = "reloaded"
-            status["message"] = "Cabinet semantic index reloaded (reindexing in background)."
+            status["message"] = (
+                "Cabinet semantic index reloaded (reindexing in background)."
+            )
         else:
             status = await manager.disable()
             status["status"] = "disabled"
@@ -854,7 +920,7 @@ async def file_read(path: str) -> str:
         return f"Error: not a file — {path}"
     try:
         raw = target.read_bytes()
-    except Exception as e:
+    except OSError as e:
         return f"Error: cannot read {path} — {e}"
 
     # A read returns the file's TEXT, or says why it has none.  Decoding with
@@ -892,8 +958,11 @@ async def file_read(path: str) -> str:
 
 
 async def _list_kind(
-    kind: str, limit: int, offset: int,
-    since: str | None = None, until: str | None = None,
+    kind: str,
+    limit: int,
+    offset: int,
+    since: str | None = None,
+    until: str | None = None,
     **filters: object,
 ) -> str:
     """The ONE implementation behind every ``*_list`` tool.
@@ -918,12 +987,21 @@ async def _list_kind(
         raise ValueError(f"unknown list kind {kind!r}")
     store = await _ensure_store()
     data = await getattr(store, f"{kind}_list")(
-        since=since, until=until, limit=limit, offset=offset, **filters,
+        since=since,
+        until=until,
+        limit=limit,
+        offset=offset,
+        **filters,
     )
     return json.dumps(
-        {"total": data["total"], "limit": len(data["entries"]),
-         "offset": max(0, offset), "entries": data["entries"]},
-        ensure_ascii=False, indent=2,
+        {
+            "total": data["total"],
+            "limit": len(data["entries"]),
+            "offset": max(0, offset),
+            "entries": data["entries"],
+        },
+        ensure_ascii=False,
+        indent=2,
     )
 
 
@@ -935,8 +1013,10 @@ async def _list_kind(
     ),
 )
 async def note_list(
-    since: str | None = None, until: str | None = None,
-    limit: int = 50, offset: int = 0,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> str:
     """List notes, newest-updated first.
 
@@ -960,8 +1040,10 @@ async def note_list(
     ),
 )
 async def diary_list(
-    since: str | None = None, until: str | None = None,
-    limit: int = 50, offset: int = 0,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> str:
     """List diary entries, newest first.
 
@@ -1018,8 +1100,11 @@ async def diary_read(date: str) -> str:
     ),
 )
 async def file_list(
-    category: str = "", since: str | None = None, until: str | None = None,
-    limit: int = 50, offset: int = 0,
+    category: str = "",
+    since: str | None = None,
+    until: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> str:
     """List saved files, newest first.
 
@@ -1100,8 +1185,9 @@ async def __scheduled_record_run(task_id: int, due_at: str) -> str:
 async def __scheduled_mark_missed(task_id: int, due_at: str) -> str:
     store = await _ensure_store()
     await store.mark_run_missed(task_id, due_at)
-    return json.dumps({"task_id": task_id, "due_at": due_at, "status": "missed"},
-                      ensure_ascii=False)
+    return json.dumps(
+        {"task_id": task_id, "due_at": due_at, "status": "missed"}, ensure_ascii=False
+    )
 
 
 @mcp.tool(
@@ -1114,8 +1200,7 @@ async def __scheduled_mark_missed(task_id: int, due_at: str) -> str:
 async def __scheduled_fail_unconfirmed() -> str:
     store = await _ensure_store()
     stale = await store.fail_unconfirmed_runs()
-    return json.dumps({"failed": len(stale), "runs": stale},
-                      ensure_ascii=False)
+    return json.dumps({"failed": len(stale), "runs": stale}, ensure_ascii=False)
 
 
 @mcp.tool(
@@ -1127,7 +1212,9 @@ async def __scheduled_fail_unconfirmed() -> str:
     ),
 )
 async def __scheduled_mark_run_failed(
-    task_id: int, due_at: str, error: str = "",
+    task_id: int,
+    due_at: str,
+    error: str = "",
 ) -> str:
     store = await _ensure_store()
     await store.mark_run_failed(task_id, due_at, error)
@@ -1138,15 +1225,16 @@ async def __scheduled_mark_run_failed(
     name="__scheduled_run_status",
     description=(
         "Internal: the status of one run — identified by its due_at, never by "
-        "\"the newest one\", since runs of one task overlap.  null when no such "
+        '"the newest one", since runs of one task overlap.  null when no such '
         "run is recorded."
     ),
 )
 async def __scheduled_run_status(task_id: int, due_at: str) -> str:
     store = await _ensure_store()
     status = await store.run_status(task_id, due_at)
-    return json.dumps({"task_id": task_id, "due_at": due_at, "status": status},
-                      ensure_ascii=False)
+    return json.dumps(
+        {"task_id": task_id, "due_at": due_at, "status": status}, ensure_ascii=False
+    )
 
 
 # Data-layer tools for the schedule registry.  The LLM-visible ``scheduled_*``
@@ -1161,20 +1249,30 @@ async def __scheduled_run_status(task_id: int, due_at: str) -> str:
     description="Internal: create or update a scheduled task (idempotent upsert by name).",
 )
 async def __scheduled_task_upsert(
-    name: str, description: str = "", schedule: str = "",
-    timezone: str = "", enabled: bool = True,
+    name: str,
+    description: str = "",
+    schedule: str = "",
+    timezone: str = "",
+    enabled: bool = True,
 ) -> str:
     store = await _ensure_store()
     try:
         info = await store.upsert_scheduled_task(
-            name=name.strip(), description=description, schedule=schedule,
-            timezone=timezone, enabled=enabled,
+            name=name.strip(),
+            description=description,
+            schedule=schedule,
+            timezone=timezone,
+            enabled=enabled,
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — returns an error result, never raises
         return f"Error: {e}"
     return json.dumps(
-        {"name": info["name"], "task_id": info["task_id"],
-         "schedule": schedule, "enabled": enabled},
+        {
+            "name": info["name"],
+            "task_id": info["task_id"],
+            "schedule": schedule,
+            "enabled": enabled,
+        },
         ensure_ascii=False,
     )
 
@@ -1201,8 +1299,7 @@ async def __scheduled_task_remove(name: str) -> str:
 async def __scheduled_tasks_list(enabled_only: bool = False) -> str:
     store = await _ensure_store()
     tasks = await store.scheduled_tasks_list(enabled_only=enabled_only)
-    return json.dumps({"total": len(tasks), "tasks": tasks},
-                      ensure_ascii=False)
+    return json.dumps({"total": len(tasks), "tasks": tasks}, ensure_ascii=False)
 
 
 @mcp.tool(
@@ -1210,7 +1307,9 @@ async def __scheduled_tasks_list(enabled_only: bool = False) -> str:
     description="Internal: list scheduled-run records, newest first (task name / status filters).",
 )
 async def __scheduled_runs_list(
-    name: str = "", status: str = "", limit: int = 50,
+    name: str = "",
+    status: str = "",
+    limit: int = 50,
 ) -> str:
     store = await _ensure_store()
     task_id = None
@@ -1219,10 +1318,11 @@ async def __scheduled_runs_list(
         if task_id is None:
             return f"Scheduled task not found: {name}"
     runs = await store.scheduled_runs_list(
-        task_id=task_id, status=status or None, limit=limit,
+        task_id=task_id,
+        status=status or None,
+        limit=limit,
     )
-    return json.dumps({"total": len(runs), "runs": runs},
-                      ensure_ascii=False)
+    return json.dumps({"total": len(runs), "runs": runs}, ensure_ascii=False)
 
 
 @mcp.tool(
@@ -1282,8 +1382,12 @@ async def __user_profile_edit(content: str) -> str:
     ),
 )
 async def report_save(
-    name: str = "", title: str = "", content: str = "", tags: str = "",
-    period_start: str | None = None, period_end: str | None = None,
+    name: str = "",
+    title: str = "",
+    content: str = "",
+    tags: str = "",
+    period_start: str | None = None,
+    period_end: str | None = None,
     due_at: str | None = None,
 ) -> str:
     """Save a report (bound to a scheduled task when name is given).
@@ -1319,8 +1423,12 @@ async def report_save(
             )
     try:
         info = await store.upsert_report(
-            task_id=task_id, title=title, content=content, tags=tags,
-            period_start=period_start, period_end=period_end,
+            task_id=task_id,
+            title=title,
+            content=content,
+            tags=tags,
+            period_start=period_start,
+            period_end=period_end,
             due_at=(due_at if task_id is not None else None),
         )
     except ValueError as e:
@@ -1342,8 +1450,11 @@ async def report_save(
     ),
 )
 async def report_list(
-    name: str = "", since: str | None = None, until: str | None = None,
-    limit: int = 50, offset: int = 0,
+    name: str = "",
+    since: str | None = None,
+    until: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> str:
     """List reports.
 
@@ -1495,10 +1606,22 @@ def _as_address(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | No
 #: (``.home.arpa``), ICANN's reserved ``.internal``, the reverse tree, and the
 #: de-facto private-use TLDs LANs hand out.  A closed, standard set — unlike a
 #: proxy's fake-ip pool, it does not move when someone edits a config.
-_NON_PUBLIC_TLDS = frozenset({
-    "arpa", "corp", "example", "home", "internal", "intranet", "invalid",
-    "lan", "local", "localdomain", "localhost", "test",
-})
+_NON_PUBLIC_TLDS = frozenset(
+    {
+        "arpa",
+        "corp",
+        "example",
+        "home",
+        "internal",
+        "intranet",
+        "invalid",
+        "lan",
+        "local",
+        "localdomain",
+        "localhost",
+        "test",
+    }
+)
 
 
 def _is_non_public_name(host: str) -> bool:

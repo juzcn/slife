@@ -10,7 +10,10 @@ shaped like the current turn schema.
 import os
 import sqlite3
 
-import pytest; pytestmark = pytest.mark.unit
+import pytest
+
+pytestmark = pytest.mark.unit
+
 
 JOB_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -143,7 +146,7 @@ def test_total_tokens_sums_current_columns(tmp_path, job):
 
     assert "轮数(turns): 3" in out
     assert "总token花费(token_count): 410" in out  # 100+250+60
-    assert "总context_tokens: 345" in out          # 90+200+55
+    assert "总context_tokens: 345" in out  # 90+200+55
     assert "平均每轮: 136.7" in out
 
 

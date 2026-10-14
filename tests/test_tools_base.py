@@ -1,12 +1,12 @@
 """Tests for Slife.tools.base — abstract Tool base class."""
 
-import pytest; pytestmark = pytest.mark.unit
-
+from typing import ClassVar
 
 import pytest
 
 from slife.tools.base import Tool, make_params, require_params
 
+pytestmark = pytest.mark.unit
 
 # ── Tool ABC ──────────────────────────────────────────────────────────
 
@@ -22,54 +22,73 @@ class TestToolABC:
     def test_subclass_validation_missing_name(self):
         """Subclass missing 'name' raises TypeError."""
         with pytest.raises(TypeError) as exc_info:
+
             class _BadTool(Tool):
                 description = "desc"
-                parameters = {}
-                async def execute(self, **_kwargs): pass
+                parameters: ClassVar[dict] = {}
+
+                async def execute(self, **_kwargs):
+                    pass
+
         assert "name" in str(exc_info.value)
 
     def test_subclass_validation_missing_description(self):
         """Subclass missing 'description' raises TypeError."""
         with pytest.raises(TypeError) as exc_info:
+
             class _BadTool(Tool):
                 name = "bad"
-                parameters = {}
-                async def execute(self, **_kwargs): pass
+                parameters: ClassVar[dict] = {}
+
+                async def execute(self, **_kwargs):
+                    pass
+
         assert "description" in str(exc_info.value)
 
     def test_subclass_validation_missing_parameters(self):
         """Subclass missing 'parameters' raises TypeError."""
         with pytest.raises(TypeError) as exc_info:
+
             class _BadTool(Tool):
                 name = "bad"
                 description = "desc"
-                async def execute(self, **_kwargs): pass
+
+                async def execute(self, **_kwargs):
+                    pass
+
         assert "parameters" in str(exc_info.value)
 
     def test_subclass_validation_empty_name(self):
         """Empty string for name raises TypeError."""
         with pytest.raises(TypeError):
+
             class _BadTool(Tool):
                 name = ""
                 description = "desc"
-                parameters = {}
-                async def execute(self, **_kwargs): pass
+                parameters: ClassVar[dict] = {}
+
+                async def execute(self, **_kwargs):
+                    pass
 
     def test_subclass_validation_none_name(self):
         """None for name raises TypeError."""
         with pytest.raises(TypeError):
+
             class _BadTool(Tool):  # type: ignore[assignment]
                 name = None  # type: ignore[assignment]
                 description = "desc"
-                parameters = {}
-                async def execute(self, **_kwargs): pass
+                parameters: ClassVar[dict] = {}
+
+                async def execute(self, **_kwargs):
+                    pass
 
     def test_valid_subclass_creation(self):
         """A valid subclass is created without errors."""
+
         class GoodTool(Tool):
             name = "good_tool"
             description = "A good tool."
-            parameters = {
+            parameters: ClassVar[dict] = {
                 "type": "object",
                 "properties": {"x": {"type": "string"}},
                 "required": ["x"],
@@ -83,11 +102,14 @@ class TestToolABC:
 
     def test_from_config_default(self):
         """Default from_config returns cls() with no arguments."""
+
         class DefaultTool(Tool):
             name = "default_tool"
             description = "A tool with default from_config."
-            parameters = {"type": "object", "properties": {}}
-            async def execute(self, **_kwargs): return "ok"
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
+
+            async def execute(self, **_kwargs):
+                return "ok"
 
         instance = DefaultTool.from_config({}, None)
         assert isinstance(instance, DefaultTool)
@@ -169,14 +191,16 @@ class TestToOpenAIFunction:
         class MyTool(Tool):
             name = "my_func"
             description = "Does something useful."
-            parameters = {
+            parameters: ClassVar[dict] = {
                 "type": "object",
                 "properties": {
                     "arg1": {"type": "string", "description": "First arg"},
                 },
                 "required": ["arg1"],
             }
-            async def execute(self, **_kwargs): pass
+
+            async def execute(self, **_kwargs):
+                pass
 
         fn_def = MyTool().to_openai_function()
 

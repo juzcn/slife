@@ -53,7 +53,7 @@ async def _a2a_lifespan(_app):
     """
     try:
         await _ensure_connected()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — a failed eager connect must not abort startup
         logger.warning("a2a_plugin_eager_connect_failed err=%s", e)
     try:
         yield
@@ -62,7 +62,7 @@ async def _a2a_lifespan(_app):
         if client is not None:
             try:
                 await client.disconnect()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — shutdown must never raise
                 logger.debug("a2a_plugin_disconnect_error err=%s", e)
 
 
@@ -88,7 +88,7 @@ _MAX_QUEUED = 500
 _connect_error = ""
 
 
-def _make_queue() -> "deque[dict]":
+def _make_queue() -> deque[dict]:
     """A bounded FIFO — ``append`` drops the oldest entry past ``_MAX_QUEUED``
     (deque overflow eviction instead of a manual ``pop(0)`` keep-below loop)."""
     return deque(maxlen=_MAX_QUEUED)
@@ -128,7 +128,7 @@ async def _ensure_connected() -> A2AMesh:
             _connect_error = str(e)
             try:
                 await client.disconnect()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — cleanup must not mask the connect error
                 pass
             raise
         _client = client
@@ -149,7 +149,7 @@ def _wire_callbacks(client: A2AMesh) -> None:
 # ── Inbound queueing (drained by the harness) ──────────────────────
 
 
-def _enqueue(collection: "deque[dict]", kind: str, entry: dict) -> None:
+def _enqueue(collection: deque[dict], kind: str, entry: dict) -> None:
     """Append bounded FIFO — drop the oldest rather than block the mesh."""
     if len(collection) >= _MAX_QUEUED:
         logger.warning("a2a_inbound_overflow dropped=1 type=%s", kind)
@@ -157,31 +157,56 @@ def _enqueue(collection: "deque[dict]", kind: str, entry: dict) -> None:
 
 
 def _on_inbound_task(
-    source: str, content: str, task_id: str, kind: str = "task",
+    source: str,
+    content: str,
+    task_id: str,
+    kind: str = "task",
 ) -> None:
     # Only TASK_REQUEST messages are tasks (task_id present); a MESSAGE
     # conversation arrives task-less with kind="message" — no completion.
-    _enqueue(_inbound_tasks, "task", {
-        "type": "task", "source": source, "content": content,
-        "task_id": task_id, "kind": kind,
-    })
+    _enqueue(
+        _inbound_tasks,
+        "task",
+        {
+            "type": "task",
+            "source": source,
+            "content": content,
+            "task_id": task_id,
+            "kind": kind,
+        },
+    )
 
 
 def _on_task_completion(
-    corr_id: str, result: str, cancelled: bool, peer: str,
+    corr_id: str,
+    result: str,
+    cancelled: bool,
+    peer: str,
     kind: str = "task",
 ) -> None:
-    _enqueue(_task_completions, "task_completion", {
-        "corr_id": corr_id, "result": result, "cancelled": cancelled,
-        "peer": peer, "kind": kind,
-    })
+    _enqueue(
+        _task_completions,
+        "task_completion",
+        {
+            "corr_id": corr_id,
+            "result": result,
+            "cancelled": cancelled,
+            "peer": peer,
+            "kind": kind,
+        },
+    )
 
 
 def _on_agent_change(card: AgentCard, event: str) -> None:
-    _enqueue(_presence_events, "presence", {
-        "type": "presence", "event": event,
-        "card": {"agent_name": str(card.agent_name), "status": card.status},
-    })
+    _enqueue(
+        _presence_events,
+        "presence",
+        {
+            "type": "presence",
+            "event": event,
+            "card": {"agent_name": str(card.agent_name), "status": card.status},
+        },
+    )
 
 
 def _on_peer_cancel(task_id: str, peer: str) -> None:
@@ -195,15 +220,27 @@ def _on_peer_cancel(task_id: str, peer: str) -> None:
     The one constraint rides the [A2A:…] contract in slife.j2: the completion
     bridge died with the task, so a ``task_response`` for it is refused.
     """
-    _enqueue(_cancellations, "cancel", {
-        "type": "cancel", "corr_id": task_id, "peer": peer,
-    })
+    _enqueue(
+        _cancellations,
+        "cancel",
+        {
+            "type": "cancel",
+            "corr_id": task_id,
+            "peer": peer,
+        },
+    )
 
 
 def _on_broadcast_event(sender: str, text: str) -> None:
-    _enqueue(_inbound_events, "event", {
-        "type": "event", "source": sender, "content": text,
-    })
+    _enqueue(
+        _inbound_events,
+        "event",
+        {
+            "type": "event",
+            "source": sender,
+            "content": text,
+        },
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -227,7 +264,8 @@ def _on_broadcast_event(sender: str, text: str) -> None:
     "wait or poll.",
 )
 async def a2a_send_message(
-    agent: str, message: str,
+    agent: str,
+    message: str,
     message_type: Literal["message", "task_request", "task_response"] = "task_request",
     task_id: str = "",
 ) -> str:
@@ -283,14 +321,16 @@ async def a2a_cancel_task(agent: str, task_id: str) -> str:
     name="a2a_list_agents",
     description="List A2A mesh agents as JSON cards — your own card first, "
     "then each peer found by discovery, sorted by name. Each card is "
-    "{\"agent_name\": \"...\", \"status\": \"online\"|\"offline\"}.",
+    '{"agent_name": "...", "status": "online"|"offline"}.',
 )
 async def a2a_list_agents() -> str:
     """List mesh agents — this agent's own card first, then remote peers."""
     client = await _ensure_connected()
     return json.dumps(
-        [{"agent_name": str(c.agent_name), "status": c.status}
-         for c in client.list_agents()],
+        [
+            {"agent_name": str(c.agent_name), "status": c.status}
+            for c in client.list_agents()
+        ],
         ensure_ascii=False,
     )
 
@@ -391,27 +431,32 @@ async def __check() -> str:
         status = client.status
         for card in client.list_agents():
             if str(card.agent_name) != agent_name:
-                peers.append({
-                    "agent_name": str(card.agent_name),
-                    "status": card.status,
-                })
+                peers.append(
+                    {
+                        "agent_name": str(card.agent_name),
+                        "status": card.status,
+                    }
+                )
     collision = client.collision if client is not None else ""
-    return json.dumps({
-        "enabled": cfg.enabled,
-        "connected": connected,
-        "agent_name": agent_name,
-        "status": status,
-        "broker": f"{cfg.broker_host}:{cfg.broker_port}",
-        "peers": peers,
-        "error": collision or _connect_error,
-        "queued": {
-            "tasks": len(_inbound_tasks),
-            "events": len(_inbound_events),
-            "presence": len(_presence_events),
-            "cancellations": len(_cancellations),
-            "task_completions": len(_task_completions),
+    return json.dumps(
+        {
+            "enabled": cfg.enabled,
+            "connected": connected,
+            "agent_name": agent_name,
+            "status": status,
+            "broker": f"{cfg.broker_host}:{cfg.broker_port}",
+            "peers": peers,
+            "error": collision or _connect_error,
+            "queued": {
+                "tasks": len(_inbound_tasks),
+                "events": len(_inbound_events),
+                "presence": len(_presence_events),
+                "cancellations": len(_cancellations),
+                "task_completions": len(_task_completions),
+            },
         },
-    }, ensure_ascii=False)
+        ensure_ascii=False,
+    )
 
 
 def _ensure_windows_selector_loop() -> None:
@@ -440,6 +485,7 @@ def main() -> None:
         run_plugin_server(mcp)
     finally:
         from slife.server_utils import shutdown_server_logging
+
         shutdown_server_logging()
 
 

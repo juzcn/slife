@@ -24,9 +24,9 @@ import sys
 import threading
 from pathlib import Path
 
-from slife.server_utils import setup_server_logging, shutdown_server_logging
-from slife.logfmt import PROTOCOL_LINE_LIMIT, elapsed, read_line_bounded
 from slife.agent.roles import Role
+from slife.logfmt import PROTOCOL_LINE_LIMIT, elapsed, read_line_bounded
+from slife.server_utils import setup_server_logging, shutdown_server_logging
 
 logger = logging.getLogger("slife_subagent")
 
@@ -38,7 +38,10 @@ _log_path: Path | None = None
 def _write(result=None, error=None, rpc_id=None) -> None:
     msg = {"jsonrpc": "2.0", "id": rpc_id}
     if error is not None:
-        msg["error"] = {"code": error.get("code", -32000), "message": error.get("message", "")}
+        msg["error"] = {
+            "code": error.get("code", -32000),
+            "message": error.get("message", ""),
+        }
     elif result is not None:
         # Only set result when it's not None.  Coercing ``""`` to ``{}``
         # corrupted an empty (silent-success) turn into the literal string
@@ -48,7 +51,9 @@ def _write(result=None, error=None, rpc_id=None) -> None:
     # defaults to GBK (or the system locale encoding) which cannot encode
     # emoji and many Unicode characters — json.dumps(ensure_ascii=False)
     # would then crash.  Writing raw UTF-8 bytes bypasses the text codec.
-    sys.stdout.buffer.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+    sys.stdout.buffer.write(
+        (json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8")
+    )
     sys.stdout.buffer.flush()
 
 
@@ -57,7 +62,9 @@ def _notify(method: str, params: dict | None = None) -> None:
     msg: dict = {"jsonrpc": "2.0", "method": method}
     if params is not None:
         msg["params"] = params
-    sys.stdout.buffer.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+    sys.stdout.buffer.write(
+        (json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8")
+    )
     sys.stdout.buffer.flush()
 
 
@@ -93,8 +100,8 @@ async def run_worker(argv: list[str] | None = None) -> None:
     if argv is None:
         argv = sys.argv
     global _log_path
-    from slife.config import Config
     from slife.agent.service import AgentService
+    from slife.config import Config
 
     _name = os.environ.get("SLIFE_SUBAGENT_NAME", "")
     _suffix = f"subagent_{_name}" if _name else "subagent"
@@ -121,7 +128,10 @@ async def run_worker(argv: list[str] | None = None) -> None:
             _config_json = ""
     if _config_json:
         import json as _json
-        with elapsed("config_load", logger, level=logging.INFO, source="SLIFE_CONFIG_FILE"):
+
+        with elapsed(
+            "config_load", logger, level=logging.INFO, source="SLIFE_CONFIG_FILE"
+        ):
             config = Config.from_dict(_json.loads(_config_json))
         # The file is the parent handing its config over.  The report states
         # that provenance rather than a path: a worker has no yaml of its own.
@@ -131,6 +141,7 @@ async def run_worker(argv: list[str] | None = None) -> None:
         # CLI scanner skips flag values (--agent <id>, --lang <en|zh>), so
         # those can never be misread as a config path.
         from slife.config import parse_cli_config_path
+
         _config_path = parse_cli_config_path(argv) or "slife.yaml"
         with elapsed("config_load", logger, level=logging.INFO, path=_config_path):
             config = Config.from_yaml(_config_path)
@@ -150,6 +161,7 @@ async def run_worker(argv: list[str] | None = None) -> None:
     # worker reported 14 against the parent's 20, and the difference was
     # invisible to anyone reading either report).
     from slife.health import record_host_facts
+
     record_host_facts(config, source=_config_source)
 
     service = AgentService(config, role=Role.WORKER)
@@ -202,7 +214,7 @@ async def run_worker(argv: list[str] | None = None) -> None:
     # worker/send → inbox.post; the reader stays live while a task runs, so
     # worker/cancel can preempt the running loop via inbox.cancel_correlation
     # (→ agent_loop.cancel).
-    from slife.a2a.identity import AgentName, AgentMessage, Channel
+    from slife.a2a.identity import AgentMessage, AgentName, Channel
 
     await service.start_inbox()
     _source = AgentName(_name or "worker")
@@ -263,22 +275,29 @@ async def run_worker(argv: list[str] | None = None) -> None:
                 plugin = params.get("plugin", "")
                 port = params.get("port", 0)
                 if plugin and port:
-                    logger.info("subagent_plugin_restart plugin=%s port=%s", plugin, port)
+                    logger.info(
+                        "subagent_plugin_restart plugin=%s port=%s", plugin, port
+                    )
                     try:
                         await service.connect_plugin_http(str(plugin), int(port))
                         logger.info(
                             "subagent_plugin_reconnect_done plugin=%s port=%s",
-                            plugin, port,
+                            plugin,
+                            port,
                         )
                     except Exception as e:
                         logger.warning(
                             "subagent_plugin_reconnect_failed plugin=%s port=%s err=%s",
-                            plugin, port, e, exc_info=True,
+                            plugin,
+                            port,
+                            e,
+                            exc_info=True,
                         )
                 else:
                     logger.warning(
                         "subagent_plugin_restart_ignored plugin=%s port=%s",
-                        plugin, port,
+                        plugin,
+                        port,
                     )
             elif method == "worker/send":
                 request_count += 1
@@ -289,19 +308,25 @@ async def run_worker(argv: list[str] | None = None) -> None:
                 seed = params.get("seed")
                 if seed is not None and not isinstance(seed, list):
                     logger.warning(
-                        "subagent_seed_bad_shape type=%s", type(seed).__name__,
+                        "subagent_seed_bad_shape type=%s",
+                        type(seed).__name__,
                     )
                     seed = None
                 if not task_text:
                     _write(
-                        error={"code": -32602, "message": "Invalid params: task required"},
+                        error={
+                            "code": -32602,
+                            "message": "Invalid params: task required",
+                        },
                         rpc_id=rpc_id,
                     )
                     continue
 
                 async def _reply(
-                    reply_text: str, cancelled: bool = False,
-                    stop_reason: str = "", rid=rpc_id,
+                    reply_text: str,
+                    cancelled: bool = False,
+                    stop_reason: str = "",
+                    rid=rpc_id,
                 ) -> None:
                     if cancelled:
                         # The loop was preempted mid-task — say so, and say
@@ -320,14 +345,16 @@ async def run_worker(argv: list[str] | None = None) -> None:
                 # per process rather than wrapped around every task.  Routing
                 # back to the parent is by correlation_id and the _reply
                 # closure, never by the text.
-                await service.inbox.post(AgentMessage(
-                    source=_source,
-                    content=task_text,
-                    correlation_id=str(rpc_id) if rpc_id else "",
-                    context_seed=seed,
-                    on_reply=_reply,
-                    channel=Channel.subagent(str(_source)),
-                ))
+                await service.inbox.post(
+                    AgentMessage(
+                        source=_source,
+                        content=task_text,
+                        correlation_id=str(rpc_id) if rpc_id else "",
+                        context_seed=seed,
+                        on_reply=_reply,
+                        channel=Channel.subagent(str(_source)),
+                    )
+                )
             else:
                 _write(
                     error={"code": -32601, "message": f"Method not found: {method}"},

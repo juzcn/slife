@@ -129,8 +129,7 @@ def restore_context(
     try:
         sys_msg = (
             history.messages[0]
-            if history.messages
-            and history.messages[0].get("role") == "system"
+            if history.messages and history.messages[0].get("role") == "system"
             else None
         )
 
@@ -159,7 +158,8 @@ def restore_context(
         # Build UI ops
         ui_ops: list[dict] = []
         assistant_indices = [
-            i for i, m in enumerate(all_messages)
+            i
+            for i, m in enumerate(all_messages)
             if m.get("role") == "assistant"
             and not (
                 m.get("content") in (None, "")
@@ -176,7 +176,8 @@ def restore_context(
         _channel_by_row: dict[int, Channel] = {}
         for i, turn in enumerate(turns):
             _channel_by_row[i] = Channel.from_db(
-                turn.get("channel", ""), turn.get("channel_data", "{}"),
+                turn.get("channel", ""),
+                turn.get("channel_data", "{}"),
             )
 
         turn_idx = -1
@@ -200,9 +201,7 @@ def restore_context(
                 # (shown on every assistant message of this turn).
                 if turn_idx < len(turns):
                     cur_created = turns[turn_idx].get("created_at", "")
-                    cur_completed = (
-                        turns[turn_idx].get("completed_at") or cur_created
-                    )
+                    cur_completed = turns[turn_idx].get("completed_at") or cur_created
                 else:
                     cur_created = ""
                     cur_completed = ""
@@ -232,12 +231,14 @@ def restore_context(
                 if prefix is None:
                     # System channel — filtered from the chat view.
                     continue
-                ui_ops.append({
-                    "type": "user",
-                    "content": raw,
-                    "prefix": prefix,
-                    "created_at": cur_created,
-                })
+                ui_ops.append(
+                    {
+                        "type": "user",
+                        "content": raw,
+                        "prefix": prefix,
+                        "created_at": cur_created,
+                    }
+                )
             elif role == "assistant":
                 # "." uniformly means silence — never restore a bare-dot
                 # reply, from any turn source (heartbeat, autonomous a2a
@@ -251,7 +252,8 @@ def restore_context(
                 # render the work even without a message body.
                 tcs = msg.get("tool_calls") or []
                 visible_calls = [
-                    tc for tc in tcs
+                    tc
+                    for tc in tcs
                     if not tc.get("function", {}).get("name", "").startswith("_")
                 ]
                 if (
@@ -268,42 +270,48 @@ def restore_context(
                     content = msg.get("content") or ""
                     if not content.strip():
                         continue
-                    ui_ops.append({
-                        "type": "assistant",
-                        "thinking": "",
-                        "content": content,
-                        "tool_calls": [],
-                        "is_final": False,
-                        "name_prefix": (
-                            t("timer_prefix") if is_timer
-                            else t("schedule_prefix") if is_schedule
-                            else t("autonomous_prefix")
-                        ),
-                        "completed_at": cur_completed,
-                    })
+                    ui_ops.append(
+                        {
+                            "type": "assistant",
+                            "thinking": "",
+                            "content": content,
+                            "tool_calls": [],
+                            "is_final": False,
+                            "name_prefix": (
+                                t("timer_prefix")
+                                if is_timer
+                                else t("schedule_prefix")
+                                if is_schedule
+                                else t("autonomous_prefix")
+                            ),
+                            "completed_at": cur_completed,
+                        }
+                    )
                     continue
-                is_final = (idx == last_assistant_idx)
+                is_final = idx == last_assistant_idx
                 thinking = msg.get("thinking") or ""
                 content = msg.get("content") or ""
                 tcs = msg.get("tool_calls") or []
-                ui_ops.append({
-                    "type": "assistant",
-                    "thinking": thinking,
-                    "content": content,
-                    "tool_calls": [
-                        {
-                            "id": tc.get("id", ""),
-                            "name": tc.get("function", {}).get("name", "?"),
-                            "arguments": _safe_parse_args(
-                                tc.get("function", {}).get("arguments", "{}")
-                            ),
-                        }
-                        for tc in tcs
-                    ],
-                    "is_final": is_final,
-                    "name_prefix": assistant_prefix,
-                    "completed_at": cur_completed,
-                })
+                ui_ops.append(
+                    {
+                        "type": "assistant",
+                        "thinking": thinking,
+                        "content": content,
+                        "tool_calls": [
+                            {
+                                "id": tc.get("id", ""),
+                                "name": tc.get("function", {}).get("name", "?"),
+                                "arguments": _safe_parse_args(
+                                    tc.get("function", {}).get("arguments", "{}")
+                                ),
+                            }
+                            for tc in tcs
+                        ],
+                        "is_final": is_final,
+                        "name_prefix": assistant_prefix,
+                        "completed_at": cur_completed,
+                    }
+                )
             elif role == "tool":
                 pass
 
@@ -377,12 +385,13 @@ async def shutdown_session(service: AgentService) -> None:
     * the shared tool catalog last — a late reconcile must never write to a
       closed DB, and the aiosqlite worker thread would otherwise block exit.
     """
+
     async def _stop_one(name: str, coro) -> None:
         try:
             await asyncio.wait_for(coro, timeout=_timeouts.timeouts.grace.shutdown)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("shutdown_timeout service=%s", name)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — shutdown must not raise; the owner logs its own failure
             pass
 
     await _stop_one("inbox", service.stop_inbox())

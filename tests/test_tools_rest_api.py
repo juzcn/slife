@@ -6,8 +6,6 @@ ordinary ``uvx mcp-openapi-proxy`` server entries tagged
 throwaway config file located via ``$TOOLS_FILE``.
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -16,7 +14,6 @@ import pytest
 
 from slife.plugins.mcp_gateway import config as mcp_gateway_config
 from slife.tools._yaml_doc import render
-from tests.conftest import dump_config, load_config_text
 from slife.tools.rest_api import (
     RestApiListTool,
     RestApiListToolsTool,
@@ -24,7 +21,9 @@ from slife.tools.rest_api import (
     RestApiSetEnabledTool,
     RestApiSetTool,
 )
+from tests.conftest import dump_config, load_config_text
 
+pytestmark = pytest.mark.unit
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -40,8 +39,14 @@ def mcp_config_path(tmp_path, monkeypatch):
     yield path
 
 
-def _entry(spec_url: str, base_url: str, *, api_key: str = "", description: str = "",
-           enabled: bool = True) -> dict:
+def _entry(
+    spec_url: str,
+    base_url: str,
+    *,
+    api_key: str = "",
+    description: str = "",
+    enabled: bool = True,
+) -> dict:
     env = {
         "OPENAPI_SPEC_URL": spec_url,
         "SERVER_URL_OVERRIDE": base_url,
@@ -128,14 +133,21 @@ class TestRestApiSetTool:
 
         servers = _entries_from_file(mcp_config_path)
         assert servers["protected"]["env"]["API_KEY"] == "${MY_TOKEN}"
-        assert "MY_TOKEN" not in dump_config(servers["protected"]).replace("MY_TOKEN}", "")
+        assert "MY_TOKEN" not in dump_config(servers["protected"]).replace(
+            "MY_TOKEN}", ""
+        )
 
     @pytest.mark.asyncio
     async def test_add_duplicate(self, mcp_config_path):
         """Adding an already-registered API updates it (upsert)."""
-        _write_config(mcp_config_path, {
-            "github": _entry("https://api.github.com/spec", "https://api.github.com"),
-        })
+        _write_config(
+            mcp_config_path,
+            {
+                "github": _entry(
+                    "https://api.github.com/spec", "https://api.github.com"
+                ),
+            },
+        )
         tool = RestApiSetTool(config_path=mcp_config_path)
         result = await tool.execute(
             name="github",
@@ -175,6 +187,7 @@ class TestRestApiSetTool:
 
         try:
             from slife.tools.context import ToolContext
+
             tool = RestApiSetTool(config_path=mcp_config_path)
             tool._ctx = ToolContext(mcp_client=mock_client, config=None)
             result = await tool.execute(
@@ -200,9 +213,12 @@ class TestRestApiRemoveTool:
     @pytest.mark.asyncio
     async def test_remove_existing(self, mcp_config_path):
         """Removing a registered API removes its server entry."""
-        _write_config(mcp_config_path, {
-            "github": _entry("https://u.example.com/spec", "https://u.example.com"),
-        })
+        _write_config(
+            mcp_config_path,
+            {
+                "github": _entry("https://u.example.com/spec", "https://u.example.com"),
+            },
+        )
         tool = RestApiRemoveTool(config_path=mcp_config_path)
         result = await tool.execute(name="github")
         assert "[OK]" in result
@@ -220,15 +236,19 @@ class TestRestApiRemoveTool:
     @pytest.mark.asyncio
     async def test_remove_with_mcp_client(self, mcp_config_path):
         """When MCP client is available, calls mcp_remove."""
-        _write_config(mcp_config_path, {
-            "github": _entry("https://u.example.com/spec", "https://u.example.com"),
-        })
+        _write_config(
+            mcp_config_path,
+            {
+                "github": _entry("https://u.example.com/spec", "https://u.example.com"),
+            },
+        )
         mock_client = MagicMock()
         mock_client.call_tool = MagicMock()
         mock_client.call_tool.return_value = "disconnected"
 
         try:
             from slife.tools.context import ToolContext
+
             tool = RestApiRemoveTool(config_path=mcp_config_path)
             tool._ctx = ToolContext(mcp_client=mock_client, config=None)
             result = await tool.execute(name="github")
@@ -254,10 +274,16 @@ class TestRestApiListTool:
     @pytest.mark.asyncio
     async def test_list_with_apis(self, mcp_config_path):
         """Lists all registered APIs with details."""
-        _write_config(mcp_config_path, {
-            "github": _entry("https://api.github.com/openapi.json",
-                             "https://api.github.com", description="GitHub API"),
-        })
+        _write_config(
+            mcp_config_path,
+            {
+                "github": _entry(
+                    "https://api.github.com/openapi.json",
+                    "https://api.github.com",
+                    description="GitHub API",
+                ),
+            },
+        )
         tool = RestApiListTool(config_path=mcp_config_path)
         result = await tool.execute()
         assert "github" in result
@@ -266,13 +292,22 @@ class TestRestApiListTool:
 
     @pytest.mark.asyncio
     async def test_multiple_apis(self, mcp_config_path):
-        _write_config(mcp_config_path, {
-            "github": _entry("https://api.github.com/openapi.json",
-                             "https://api.github.com", description="GitHub API"),
-            "slack": _entry("https://api.slack.com/openapi.json",
-                            "https://slack.com/api", description="Slack API",
-                            api_key="SLACK_TOKEN"),
-        })
+        _write_config(
+            mcp_config_path,
+            {
+                "github": _entry(
+                    "https://api.github.com/openapi.json",
+                    "https://api.github.com",
+                    description="GitHub API",
+                ),
+                "slack": _entry(
+                    "https://api.slack.com/openapi.json",
+                    "https://slack.com/api",
+                    description="Slack API",
+                    api_key="SLACK_TOKEN",
+                ),
+            },
+        )
         result = await RestApiListTool(config_path=mcp_config_path).execute()
         assert "github" in result
         assert "slack" in result
@@ -286,18 +321,26 @@ class TestRestApiListTool:
 
     @pytest.mark.asyncio
     async def test_skips_non_dict_entries(self, mcp_config_path):
-        _write_config(mcp_config_path, {
-            "valid": _entry("https://spec.example.com/x", "https://example.com", description="d"),
-            "invalid": "not a dict",
-        })
+        _write_config(
+            mcp_config_path,
+            {
+                "valid": _entry(
+                    "https://spec.example.com/x", "https://example.com", description="d"
+                ),
+                "invalid": "not a dict",
+            },
+        )
         result = await RestApiListTool(config_path=mcp_config_path).execute()
         assert "valid" in result
         assert "invalid" not in result
 
     @pytest.mark.asyncio
     async def test_with_source_info(self, mcp_config_path):
-        entry = _entry("https://example.com/openapi.json", "https://example.com",
-                       description="My Service")
+        entry = _entry(
+            "https://example.com/openapi.json",
+            "https://example.com",
+            description="My Service",
+        )
         entry["source"] = {"type": "github", "url": "https://github.com/x/y"}
         _write_config(mcp_config_path, {"myservice": entry})
         result = await RestApiListTool(config_path=mcp_config_path).execute()
@@ -340,8 +383,11 @@ class TestRestApiListToolsTool:
     @staticmethod
     def _ops(n):
         return [
-            {"name": f"op{i}", "description": f"Operation {i}",
-             "inputSchema": {"type": "object"}}
+            {
+                "name": f"op{i}",
+                "description": f"Operation {i}",
+                "inputSchema": {"type": "object"},
+            }
             for i in range(n)
         ]
 
@@ -354,10 +400,14 @@ class TestRestApiListToolsTool:
 
     @pytest.mark.asyncio
     async def test_lists_operations(self, mcp_config_path):
-        _write_config(mcp_config_path, {
-            "github": _entry("https://api.github.com/openapi.json",
-                             "https://api.github.com"),
-        })
+        _write_config(
+            mcp_config_path,
+            {
+                "github": _entry(
+                    "https://api.github.com/openapi.json", "https://api.github.com"
+                ),
+            },
+        )
         ctx, client = self._client(
             {"connected": True, "tool_count": 2, "tools": self._ops(2)},
         )
@@ -381,10 +431,14 @@ class TestRestApiListToolsTool:
     @pytest.mark.asyncio
     async def test_caps_the_list_and_points_at_tool_search(self, mcp_config_path):
         """1000 operations of names is context the caller did not ask for."""
-        _write_config(mcp_config_path, {
-            "github": _entry("https://api.github.com/openapi.json",
-                             "https://api.github.com"),
-        })
+        _write_config(
+            mcp_config_path,
+            {
+                "github": _entry(
+                    "https://api.github.com/openapi.json", "https://api.github.com"
+                ),
+            },
+        )
         ctx, _ = self._client(
             {"connected": True, "tool_count": 1000, "tools": self._ops(1000)},
         )
@@ -395,17 +449,21 @@ class TestRestApiListToolsTool:
         finally:
             tool._ctx = None
 
-        assert "1000 operations" in result          # the real total
-        assert result.count("- op") == 5            # what was printed
+        assert "1000 operations" in result  # the real total
+        assert result.count("- op") == 5  # what was printed
         assert "tool_search" in result
         assert "995 more" in result
 
     @pytest.mark.asyncio
     async def test_default_cap_is_the_configured_one(self, mcp_config_path):
-        _write_config(mcp_config_path, {
-            "github": _entry("https://api.github.com/openapi.json",
-                             "https://api.github.com"),
-        })
+        _write_config(
+            mcp_config_path,
+            {
+                "github": _entry(
+                    "https://api.github.com/openapi.json", "https://api.github.com"
+                ),
+            },
+        )
         ctx, _ = self._client(
             {"connected": True, "tool_count": 100, "tools": self._ops(100)},
         )
@@ -427,10 +485,14 @@ class TestRestApiListToolsTool:
 
     @pytest.mark.asyncio
     async def test_no_gateway_client(self, mcp_config_path):
-        _write_config(mcp_config_path, {
-            "github": _entry("https://api.github.com/openapi.json",
-                             "https://api.github.com"),
-        })
+        _write_config(
+            mcp_config_path,
+            {
+                "github": _entry(
+                    "https://api.github.com/openapi.json", "https://api.github.com"
+                ),
+            },
+        )
         tool = RestApiListToolsTool(config_path=mcp_config_path)
         tool._ctx = None
         result = await tool.execute(name="github")
@@ -443,13 +505,21 @@ class TestRestApiListToolsTool:
     async def test_server_without_a_spec_reports_why(self, mcp_config_path):
         """The API is registered but serving no operations — say so rather
         than answer with an empty list."""
-        _write_config(mcp_config_path, {
-            "github": _entry("https://api.github.com/openapi.json",
-                             "https://api.github.com"),
-        })
+        _write_config(
+            mcp_config_path,
+            {
+                "github": _entry(
+                    "https://api.github.com/openapi.json", "https://api.github.com"
+                ),
+            },
+        )
         ctx, _ = self._client(
-            {"connected": False, "tools": [], "tool_count": 0,
-             "note": "Server 'github' returned no tool list — unreachable."},
+            {
+                "connected": False,
+                "tools": [],
+                "tool_count": 0,
+                "note": "Server 'github' returned no tool list — unreachable.",
+            },
         )
         tool = RestApiListToolsTool(config_path=mcp_config_path)
         tool._ctx = ctx
@@ -483,10 +553,14 @@ class TestRestApiSetEnabledTool:
     @pytest.mark.asyncio
     async def test_enable_api(self, mcp_config_path):
         """Enabling an API clears the disabled flag."""
-        _write_config(mcp_config_path, {
-            "github": _entry("https://u.example.com/spec", "https://u.example.com",
-                             enabled=False),
-        })
+        _write_config(
+            mcp_config_path,
+            {
+                "github": _entry(
+                    "https://u.example.com/spec", "https://u.example.com", enabled=False
+                ),
+            },
+        )
         tool = RestApiSetEnabledTool(config_path=mcp_config_path)
         result = await tool.execute(name="github", enabled=True)
         assert "[OK]" in result
@@ -498,9 +572,12 @@ class TestRestApiSetEnabledTool:
     @pytest.mark.asyncio
     async def test_disable_api(self, mcp_config_path):
         """Disabling an API sets enabled=false in config."""
-        _write_config(mcp_config_path, {
-            "github": _entry("https://u.example.com/spec", "https://u.example.com"),
-        })
+        _write_config(
+            mcp_config_path,
+            {
+                "github": _entry("https://u.example.com/spec", "https://u.example.com"),
+            },
+        )
         tool = RestApiSetEnabledTool(config_path=mcp_config_path)
         result = await tool.execute(name="github", enabled=False)
         assert "[OK]" in result
@@ -512,15 +589,19 @@ class TestRestApiSetEnabledTool:
     @pytest.mark.asyncio
     async def test_set_with_mcp_client(self, mcp_config_path):
         """When MCP client is available, calls mcp_set."""
-        _write_config(mcp_config_path, {
-            "github": _entry("https://u.example.com/spec", "https://u.example.com"),
-        })
+        _write_config(
+            mcp_config_path,
+            {
+                "github": _entry("https://u.example.com/spec", "https://u.example.com"),
+            },
+        )
         mock_client = MagicMock()
         mock_client.call_tool = MagicMock()
         mock_client.call_tool.return_value = "enabled"
 
         try:
             from slife.tools.context import ToolContext
+
             tool = RestApiSetEnabledTool(config_path=mcp_config_path)
             tool._ctx = ToolContext(mcp_client=mock_client, config=None)
             result = await tool.execute(name="github", enabled=True)

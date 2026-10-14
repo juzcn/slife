@@ -1,19 +1,16 @@
 """Tests for Slife.tools.subagent — local worker tool definitions and execute logic."""
 
-import pytest; pytestmark = pytest.mark.unit
-
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 # Ensure the slife.subagent package is loaded so patch() can resolve the
 # MANAGER_PATH target regardless of test collection order.
 import slife.subagent.process  # noqa: F401
-
 from slife.tools.subagent import (
     ListSubagentsTool,
-    SpawnSubagentTool,
     RemoveSubagentTool,
+    SpawnSubagentTool,
     SubagentCancelTaskTool,
     SubagentGetTaskResultTool,
     SubagentListTasksTool,
@@ -21,6 +18,8 @@ from slife.tools.subagent import (
     SubagentSendTaskAsyncTool,
     SubagentSendTaskTool,
 )
+
+pytestmark = pytest.mark.unit
 
 # Patch paths: tools use lazy imports from Slife.subagent.process
 MANAGER_PATH = "slife.subagent.process.get_manager"
@@ -64,7 +63,7 @@ class TestAllToolsMetadata:
     @pytest.mark.parametrize("tool_cls", TOOLS)
     def test_has_execute(self, tool_cls):
         assert hasattr(tool_cls, "execute")
-        assert callable(getattr(tool_cls, "execute"))
+        assert callable(tool_cls.execute)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -217,10 +216,16 @@ class TestSpawnSubagentTool:
         from slife.tools.subagent import _serialize_cloned_context
 
         mc = ModelConfig(
-            ref="t/m", provider="t", api_model="m", display_name="M",
-            api_key="k", context_window=1000,
+            ref="t/m",
+            provider="t",
+            api_model="m",
+            display_name="M",
+            api_key="k",
+            context_window=1000,
         )
-        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
+        cfg = Config(
+            models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot"
+        )
 
         data = _serialize_cloned_context(
             ToolContext(message_history=_parent_context(), config=cfg)
@@ -244,14 +249,23 @@ class TestSpawnSubagentTool:
         from slife.tools.subagent import _serialize_cloned_context
 
         mc = ModelConfig(
-            ref="t/m", provider="t", api_model="m", display_name="M",
-            api_key="k", context_window=1000,
+            ref="t/m",
+            provider="t",
+            api_model="m",
+            display_name="M",
+            api_key="k",
+            context_window=1000,
         )
-        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
+        cfg = Config(
+            models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot"
+        )
 
-        data = _serialize_cloned_context(ToolContext(
-            message_history=_parent_context(in_flight=True), config=cfg,
-        ))
+        data = _serialize_cloned_context(
+            ToolContext(
+                message_history=_parent_context(in_flight=True),
+                config=cfg,
+            )
+        )
         assert data == [
             {"role": "user", "content": "t1", "_turn_id": 7},
             {"role": "assistant", "content": "r1"},
@@ -271,14 +285,21 @@ class TestSpawnSubagentTool:
         conv = MessageHistory(system_prompt="PARENT_SYS")
         conv.add_user_message("the only turn, still running")
         mc = ModelConfig(
-            ref="t/m", provider="t", api_model="m", display_name="M",
-            api_key="k", context_window=1000,
+            ref="t/m",
+            provider="t",
+            api_model="m",
+            display_name="M",
+            api_key="k",
+            context_window=1000,
         )
-        cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
+        cfg = Config(
+            models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot"
+        )
 
-        assert _serialize_cloned_context(
-            ToolContext(message_history=conv, config=cfg)
-        ) == []
+        assert (
+            _serialize_cloned_context(ToolContext(message_history=conv, config=cfg))
+            == []
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -342,13 +363,19 @@ def _parent_context(*, in_flight: bool = False):
     conv = MessageHistory(system_prompt="PARENT_SYS")
     conv.add_user_message("t1")
     conv.add_assistant_message("r1")
-    conv.messages[1]["_turn_id"] = 7          # the settled turn, as saved
+    conv.messages[1]["_turn_id"] = 7  # the settled turn, as saved
     if in_flight:
         conv.add_user_message("what we are doing now")
-        conv.add_assistant_message("", tool_calls=[{
-            "id": "call_00_x", "type": "function",
-            "function": {"name": "subagent_send_task_async", "arguments": "{}"},
-        }])
+        conv.add_assistant_message(
+            "",
+            tool_calls=[
+                {
+                    "id": "call_00_x",
+                    "type": "function",
+                    "function": {"name": "subagent_send_task_async", "arguments": "{}"},
+                }
+            ],
+        )
     return conv
 
 
@@ -358,12 +385,17 @@ def _tool_with_parent_context(tool, *, in_flight: bool = False):
     from slife.tools.context import ToolContext
 
     mc = ModelConfig(
-        ref="t/m", provider="t", api_model="m", display_name="M",
-        api_key="k", context_window=1000,
+        ref="t/m",
+        provider="t",
+        api_model="m",
+        display_name="M",
+        api_key="k",
+        context_window=1000,
     )
     cfg = Config(models=[mc], active_model_ref="t/m", tools=[], agent_name="testbot")
     object.__setattr__(
-        tool, "_ctx",
+        tool,
+        "_ctx",
         ToolContext(message_history=_parent_context(in_flight=in_flight), config=cfg),
     )
     return tool
@@ -394,7 +426,10 @@ class TestSubagentSendTaskTool:
             result = await tool.execute(subagent_name="sub-1", task="do X")
         assert result == "done result"
         mock_mgr.send_task.assert_awaited_once_with(
-            "sub-1", "do X", timeout=None, seed=None,
+            "sub-1",
+            "do X",
+            timeout=None,
+            seed=None,
         )
 
     @pytest.mark.asyncio
@@ -447,7 +482,9 @@ class TestSubagentSendTaskTool:
         assert "converted to async" in result
         assert "rpc-9" in result
         mock_mgr.send_task_async.assert_awaited_once_with(
-            "sub-1", "do X", seed=None,
+            "sub-1",
+            "do X",
+            seed=None,
         )
         mock_mgr.send_task.assert_not_called()
 
@@ -512,7 +549,10 @@ class TestSubagentSendTaskAsyncTool:
         assert "subagent_get_task_result" in result  # auto is also pollable
         # mode defaults to "auto" (push).
         mock_mgr.send_task_async.assert_awaited_once_with(
-            "sub-1", "do X", mode="auto", seed=None,
+            "sub-1",
+            "do X",
+            mode="auto",
+            seed=None,
         )
 
     @pytest.mark.asyncio
@@ -535,13 +575,18 @@ class TestSubagentSendTaskAsyncTool:
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentSendTaskAsyncTool()
             result = await tool.execute(
-                subagent_name="sub-1", task="do X", mode="poll",
+                subagent_name="sub-1",
+                task="do X",
+                mode="poll",
             )
         assert "rpc-2" in result
         assert "Auto-push disabled" in result
         assert "subagent_get_task_result" in result
         mock_mgr.send_task_async.assert_awaited_once_with(
-            "sub-1", "do X", mode="poll", seed=None,
+            "sub-1",
+            "do X",
+            mode="poll",
+            seed=None,
         )
 
     @pytest.mark.asyncio
@@ -551,7 +596,9 @@ class TestSubagentSendTaskAsyncTool:
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentSendTaskAsyncTool()
             result = await tool.execute(
-                subagent_name="sub-1", task="do X", mode="push-forever",
+                subagent_name="sub-1",
+                task="do X",
+                mode="push-forever",
             )
         assert result.startswith("Error")
         mock_mgr.send_task_async.assert_not_awaited()
@@ -591,7 +638,9 @@ class TestSubagentRunTaskBackgroundTool:
         assert "subagent_get_task_result" in result
         assert "subagent_cancel_task" in result
         mock_mgr.send_task_to_pool.assert_awaited_once_with(
-            "do X", mode="auto", seed=None,
+            "do X",
+            mode="auto",
+            seed=None,
         )
 
     @pytest.mark.asyncio
@@ -651,11 +700,14 @@ class TestSubagentRunTaskBackgroundTool:
 
         with patch(MANAGER_PATH, return_value=mock_mgr):
             result = await SubagentRunTaskBackgroundTool().execute(
-                task="do X", mode="poll",
+                task="do X",
+                mode="poll",
             )
         assert "Auto-push disabled" in result
         mock_mgr.send_task_to_pool.assert_awaited_once_with(
-            "do X", mode="poll", seed=None,
+            "do X",
+            mode="poll",
+            seed=None,
         )
 
     @pytest.mark.asyncio
@@ -664,7 +716,8 @@ class TestSubagentRunTaskBackgroundTool:
         mock_mgr.send_task_to_pool = AsyncMock()
         with patch(MANAGER_PATH, return_value=mock_mgr):
             result = await SubagentRunTaskBackgroundTool().execute(
-                task="do X", mode="push-forever",
+                task="do X",
+                mode="push-forever",
             )
         assert result.startswith("Error")
         mock_mgr.send_task_to_pool.assert_not_awaited()
@@ -763,16 +816,27 @@ class TestSubagentListTasksTool:
     @pytest.mark.asyncio
     async def test_lists_records(self):
         mock_mgr = MagicMock()
-        mock_mgr.list_tasks = MagicMock(return_value=([
-            {
-                "task_id": "rpc-1", "agent_name": "sub-1", "status": "pending",
-                "preview": "do X", "result": None,
-            },
-            {
-                "task_id": "rpc-2", "agent_name": "sub-2", "status": "completed",
-                "preview": "do Y", "result": "done",
-            },
-        ], 2))
+        mock_mgr.list_tasks = MagicMock(
+            return_value=(
+                [
+                    {
+                        "task_id": "rpc-1",
+                        "agent_name": "sub-1",
+                        "status": "pending",
+                        "preview": "do X",
+                        "result": None,
+                    },
+                    {
+                        "task_id": "rpc-2",
+                        "agent_name": "sub-2",
+                        "status": "completed",
+                        "preview": "do Y",
+                        "result": "done",
+                    },
+                ],
+                2,
+            )
+        )
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentListTasksTool()
             result = await tool.execute()
@@ -786,12 +850,20 @@ class TestSubagentListTasksTool:
     async def test_a_truncated_list_says_how_many_are_hidden(self):
         """A capped list must not present itself as the whole of it."""
         mock_mgr = MagicMock()
-        mock_mgr.list_tasks = MagicMock(return_value=([
-            {
-                "task_id": "rpc-1", "agent_name": "sub-1", "status": "pending",
-                "preview": "do X", "result": None,
-            },
-        ], 137))
+        mock_mgr.list_tasks = MagicMock(
+            return_value=(
+                [
+                    {
+                        "task_id": "rpc-1",
+                        "agent_name": "sub-1",
+                        "status": "pending",
+                        "preview": "do X",
+                        "result": None,
+                    },
+                ],
+                137,
+            )
+        )
         with patch(MANAGER_PATH, return_value=mock_mgr):
             tool = SubagentListTasksTool()
             result = await tool.execute()
@@ -805,7 +877,8 @@ class TestSubagentListTasksTool:
             tool = SubagentListTasksTool()
             await tool.execute(subagent_name="sub-1", status="pending")
         mock_mgr.list_tasks.assert_called_once_with(
-            agent_name="sub-1", status="pending",
+            agent_name="sub-1",
+            status="pending",
         )
 
 

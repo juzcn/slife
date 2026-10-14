@@ -21,6 +21,7 @@ import threading
 from typing import TYPE_CHECKING
 
 import slife.timeouts as _T  # module ref — call-time lookup, reload/patch-safe
+
 # (``slife.timeouts`` is stdlib-only by design, so importing it here keeps this
 # store importable from the earliest startup path — the constraint the
 # TYPE_CHECKING import below exists to respect.)
@@ -64,7 +65,8 @@ def record(
     with _lock:
         if replace and key:
             _entries[:] = [
-                e for e in _entries
+                e
+                for e in _entries
                 if not (e.get("component") == component and e.get("key") == key)
             ]
         entry: dict = {
@@ -95,7 +97,10 @@ def record_active_model(model: ModelConfig) -> None:
     of this text is what drifts.
     """
     record(
-        "model", "ok", key="active", replace=True,
+        "model",
+        "ok",
+        key="active",
+        replace=True,
         value=(
             f"{model.ref} (thinking="
             f"{'on' if model.thinking_enabled else 'off'}, "
@@ -132,15 +137,18 @@ def record_host_facts(config, *, source: str) -> None:
     mcp_servers = 0
     try:
         from slife.plugins.mcp_gateway import config as _mcp_cfg
+
         mcp_servers = _mcp_cfg.count_servers()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — health snapshot is best-effort; a broken MCP config must not abort startup
         pass
     embeddings = config.embeddings_config
     # The fact lives in ``value`` (a healthy report prints values only) — the
     # counts tell the reader which config is actually live.
     record(
-        "config", "ok",
-        key="path", value=(
+        "config",
+        "ok",
+        key="path",
+        value=(
             f"{source} ({len(config.models)} models, {mcp_servers} MCP "
             f"servers, embeddings="
             f"{'enabled' if (embeddings and embeddings.enabled and embeddings.active_model) else 'disabled'})"
@@ -148,7 +156,9 @@ def record_host_facts(config, *, source: str) -> None:
     )
     record_active_model(config.active_model)
     threading.Thread(
-        target=check_external_deps, name="ext-deps-check", daemon=True,
+        target=check_external_deps,
+        name="ext-deps-check",
+        daemon=True,
     ).start()
 
 
@@ -162,8 +172,11 @@ def get_report() -> list[dict]:
 
 
 def _probe_version(
-    name: str, *,
-    missing_hint: str, exit_hint: str, error_hint: str,
+    name: str,
+    *,
+    missing_hint: str,
+    exit_hint: str,
+    error_hint: str,
     wrap_cmd_on_windows: bool = False,
 ) -> None:
     """Probe one external tool's ``--version`` and record its health verdict.
@@ -190,8 +203,7 @@ def _probe_version(
     import tempfile
 
     if _shutil.which(name) is None:
-        record(name, "warning", key="missing", value="not found",
-               hint=missing_hint)
+        record(name, "warning", key="missing", value="not found", hint=missing_hint)
         return
     # npm / bun resolve through ``cmd`` on Windows (no .exe on PATH as a
     # bare name); node / uv exec directly.
@@ -216,22 +228,32 @@ def _probe_version(
     # exit's own output is the diagnostic, and it used to be discarded.
     with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
         try:
-            r = _sp.run(cmd, stdout=out_f, stderr=err_f, timeout=bound)
+            r = _sp.run(cmd, stdout=out_f, stderr=err_f, timeout=bound, check=False)
         except _sp.TimeoutExpired:
-            logger.warning("toolchain_probe_timeout name=%s bound=%.1fs",
-                           name, bound)
+            logger.warning("toolchain_probe_timeout name=%s bound=%.1fs", name, bound)
             record(
-                name, "warning", key="timeout", value=f"no answer in {bound:g}s",
-                hint=(f"{name} did not answer its version probe — its state is "
-                      f"unverified and it may be fine. Restart slife to "
-                      f"re-probe."),
+                name,
+                "warning",
+                key="timeout",
+                value=f"no answer in {bound:g}s",
+                hint=(
+                    f"{name} did not answer its version probe — its state is "
+                    f"unverified and it may be fine. Restart slife to "
+                    f"re-probe."
+                ),
             )
             return
-        except Exception as e:  # noqa: BLE001 — a probe never takes down the collector
-            logger.warning("toolchain_probe_failed name=%s err=%s", name, e,
-                           exc_info=True)
-            record(name, "warning", key="error",
-                   value=f"{type(e).__name__}: {e}", hint=error_hint)
+        except Exception as e:
+            logger.warning(
+                "toolchain_probe_failed name=%s err=%s", name, e, exc_info=True
+            )
+            record(
+                name,
+                "warning",
+                key="error",
+                value=f"{type(e).__name__}: {e}",
+                hint=error_hint,
+            )
             return
 
         out_f.seek(0)
@@ -239,14 +261,21 @@ def _probe_version(
         if r.returncode != 0:
             err_f.seek(0)
             detail = err_f.read().decode("utf-8", errors="replace").strip()
-            logger.warning("toolchain_probe_exit name=%s code=%s err=%s",
-                           name, r.returncode, (detail or version)[:200])
-            record(name, "warning", key="exit", value=str(r.returncode),
-                   hint=exit_hint)
+            logger.warning(
+                "toolchain_probe_exit name=%s code=%s err=%s",
+                name,
+                r.returncode,
+                (detail or version)[:200],
+            )
+            record(name, "warning", key="exit", value=str(r.returncode), hint=exit_hint)
             return
 
-    record(name, "ok", key="version",
-           value=(version.splitlines()[0].strip() if version else "?"))
+    record(
+        name,
+        "ok",
+        key="version",
+        value=(version.splitlines()[0].strip() if version else "?"),
+    )
 
 
 def check_external_deps() -> None:
@@ -260,9 +289,9 @@ def check_external_deps() -> None:
     _probe_version(
         "node",
         missing_hint="Install Node.js from https://nodejs.org (fetch falls back "
-                     "to pure-Python extraction without it).",
+        "to pure-Python extraction without it).",
         exit_hint="Reinstall Node.js from https://nodejs.org — fetch "
-                  "falls back to pure-Python extraction meanwhile.",
+        "falls back to pure-Python extraction meanwhile.",
         error_hint="Reinstall Node.js from https://nodejs.org.",
     )
     _probe_version(
@@ -272,9 +301,9 @@ def check_external_deps() -> None:
         # servers are warming up concurrently, causing spurious timeouts.
         wrap_cmd_on_windows=True,
         missing_hint="Install Node.js from https://nodejs.org — npx-based MCP "
-                     "servers cannot start without it.",
+        "servers cannot start without it.",
         exit_hint="Reinstall Node.js from https://nodejs.org — npx-based "
-                  "MCP servers cannot start meanwhile.",
+        "MCP servers cannot start meanwhile.",
         error_hint="Reinstall Node.js from https://nodejs.org.",
     )
     # ── bun (used to run Node.js MCP servers) ──
@@ -282,19 +311,19 @@ def check_external_deps() -> None:
         "bun",
         wrap_cmd_on_windows=True,
         missing_hint="Optional: install from https://bun.sh. JS/TS MCP servers "
-                     "run via npx without it.",
+        "run via npx without it.",
         exit_hint="Reinstall from https://bun.sh, or ignore — JS/TS MCP "
-                  "servers also run via npx.",
+        "servers also run via npx.",
         error_hint="Reinstall from https://bun.sh, or ignore — JS/TS MCP "
-                   "servers also run via npx.",
+        "servers also run via npx.",
     )
     # ── uv / uvx (used to run Python MCP servers) ──
     _probe_version(
         "uv",
         missing_hint="Install from https://astral.sh. uvx-based MCP servers "
-                     "cannot start without it.",
+        "cannot start without it.",
         exit_hint="Reinstall from https://astral.sh. uvx-based MCP "
-                  "servers cannot start meanwhile.",
+        "servers cannot start meanwhile.",
         error_hint="Reinstall from https://astral.sh. uvx-based MCP "
-                   "servers cannot start meanwhile.",
+        "servers cannot start meanwhile.",
     )

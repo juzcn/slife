@@ -1,15 +1,18 @@
 """Tests for model management tools — model_list, model_set, model_remove, model_switch."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-import pytest
 from pathlib import Path
 
-from tests.conftest import dump_config, load_config_text
-from slife.tools.models import (
-    ListModelsTool, SetModelTool, RemoveModelTool, SwitchModelTool,
-)
+import pytest
 
+from slife.tools.models import (
+    ListModelsTool,
+    RemoveModelTool,
+    SetModelTool,
+    SwitchModelTool,
+)
+from tests.conftest import dump_config, load_config_text
+
+pytestmark = pytest.mark.unit
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -25,23 +28,40 @@ def _read_config(path: Path) -> dict:
 def _make_path(tmp_path: Path) -> Path:
     """Create a minimal config file and return its path."""
     p = tmp_path / "slife.yaml"
-    _write_config(p, {
-        "models": {
-            "mode": "merge",
-            "providers": {
-                "test": {
-                    "base_url": "https://api.test.com",
-                    "api_key": "${TEST_KEY}",
-                    "api": "openai-completions",
-                    "models": [
-                        {"model": "test-model", "name": "Test Model", "reasoning": False, "input": ["text"], "context_window": 100000, "max_tokens": 4096},
-                        {"model": "test-model-2", "name": "Test Model 2", "reasoning": True, "input": ["text", "image"], "context_window": 200000, "max_tokens": 8192},
-                    ],
+    _write_config(
+        p,
+        {
+            "models": {
+                "mode": "merge",
+                "providers": {
+                    "test": {
+                        "base_url": "https://api.test.com",
+                        "api_key": "${TEST_KEY}",
+                        "api": "openai-completions",
+                        "models": [
+                            {
+                                "model": "test-model",
+                                "name": "Test Model",
+                                "reasoning": False,
+                                "input": ["text"],
+                                "context_window": 100000,
+                                "max_tokens": 4096,
+                            },
+                            {
+                                "model": "test-model-2",
+                                "name": "Test Model 2",
+                                "reasoning": True,
+                                "input": ["text", "image"],
+                                "context_window": 200000,
+                                "max_tokens": 8192,
+                            },
+                        ],
+                    },
                 },
             },
+            "active_model": "test/test-model",
         },
-        "active_model": "test/test-model",
-    })
+    )
     return p
 
 
@@ -77,8 +97,13 @@ class TestSetModelTool:
         p = _make_path(tmp_path)
         tool = SetModelTool(config_path=p)
         result = await tool.execute(
-            provider="test", model="new-model", name="New Model",
-            reasoning=True, input=["text", "image"], context_window=50000, max_tokens=2048,
+            provider="test",
+            model="new-model",
+            name="New Model",
+            reasoning=True,
+            input=["text", "image"],
+            context_window=50000,
+            max_tokens=2048,
         )
         assert "[OK]" in result
         assert "test/new-model" in result
@@ -97,8 +122,11 @@ class TestSetModelTool:
         p = _make_path(tmp_path)
         tool = SetModelTool(config_path=p)
         result = await tool.execute(
-            provider="bailian", model="qwen-max", name="Qwen Max",
-            base_url="https://bailian.api/v1", api_key="${BAILIAN_KEY}",
+            provider="bailian",
+            model="qwen-max",
+            name="Qwen Max",
+            base_url="https://bailian.api/v1",
+            api_key="${BAILIAN_KEY}",
             api="anthropic-messages",
         )
         assert "[OK]" in result
@@ -119,7 +147,9 @@ class TestSetModelTool:
     async def test_upsert_replaces_existing(self, tmp_path):
         p = _make_path(tmp_path)
         tool = SetModelTool(config_path=p)
-        result = await tool.execute(provider="test", model="test-model", name="Updated Test Model")
+        result = await tool.execute(
+            provider="test", model="test-model", name="Updated Test Model"
+        )
         assert "Updated" in result
 
         raw = _read_config(p)
@@ -140,7 +170,9 @@ class TestSetModelTool:
         tool = SetModelTool(config_path=p)
         # The fixture's test-model has reasoning=False, input=["text"], etc.
         result = await tool.execute(
-            provider="test", model="test-model", name="Updated",
+            provider="test",
+            model="test-model",
+            name="Updated",
             max_tokens=9999,
         )
         assert "Updated" in result
@@ -161,13 +193,18 @@ class TestSetModelTool:
         p = _make_path(tmp_path)
         tool = SetModelTool(config_path=p)
         result = await tool.execute(
-            provider="test", model="test-model", name="Test Model",
+            provider="test",
+            model="test-model",
+            name="Test Model",
             reasoning=True,
         )
         assert "Updated" in result
         raw = _read_config(p)
-        m = next(x for x in raw["models"]["providers"]["test"]["models"]
-                 if x["model"] == "test-model")
+        m = next(
+            x
+            for x in raw["models"]["providers"]["test"]["models"]
+            if x["model"] == "test-model"
+        )
         assert m["reasoning"] is True
         # Input still preserved from original.
         assert m["input"] == ["text"]
@@ -178,13 +215,18 @@ class TestSetModelTool:
         p = _make_path(tmp_path)
         tool = SetModelTool(config_path=p)
         result = await tool.execute(
-            provider="test", model="test-model", name="Test Model",
+            provider="test",
+            model="test-model",
+            name="Test Model",
             compat={"thinkingFormat": "openai"},
         )
         assert "Updated" in result
         raw = _read_config(p)
-        m = next(x for x in raw["models"]["providers"]["test"]["models"]
-                 if x["model"] == "test-model")
+        m = next(
+            x
+            for x in raw["models"]["providers"]["test"]["models"]
+            if x["model"] == "test-model"
+        )
         assert m["compat"] == {"thinkingFormat": "openai"}
 
     @pytest.mark.asyncio
@@ -192,13 +234,18 @@ class TestSetModelTool:
         p = _make_path(tmp_path)
         tool = SetModelTool(config_path=p)
         result = await tool.execute(
-            provider="test", model="new-model", name="New",
+            provider="test",
+            model="new-model",
+            name="New",
             compat={"thinking": "omit"},
         )
         assert "Added" in result
         raw = _read_config(p)
-        m = next(x for x in raw["models"]["providers"]["test"]["models"]
-                 if x["model"] == "new-model")
+        m = next(
+            x
+            for x in raw["models"]["providers"]["test"]["models"]
+            if x["model"] == "new-model"
+        )
         assert m["compat"] == {"thinking": "omit"}
 
     @pytest.mark.asyncio
@@ -242,17 +289,29 @@ class TestRemoveModelTool:
     async def test_cannot_remove_only_model(self, tmp_path):
         """The only model is also the active one → refused."""
         p = tmp_path / "single.yaml"
-        _write_config(p, {
-            "models": {"providers": {"only": {"api_key": "k", "models": [{"model": "one", "name": "One"}]}}},
-            "active_model": "only/one",
-        })
+        _write_config(
+            p,
+            {
+                "models": {
+                    "providers": {
+                        "only": {
+                            "api_key": "k",
+                            "models": [{"model": "one", "name": "One"}],
+                        }
+                    }
+                },
+                "active_model": "only/one",
+            },
+        )
         tool = RemoveModelTool(config_path=p)
         result = await tool.execute(ref="only/one")
         assert "cannot remove the active model" in result
 
         raw = _read_config(p)
         assert raw["active_model"] == "only/one"
-        assert any(m["model"] == "one" for m in raw["models"]["providers"]["only"]["models"])
+        assert any(
+            m["model"] == "one" for m in raw["models"]["providers"]["only"]["models"]
+        )
 
     @pytest.mark.asyncio
     async def test_invalid_ref(self, tmp_path):
@@ -324,6 +383,7 @@ class TestModelRegistrySync:
     @staticmethod
     def _live_config(path: Path):
         from slife.config import Config
+
         return Config.from_yaml(path)
 
     @pytest.mark.asyncio
@@ -333,8 +393,11 @@ class TestModelRegistrySync:
         tool = SetModelTool(config_path=p, config=config)
 
         result = await tool.execute(
-            provider="test", model="new-model", name="New Model",
-            reasoning=True, context_window=100000,
+            provider="test",
+            model="new-model",
+            name="New Model",
+            reasoning=True,
+            context_window=100000,
         )
 
         assert "new-model" in result
@@ -355,7 +418,9 @@ class TestModelRegistrySync:
         tool = SetModelTool(config_path=p)  # config=None
 
         result = await tool.execute(
-            provider="test", model="new-model", name="New Model",
+            provider="test",
+            model="new-model",
+            name="New Model",
         )
         assert "new-model" in result
         raw = _read_config(p)

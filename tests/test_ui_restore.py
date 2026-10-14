@@ -5,15 +5,15 @@ vision content blocks, but no image markers or mount scheduling exist.
 """
 
 import json
-
-import pytest; pytestmark = pytest.mark.unit
-
 from unittest.mock import MagicMock
+
+import pytest
 
 from slife.agent.message_history import MessageHistory
 from slife.agent.session import tool_result_is_error
 from slife.ui.restore import restore_session
 
+pytestmark = pytest.mark.unit
 
 # ── Tool error state on restore ─────────────────────────────────────
 
@@ -88,8 +88,10 @@ class TestRestoreSkipsEmptyAssistantMessages:
 
     async def _restore(self, app, conv, config, turns):
         await restore_session(
-            app, turns,
-            conv, "Jack> ",
+            app,
+            turns,
+            conv,
+            "Jack> ",
         )
 
     @pytest.mark.asyncio
@@ -101,12 +103,20 @@ class TestRestoreSkipsEmptyAssistantMessages:
             "type": "function",
             "function": {"name": "read_file", "arguments": "{}"},
         }
-        turns = [self._turn([
-            {"role": "assistant", "content": "", "tool_calls": [tool_call]},
-            {"role": "tool", "tool_call_id": "call_1", "content": "42",
-             "is_error": False},
-            {"role": "assistant", "content": "The answer is 42."},
-        ])]
+        turns = [
+            self._turn(
+                [
+                    {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_1",
+                        "content": "42",
+                        "is_error": False,
+                    },
+                    {"role": "assistant", "content": "The answer is 42."},
+                ]
+            )
+        ]
         await self._restore(app, conv, config, turns)
 
         # Only the text-bearing final message gets a message widget.
@@ -122,10 +132,14 @@ class TestRestoreSkipsEmptyAssistantMessages:
     @pytest.mark.asyncio
     async def test_fully_empty_message_skipped(self):
         """No text, no thinking, no tool calls → nothing at all."""
-        app, conv, config, chat_view, am = self._build()
-        turns = [self._turn([
-            {"role": "assistant", "content": "", "tool_calls": []},
-        ])]
+        app, conv, config, chat_view, _am = self._build()
+        turns = [
+            self._turn(
+                [
+                    {"role": "assistant", "content": "", "tool_calls": []},
+                ]
+            )
+        ]
         await self._restore(app, conv, config, turns)
 
         chat_view.add_assistant_message.assert_not_called()
@@ -134,16 +148,27 @@ class TestRestoreSkipsEmptyAssistantMessages:
     @pytest.mark.asyncio
     async def test_harness_message_still_skipped(self):
         """``_turn_prompt`` is context-only — never widgets."""
-        app, conv, config, chat_view, am = self._build()
-        tcs = [{
-            "id": "h1", "type": "function",
-            "function": {"name": "_turn_prompt", "arguments": "{}"},
-        }]
-        turns = [self._turn([
-            {"role": "assistant", "content": "", "tool_calls": tcs},
-            {"role": "tool", "tool_call_id": "h1", "content": "ok",
-             "is_error": False},
-        ])]
+        app, conv, config, chat_view, _am = self._build()
+        tcs = [
+            {
+                "id": "h1",
+                "type": "function",
+                "function": {"name": "_turn_prompt", "arguments": "{}"},
+            }
+        ]
+        turns = [
+            self._turn(
+                [
+                    {"role": "assistant", "content": "", "tool_calls": tcs},
+                    {
+                        "role": "tool",
+                        "tool_call_id": "h1",
+                        "content": "ok",
+                        "is_error": False,
+                    },
+                ]
+            )
+        ]
         await self._restore(app, conv, config, turns)
 
         chat_view.add_assistant_message.assert_not_called()
@@ -153,9 +178,13 @@ class TestRestoreSkipsEmptyAssistantMessages:
     async def test_thinking_only_message_still_shows_widget(self):
         """Reasoning models: empty text but real thinking still renders."""
         app, conv, config, chat_view, am = self._build()
-        turns = [self._turn([
-            {"role": "assistant", "content": "", "thinking": "inner reasoning"},
-        ])]
+        turns = [
+            self._turn(
+                [
+                    {"role": "assistant", "content": "", "thinking": "inner reasoning"},
+                ]
+            )
+        ]
         await self._restore(app, conv, config, turns)
 
         chat_view.add_assistant_message.assert_called_once()
@@ -185,9 +214,13 @@ class TestRestoreSkipsEmptyAssistantMessages:
             "function": {"name": "read_file", "arguments": "{}"},
         }
         # Orphaned tool call, no result — the turn was interrupted mid-tool.
-        turns = [self._turn([
-            {"role": "assistant", "content": "", "tool_calls": [tool_call]},
-        ])]
+        turns = [
+            self._turn(
+                [
+                    {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+                ]
+            )
+        ]
         await self._restore(app, conv, config, turns)
 
         # The repair closed the history in place.  Restore has no reason to
@@ -195,11 +228,14 @@ class TestRestoreSkipsEmptyAssistantMessages:
         assert conv.messages[-1]["role"] == "assistant"
         assert conv.messages[-1]["content"] == "(Turn interrupted, reason: ---)"
         # …and tagged the synthetic tool result as the interruption error.
-        assert [m for m in conv.messages if m.get("role") == "tool"] \
-            == [{
-                "role": "tool", "tool_call_id": "call_1",
-                "content": "(Tool execution interrupted)", "is_error": True,
-            }]
+        assert [m for m in conv.messages if m.get("role") == "tool"] == [
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "(Tool execution interrupted)",
+                "is_error": True,
+            }
+        ]
 
         # The closing line is the one rendered message widget.
         chat_view.add_assistant_message.assert_called_once()
@@ -222,15 +258,25 @@ class TestRestoreTurnHeader:
     none."""
 
     @staticmethod
-    def _turn(user, rowid=27, created="2026-08-10T14:03:05+08:00",
-              completed="2026-08-10T14:05:12+08:00", channel="human",
-              channel_data="{}", msgs=None):
+    def _turn(
+        user,
+        rowid=27,
+        created="2026-08-10T14:03:05+08:00",
+        completed="2026-08-10T14:05:12+08:00",
+        channel="human",
+        channel_data="{}",
+        msgs=None,
+    ):
         return {
             "rowid": rowid,
             "user_message": user,
-            "messages": json.dumps(msgs or [
-                {"role": "assistant", "content": "ok"},
-            ], ensure_ascii=False),
+            "messages": json.dumps(
+                msgs
+                or [
+                    {"role": "assistant", "content": "ok"},
+                ],
+                ensure_ascii=False,
+            ),
             "images": "",
             "channel": channel,
             "channel_data": channel_data,
@@ -251,8 +297,10 @@ class TestRestoreTurnHeader:
 
     async def _restore(self, app, conv, config, turns):
         await restore_session(
-            app, turns,
-            conv, "Jack> ",
+            app,
+            turns,
+            conv,
+            "Jack> ",
         )
 
     @pytest.mark.asyncio
@@ -273,7 +321,7 @@ class TestRestoreTurnHeader:
 
     @pytest.mark.asyncio
     async def test_header_without_completed_at(self):
-        app, conv, config, chat_view = self._build()
+        app, conv, config, _chat_view = self._build()
         turn = self._turn("hi")
         del turn["completed_at"]
         await self._restore(app, conv, config, [turn])
@@ -293,9 +341,14 @@ class TestRestoreTurnHeader:
         the ⚡ turn-end line instead.
         """
         app, conv, config, chat_view = self._build()
-        await self._restore(app, conv, config, [
-            self._turn("[Heartbeat] click.  Reply per your contract."),
-        ])
+        await self._restore(
+            app,
+            conv,
+            config,
+            [
+                self._turn("[Heartbeat] click.  Reply per your contract."),
+            ],
+        )
 
         assert conv.messages[0]["content"] == (
             '[Heartbeat] click.  Reply per your contract. [INFO: {"turn_id": 27, '
@@ -307,9 +360,14 @@ class TestRestoreTurnHeader:
     @pytest.mark.asyncio
     async def test_schedule_trigger_turn_gets_the_header_too(self):
         app, conv, config, chat_view = self._build()
-        await self._restore(app, conv, config, [
-            self._turn("[Schedule daily_diary] 定时任务触发。", channel="schedule"),
-        ])
+        await self._restore(
+            app,
+            conv,
+            config,
+            [
+                self._turn("[Schedule daily_diary] 定时任务触发。", channel="schedule"),
+            ],
+        )
 
         # A scheduled turn is one that did real work — the keep-list has to be
         # able to name it, or it is dropped without the model ever seeing it.
@@ -323,17 +381,23 @@ class TestRestoreTurnHeader:
     @pytest.mark.asyncio
     async def test_schedule_trigger_reply_renders_as_scheduler(self):
         app, conv, config, chat_view = self._build()
-        await self._restore(app, conv, config, [
-            self._turn(
-                "[Schedule daily_diary] 定时任务触发。",
-                channel="schedule",
-                msgs=[{"role": "assistant", "content": "已派发定时任务。"}],
-            ),
-        ])
+        await self._restore(
+            app,
+            conv,
+            config,
+            [
+                self._turn(
+                    "[Schedule daily_diary] 定时任务触发。",
+                    channel="schedule",
+                    msgs=[{"role": "assistant", "content": "已派发定时任务。"}],
+                ),
+            ],
+        )
         # The dispatch confirmation surfaces as a scheduler message (📅
         # scheduled), not autonomous (⚡ autonomous) — cron fires are
         # scheduler-driven, not autonomous acts.
         from slife.ui.i18n import t
+
         chat_view.add_assistant_message.assert_called_once()
         kwargs = chat_view.add_assistant_message.call_args.kwargs
         assert kwargs.get("name_prefix") == t("schedule_prefix")
@@ -342,7 +406,7 @@ class TestRestoreTurnHeader:
 
     @pytest.mark.asyncio
     async def test_turn_without_identity_stays_plain(self):
-        app, conv, config, chat_view = self._build()
+        app, conv, config, _chat_view = self._build()
         turn = self._turn("hi")
         del turn["rowid"]
         del turn["created_at"]
@@ -356,8 +420,7 @@ class TestRestoreTurnHeader:
         """A2A turns restore with the peer name from the channel payload."""
 
         app, conv, config, chat_view = self._build()
-        turn = self._turn("GO", channel="Jack",
-                          channel_data='{"agent_name": "Jack"}')
+        turn = self._turn("GO", channel="Jack", channel_data='{"agent_name": "Jack"}')
         await self._restore(app, conv, config, [turn])
 
         # Needs the peer name from the channel payload, not a fallback.
@@ -384,8 +447,9 @@ class TestRestoreTurnHeader:
         from slife.ui.i18n import t
 
         app, conv, config, chat_view = self._build()
-        turn = self._turn("done", channel="subagent",
-                          channel_data='{"name": "researcher"}')
+        turn = self._turn(
+            "done", channel="subagent", channel_data='{"name": "researcher"}'
+        )
         await self._restore(app, conv, config, [turn])
 
         kwargs = chat_view.add_user_message.call_args.kwargs
@@ -399,9 +463,11 @@ class TestRestoreTurnHeader:
 
         app, conv, config, chat_view = self._build()
         turn = self._turn(
-            "done", channel="subagent",
-            channel_data=('{"name": "worker-2", "task_id": "t9", '
-                          '"scheduled_task": "daily"}'),
+            "done",
+            channel="subagent",
+            channel_data=(
+                '{"name": "worker-2", "task_id": "t9", "scheduled_task": "daily"}'
+            ),
         )
         await self._restore(app, conv, config, [turn])
 

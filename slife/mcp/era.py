@@ -29,7 +29,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from mcp import MCPError
 
@@ -116,19 +117,24 @@ async def watch_tools_changed(
                 async for _event in subscription:
                     await _fire(handler)
         except ListenNotSupportedError:
-            logger.debug("mcp_listen_unsupported link=%s era=%s", link,
-                         peer_era(session))
+            logger.debug(
+                "mcp_listen_unsupported link=%s era=%s", link, peer_era(session)
+            )
             return
         except MCPError as e:
             if e.code == _METHOD_NOT_FOUND:
-                logger.info("mcp_listen_absent link=%s era=%s msg=%s", link,
-                            peer_era(session), e.message)
+                logger.info(
+                    "mcp_listen_absent link=%s era=%s msg=%s",
+                    link,
+                    peer_era(session),
+                    e.message,
+                )
                 return
             logger.debug("mcp_listen_stream_lost link=%s err=%s", link, e)
             await _fire(handler)
         except asyncio.CancelledError:
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — relisten watchdog: any error is a lost stream; reconnect below
             logger.debug("mcp_listen_stream_lost link=%s err=%s", link, e)
             await _fire(handler)
         await asyncio.sleep(wait)

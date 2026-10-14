@@ -14,17 +14,17 @@ materialization being this tool's own branch.
 from __future__ import annotations
 
 import json
-import re
 import logging
+import re
 from typing import TYPE_CHECKING, ClassVar
 
-from slife.tools.base import Tool, make_params, require_params
-from slife.tools.catalog import NA, effective_from_row
 from slife.plugins.memdb.search import (  # the ONE hybrid-search implementation
     SCORE_BAND_HINT,
     annotate_scores,
     merge_hybrid,
 )
+from slife.tools.base import Tool, make_params, require_params
+from slife.tools.catalog import NA, effective_from_row
 from slife.tools.whitelist import TOOL_META_CATEGORY
 
 if TYPE_CHECKING:
@@ -38,13 +38,14 @@ def _ctx(self_or_none):
     return getattr(self_or_none, "_ctx", None) if self_or_none is not None else None
 
 
-def _catalog(ctx) -> "ToolCatalogService | None":
+def _catalog(ctx) -> ToolCatalogService | None:
     return getattr(ctx, "catalog", None) if ctx is not None else None
 
 
 def _require_catalog(
-    ctx, what: str,
-) -> tuple["ToolCatalogService | None", str]:
+    ctx,
+    what: str,
+) -> tuple[ToolCatalogService | None, str]:
     catalog = _catalog(ctx)
     if catalog is None:
         return None, f"Error: the tool catalog is not available — cannot {what}."
@@ -166,7 +167,9 @@ class ToolSearchTool(Tool):
                 return f"Error: invalid regex {query!r}: {e}"
         else:
             keyword_hits = await store.search_keyword(
-                query, limit=limit * 2, filters=filters,
+                query,
+                limit=limit * 2,
+                filters=filters,
             )
             results = keyword_hits
             if mode == "hybrid":
@@ -180,18 +183,23 @@ class ToolSearchTool(Tool):
                     emb = await sem.embed_query(query)
                     if emb:
                         semantic_hits = await store.search_semantic(
-                            emb, limit=limit * 2, filters=filters,
+                            emb,
+                            limit=limit * 2,
+                            filters=filters,
                         )
                         results = merge_hybrid(
-                            keyword_hits, semantic_hits, key_field="name",
+                            keyword_hits,
+                            semantic_hits,
+                            key_field="name",
                         )
                     else:
-                        hint = sem.reason or "semantic search unavailable — keyword only."
+                        hint = (
+                            sem.reason or "semantic search unavailable — keyword only."
+                        )
                 else:
                     hint = (
-                        (sem.reason if sem is not None else "")
-                        or "semantic search unavailable — keyword only."
-                    )
+                        sem.reason if sem is not None else ""
+                    ) or "semantic search unavailable — keyword only."
         # The shared scoring contract, used by every other hybrid path
         # (turn_search, cabinet_search): a normalized 0-1 `similarity` per
         # result plus the band legend.  Without it this tool was the one place
@@ -288,17 +296,26 @@ class FuncToolLoadTool(Tool):
                 from slife.mcp.tool_adapter import create_proxy_tools
 
                 desc = json.loads(row["schema"])
-                proxy = create_proxy_tools(mcp, [{
-                    "server": row["source_id"],
-                    "name": desc.get("name") or "",
-                    "description": desc.get("description", ""),
-                    "inputSchema": desc.get("inputSchema", {"type": "object", "properties": {}}),
-                }])[0]
+                proxy = create_proxy_tools(
+                    mcp,
+                    [
+                        {
+                            "server": row["source_id"],
+                            "name": desc.get("name") or "",
+                            "description": desc.get("description", ""),
+                            "inputSchema": desc.get(
+                                "inputSchema", {"type": "object", "properties": {}}
+                            ),
+                        }
+                    ],
+                )[0]
                 registry.register(proxy)
                 logger.info("tool_load_materialized name=%s", full_name)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — tool-materialize boundary: returns an error string, never raises
                 await catalog.store.set_load_status(full_name, "unloaded")
-                logger.warning("tool_load_materialize_failed name=%s err=%s", full_name, e)
+                logger.warning(
+                    "tool_load_materialize_failed name=%s err=%s", full_name, e
+                )
                 return f"Error: failed to materialize '{full_name}': {e}"
         return msg
 

@@ -50,14 +50,14 @@ from typing import ClassVar
 
 import httpx2
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.env import is_env_ref
 from slife.health import get_report as get_startup_records
-from slife.plugins.spec import PLUGIN_SPECS, health_check_name
 from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
 from slife.paths import get_data_dir
+from slife.plugins.spec import PLUGIN_SPECS, health_check_name
 from slife.tools.base import Tool, make_params, require_bool, require_params
 from slife.ui.i18n import t
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +72,12 @@ logger = logging.getLogger(__name__)
 #:
 #: Hints are plain sentences: no ``—`` and no ``;``, because those are the
 #: report line's own separators and would make the structure ambiguous.
-_PLUGIN_DOWN_HINT = ("Restart slife to respawn the plugin. Its log has the "
-                     "reason if it stays down.")
+_PLUGIN_DOWN_HINT = (
+    "Restart slife to respawn the plugin. Its log has the reason if it stays down."
+)
 
 
-def _entry(component: str, level: str, key: str, value: str,
-           hint: str = "") -> dict:
+def _entry(component: str, level: str, key: str, value: str, hint: str = "") -> dict:
     """Build one health entry, omitting an empty hint.
 
     ``health.record`` omits falsy fields too; an empty ``hint`` would only be
@@ -90,12 +90,17 @@ def _entry(component: str, level: str, key: str, value: str,
     return e
 
 
-async def _probe_plugin(client, component: str, *, offline_hint: str = _PLUGIN_DOWN_HINT,
-                        unavailable_hint: str = "probe failed",
-                        key: str = "plugin",
-                        offline_value: str = "offline",
-                        unavailable_value: str = "unavailable",
-                        log_name: str | None = None) -> tuple[dict | None, list[dict]]:
+async def _probe_plugin(
+    client,
+    component: str,
+    *,
+    offline_hint: str = _PLUGIN_DOWN_HINT,
+    unavailable_hint: str = "probe failed",
+    key: str = "plugin",
+    offline_value: str = "offline",
+    unavailable_value: str = "unavailable",
+    log_name: str | None = None,
+) -> tuple[dict | None, list[dict]]:
     """Probe a plugin's ``__check`` tool and parse its JSON payload.
 
     The shared prologue of every plugin-backed check.  On success returns
@@ -111,16 +116,28 @@ async def _probe_plugin(client, component: str, *, offline_hint: str = _PLUGIN_D
     """
     try:
         if client is None:
-            return None, [{"component": component, "level": "warning",
-                           "key": key, "value": offline_value,
-                           "hint": offline_hint}]
+            return None, [
+                {
+                    "component": component,
+                    "level": "warning",
+                    "key": key,
+                    "value": offline_value,
+                    "hint": offline_hint,
+                }
+            ]
         raw = await client.call_tool("__check")
         return json.loads(raw), []
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — plugin check: MCP client/JSON can fail; degrade to a warning entry, never raise
         logger.warning("%s_check_failed err=%s", log_name or component, e)
-        return None, [{"component": component, "level": "warning",
-                       "key": key, "value": unavailable_value,
-                       "hint": f"{unavailable_hint}: {e}"}]
+        return None, [
+            {
+                "component": component,
+                "level": "warning",
+                "key": key,
+                "value": unavailable_value,
+                "hint": f"{unavailable_hint}: {e}",
+            }
+        ]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -129,9 +146,11 @@ async def _probe_plugin(client, component: str, *, offline_hint: str = _PLUGIN_D
 
 #: Remedy for an embeddings endpoint that is missing or broken — shared by
 #: every subsystem that owns a semantic index (memdb, memfiles, the catalog).
-_EMBEDDING_FIX_HINT = ("Set a working endpoint with embeddings_model_set "
-                       "(provider + base_url + api_key). Keyword search keeps "
-                       "working meanwhile.")
+_EMBEDDING_FIX_HINT = (
+    "Set a working endpoint with embeddings_model_set "
+    "(provider + base_url + api_key). Keyword search keeps "
+    "working meanwhile."
+)
 
 
 def _semantic_facts(sem: dict, pending_noun: str = "items") -> tuple[str, str, str]:
@@ -164,35 +183,55 @@ def _semantic_facts(sem: dict, pending_noun: str = "items") -> tuple[str, str, s
         # ones), and no sqlite extension can load under such a Python however
         # complete the OS's own SQLite is.  That is a remedy, not a verdict, so
         # the reason the store recorded comes first and the way out follows.
-        return ("warning",
-                f"unavailable ({sem.get('vec_reason') or 'sqlite-vec cannot load'})",
+        return (
+            "warning",
+            f"unavailable ({sem.get('vec_reason') or 'sqlite-vec cannot load'})",
+            (
                 "Use a Python built with --enable-loadable-sqlite-extensions "
                 "(Homebrew's or uv's Python); the system Python on macOS and "
                 "the python.org installers are built without it. Keyword "
-                "search keeps working meanwhile.")
+                "search keeps working meanwhile."
+            ),
+        )
     if sem.get("configured") is False:
-        return ("warning", "unavailable (no embeddings endpoint configured)",
-                _EMBEDDING_FIX_HINT)
+        return (
+            "warning",
+            "unavailable (no embeddings endpoint configured)",
+            _EMBEDDING_FIX_HINT,
+        )
     if sem.get("available") is False:
-        return ("warning", "unavailable (endpoint down or misconfigured)",
-                _EMBEDDING_FIX_HINT)
+        return (
+            "warning",
+            "unavailable (endpoint down or misconfigured)",
+            _EMBEDDING_FIX_HINT,
+        )
     # Before the generic ``reason`` branch: a stall carries a reason too, and
     # reporting it as "unavailable" hid the word "stalled" from the report
     # entirely.  A stall is a fact (it retries on new content, keyword search
     # works meanwhile) so, like the branch below, it carries no hint.
     if sem.get("state") == "stalled":
-        return ("warning",
+        return (
+            "warning",
+            (
                 f"stalled ({sem.get('unembedded', 0)} {pending_noun} pending; "
-                f"keyword search available)", "")
+                f"keyword search available)"
+            ),
+            "",
+        )
     # Same reason as the stall above: every "disabled" transition publishes a
     # reason too (SemanticManager.disable / _unavailable_reason), so sitting
     # after the generic ``reason`` branch meant this one never ran and the
     # report read "unavailable" where the user had switched semantic search
     # off on purpose.
     if sem.get("state") == "disabled":
-        return ("warning", "disabled",
+        return (
+            "warning",
+            "disabled",
+            (
                 "Enable with embeddings_enable true, or edit the top-level "
-                "embeddings section in slife.yaml.")
+                "embeddings section in slife.yaml."
+            ),
+        )
     if sem.get("reason"):
         return ("warning", f"unavailable ({sem['reason']})", "")
     if sem.get("semantic_ready"):
@@ -202,13 +241,20 @@ def _semantic_facts(sem: dict, pending_noun: str = "items") -> tuple[str, str, s
         # another component reporting dim=1024 for the same model.  "?" is
         # this report's marker for "not known" (the model uses it too).
         dim = sem.get("dimension") or 0
-        return ("ok",
-                f"ready ({sem.get('model') or '?'}, "
-                f"{f'dim={dim}' if dim else 'dim=?'})", "")
+        return (
+            "ok",
+            (f"ready ({sem.get('model') or '?'}, {f'dim={dim}' if dim else 'dim=?'})"),
+            "",
+        )
     state = sem.get("state") or "building"
-    return ("warning",
+    return (
+        "warning",
+        (
             f"{state} ({sem.get('unembedded', 0)} {pending_noun} pending; "
-            f"keyword search available)", "")
+            f"keyword search available)"
+        ),
+        "",
+    )
 
 
 async def check_memdb(client=None) -> list[dict]:
@@ -224,7 +270,8 @@ async def check_memdb(client=None) -> list[dict]:
     agent-scoped, so *which* file is live is part of the fact.
     """
     data, entries = await _probe_plugin(
-        client, "memdb",
+        client,
+        "memdb",
         unavailable_value="offline",
     )
     if entries:
@@ -236,17 +283,24 @@ async def check_memdb(client=None) -> list[dict]:
     db = data.get("db") or {}
     db_name = Path(str(db.get("path") or "?")).name
     if db.get("exists"):
-        entries.append(_entry("memdb", "ok", "db",
-                              f"{db.get('size_mb', 0):.1f} MB ({db_name})"))
+        entries.append(
+            _entry("memdb", "ok", "db", f"{db.get('size_mb', 0):.1f} MB ({db_name})")
+        )
     else:
-        entries.append(_entry(
-            "memdb", "warning", "db", f"not found ({db.get('path', '?')})",
-            "It is created on the first memory write.",
-        ))
+        entries.append(
+            _entry(
+                "memdb",
+                "warning",
+                "db",
+                f"not found ({db.get('path', '?')})",
+                "It is created on the first memory write.",
+            )
+        )
 
     # ── Semantic search ──────────────────────────────────────────
     sem_level, sem_value, sem_hint = _semantic_facts(
-        data.get("semantic") or {}, pending_noun="turns",
+        data.get("semantic") or {},
+        pending_noun="turns",
     )
     entries.append(_entry("memdb", sem_level, "embedding", sem_value, sem_hint))
     return entries
@@ -256,15 +310,17 @@ async def check_memdb(client=None) -> list[dict]:
 # check_wechat
 # ═══════════════════════════════════════════════════════════════════════
 
+
 def _get_wechat_config():
     """Try to load slife config for wechat status.  Returns None on failure."""
     try:
         from slife.config import Config, parse_cli_agent
+
         agent_name = parse_cli_agent(sys.argv)
         cfg_path = get_data_dir() / "slife.yaml"
         if cfg_path.exists():
             return Config.from_yaml(cfg_path, agent_name=agent_name)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — returns None on failure; config load can fail in several ways
         pass
     return None
 
@@ -284,15 +340,21 @@ async def check_wechat(client=None, config=None) -> list[dict]:
         config = _get_wechat_config()
 
     if config is None or config.wechat_config is None:
-        results.append(_entry(
-            "wechat", "ok", "enabled", "unknown (config not loaded)",
-        ))
+        results.append(
+            _entry(
+                "wechat",
+                "ok",
+                "enabled",
+                "unknown (config not loaded)",
+            )
+        )
         return results
 
     wc = config.wechat_config
     if not wc.enabled:
-        results.append(_entry("wechat", "ok", "enabled",
-                              "disabled (wechat.enabled: false)"))
+        results.append(
+            _entry("wechat", "ok", "enabled", "disabled (wechat.enabled: false)")
+        )
         return results
 
     data, entries = await _probe_plugin(client, "wechat")
@@ -308,31 +370,68 @@ async def check_wechat(client=None, config=None) -> list[dict]:
     last_error = data.get("last_error") or ""
     if data.get("logged_in"):
         if data.get("auth_failed"):
-            return [{"component": "wechat", "level": "error", "key": "status",
-                     "value": f"session_rejected (last error: {last_error})",
-                     "hint": "Call wechat_login to re-scan the QR code."}]
+            return [
+                {
+                    "component": "wechat",
+                    "level": "error",
+                    "key": "status",
+                    "value": f"session_rejected (last error: {last_error})",
+                    "hint": "Call wechat_login to re-scan the QR code.",
+                }
+            ]
         if last_error:
-            return [{"component": "wechat", "level": "warning", "key": "status",
-                     "value": f"degraded (last error: {last_error})",
-                     "hint": "Messages will not arrive while it is degraded."}]
-        return [_entry("wechat", "ok", "status",
-                       f"logged_in (session {age_h:.1f}h of {max_h:.0f}h, "
-                       f"{remaining_h:.1f}h left)")]
+            return [
+                {
+                    "component": "wechat",
+                    "level": "warning",
+                    "key": "status",
+                    "value": f"degraded (last error: {last_error})",
+                    "hint": "Messages will not arrive while it is degraded.",
+                }
+            ]
+        return [
+            _entry(
+                "wechat",
+                "ok",
+                "status",
+                f"logged_in (session {age_h:.1f}h of {max_h:.0f}h, "
+                f"{remaining_h:.1f}h left)",
+            )
+        ]
 
     if session.get("saved"):
         if remaining_h <= 0:
-            return [{"component": "wechat", "level": "warning", "key": "status",
-                     "value": f"session_expired ({age_h:.1f}h old, max {max_h:.0f}h)",
-                     "hint": "Call wechat_login to re-scan the QR code."}]
-        return [_entry("wechat", "ok", "status",
-                       f"not_logged_in (saved session, {remaining_h:.1f}h left; "
-                       "restores on the next wechat_check_status)")]
-    return [{"component": "wechat", "level": "warning", "key": "status",
-             "value": "not_logged_in",
-             "hint": "Call wechat_login to scan the QR code."}]
+            return [
+                {
+                    "component": "wechat",
+                    "level": "warning",
+                    "key": "status",
+                    "value": f"session_expired ({age_h:.1f}h old, max {max_h:.0f}h)",
+                    "hint": "Call wechat_login to re-scan the QR code.",
+                }
+            ]
+        return [
+            _entry(
+                "wechat",
+                "ok",
+                "status",
+                f"not_logged_in (saved session, {remaining_h:.1f}h left; "
+                "restores on the next wechat_check_status)",
+            )
+        ]
+    return [
+        {
+            "component": "wechat",
+            "level": "warning",
+            "key": "status",
+            "value": "not_logged_in",
+            "hint": "Call wechat_login to scan the QR code.",
+        }
+    ]
 
 
 # ═══════════════════════════════════════════════════════════════════════
+
 
 async def check_sharefile(client=None) -> list[dict]:
     """Return file-sharing tunnel status (queried from the sharefile plugin).
@@ -343,8 +442,11 @@ async def check_sharefile(client=None) -> list[dict]:
     connected, a warning is reported.
     """
     data, entries = await _probe_plugin(
-        client, "sharefile",
-        key="tunnel", offline_value="plugin_offline", unavailable_value="offline",
+        client,
+        "sharefile",
+        key="tunnel",
+        offline_value="plugin_offline",
+        unavailable_value="offline",
         unavailable_hint="Tunnel probe failed",
     )
     if entries:
@@ -368,21 +470,31 @@ async def check_sharefile(client=None) -> list[dict]:
             entries = [_entry("sharefile", "ok", "tunnel", data.get("url", "?"))]
         else:
             value = f"unreachable ({provider})" if provider else "unreachable"
-            entries = [{
-                "component": "sharefile", "level": "warning", "key": "tunnel",
-                "value": value,
-                "hint": "The tunnel is published but the public edge cannot "
-                        "route to it, so every request to that URL answers "
-                        "HTTP 530; share_file refuses until it recovers. It "
-                        "keeps retrying in the background."}]
+            entries = [
+                {
+                    "component": "sharefile",
+                    "level": "warning",
+                    "key": "tunnel",
+                    "value": value,
+                    "hint": "The tunnel is published but the public edge cannot "
+                    "route to it, so every request to that URL answers "
+                    "HTTP 530; share_file refuses until it recovers. It "
+                    "keeps retrying in the background.",
+                }
+            ]
     else:
         value = f"offline ({provider})" if provider else "offline"
         hint = f"{reason} " if reason else ""
-        entries = [{
-            "component": "sharefile", "level": "warning", "key": "tunnel",
-            "value": value,
-            "hint": hint + "The active provider is set by sharefile.yaml "
-                           "(active_provider)."}]
+        entries = [
+            {
+                "component": "sharefile",
+                "level": "warning",
+                "key": "tunnel",
+                "value": value,
+                "hint": hint + "The active provider is set by sharefile.yaml "
+                "(active_provider).",
+            }
+        ]
 
     if data.get("edge_via_proxy"):
         # The CAUSE of a flap that otherwise reads as Cloudflare's fault.  A
@@ -394,22 +506,27 @@ async def check_sharefile(client=None) -> list[dict]:
         # a fake address.  Named here because it is invisible from inside
         # slife — the tunnel simply looks flaky.
         edge_ip = data.get("edge_ip") or "?"
-        entries.append({
-            "component": "sharefile", "level": "warning", "key": "edge",
-            "value": f"edge via fake-ip ({edge_ip})",
-            "hint": "A local proxy in fake-ip mode (Clash / Mihomo / sing-box) "
-                    "is resolving the tunnel's edge, so the control connection "
-                    "is carried and cut by that proxy — the tunnel registers "
-                    "and dies repeatedly, whatever protocol it uses. Exclude "
-                    "the edge from fake-ip and route it direct: for "
-                    "cloudflared add '+.argotunnel.com' to fake-ip-filter and "
-                    "'DOMAIN-SUFFIX,argotunnel.com,DIRECT' to the proxy rules "
-                    "(other providers: their own edge hostname).",
-        })
+        entries.append(
+            {
+                "component": "sharefile",
+                "level": "warning",
+                "key": "edge",
+                "value": f"edge via fake-ip ({edge_ip})",
+                "hint": "A local proxy in fake-ip mode (Clash / Mihomo / sing-box) "
+                "is resolving the tunnel's edge, so the control connection "
+                "is carried and cut by that proxy — the tunnel registers "
+                "and dies repeatedly, whatever protocol it uses. Exclude "
+                "the edge from fake-ip and route it direct: for "
+                "cloudflared add '+.argotunnel.com' to fake-ip-filter and "
+                "'DOMAIN-SUFFIX,argotunnel.com,DIRECT' to the proxy rules "
+                "(other providers: their own edge hostname).",
+            }
+        )
     return entries
 
 
 # ═══════════════════════════════════════════════════════════════════════
+
 
 async def check_memfiles(client=None) -> list[dict]:
     """Return file-cabinet (notes / diary / files) status as health entries.
@@ -424,7 +541,8 @@ async def check_memfiles(client=None) -> list[dict]:
     problem.
     """
     data, entries = await _probe_plugin(
-        client, "memfiles",
+        client,
+        "memfiles",
         unavailable_value="offline",
     )
     if entries:
@@ -434,14 +552,22 @@ async def check_memfiles(client=None) -> list[dict]:
         if data.get("semantic_ready"):
             value = "connected (semantic index ready)"
         else:
-            value = (f"connected (semantic index {data.get('state') or 'building'}, "
-                     f"{data.get('unembedded', 0)} pending)")
+            value = (
+                f"connected (semantic index {data.get('state') or 'building'}, "
+                f"{data.get('unembedded', 0)} pending)"
+            )
         return [_entry("memfiles", "ok", "plugin", value)]
     # A broken store has no remedy to offer — the reason IS the fact.
     reason = (data.get("reason") or "").strip()
     state = data.get("state", "degraded")
-    return [{"component": "memfiles", "level": "warning", "key": "plugin",
-             "value": f"{state}: {reason}" if reason else str(state)}]
+    return [
+        {
+            "component": "memfiles",
+            "level": "warning",
+            "key": "plugin",
+            "value": f"{state}: {reason}" if reason else str(state),
+        }
+    ]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -462,20 +588,30 @@ async def check_local_embed(client=None) -> list[dict]:
     :func:`check_embeddings`' business — this component is the SERVICE.
     """
     data, entries = await _probe_plugin(
-        client, "local-embed",
-        offline_hint=("Restart slife to respawn the plugin. If a NON-local-embed "
-                      "service holds its port, free that port first — an "
-                      "existing local-embed on it is adopted, not a conflict. "
-                      "Its log has the reason if it stays down."),
+        client,
+        "local-embed",
+        offline_hint=(
+            "Restart slife to respawn the plugin. If a NON-local-embed "
+            "service holds its port, free that port first — an "
+            "existing local-embed on it is adopted, not a conflict. "
+            "Its log has the reason if it stays down."
+        ),
     )
     if entries:
         return entries
     assert data is not None
     models = data.get("models")
     if not isinstance(models, list) or not models:
-        return [_entry("local-embed", "warning", "models", "none configured",
-                       "Add one with the local-embed CLI, or point the "
-                       "embeddings section at a cloud endpoint.")]
+        return [
+            _entry(
+                "local-embed",
+                "warning",
+                "models",
+                "none configured",
+                "Add one with the local-embed CLI, or point the "
+                "embeddings section at a cloud endpoint.",
+            )
+        ]
     out: list[dict] = []
     for m in models:
         if not isinstance(m, dict):
@@ -485,16 +621,26 @@ async def check_local_embed(client=None) -> list[dict]:
         if not m.get("available", True):
             # The backend dependency (llama-cpp / sentence-transformers) is
             # missing, so a request naming this model would 503.
-            out.append(_entry(
-                "local-embed", "warning", name,
-                f"backend unavailable ({m.get('backend') or '?'})",
-                "Install the backend for this model (see the local-embed "
-                "README), then restart slife. Keyword search keeps working "
-                "meanwhile.",
-            ))
+            out.append(
+                _entry(
+                    "local-embed",
+                    "warning",
+                    name,
+                    f"backend unavailable ({m.get('backend') or '?'})",
+                    "Install the backend for this model (see the local-embed "
+                    "README), then restart slife. Keyword search keeps working "
+                    "meanwhile.",
+                )
+            )
         elif m.get("loaded"):
-            out.append(_entry("local-embed", "ok", name,
-                              f"loaded (dim={dim})" if dim else "loaded"))
+            out.append(
+                _entry(
+                    "local-embed",
+                    "ok",
+                    name,
+                    f"loaded (dim={dim})" if dim else "loaded",
+                )
+            )
         else:
             # Not an error: models load on the first request that names them.
             out.append(_entry("local-embed", "info", name, "not loaded"))
@@ -526,21 +672,28 @@ async def check_embeddings() -> list[dict]:
     base_url = ""
     try:
         from slife.plugins.memdb.embedding_config import get_active_endpoint
+
         ep = get_active_endpoint()
         provider = (ep.get("provider") or "").strip() or provider
         base_url = (ep.get("base_url") or "").strip()
         if not base_url:
-            return [_entry(
-                "embeddings", "warning", provider, "offline (no base_url)",
-                "Configure the top-level embeddings section "
-                "(see embeddings_model_set).",
-            )]
+            return [
+                _entry(
+                    "embeddings",
+                    "warning",
+                    provider,
+                    "offline (no base_url)",
+                    "Configure the top-level embeddings section "
+                    "(see embeddings_model_set).",
+                )
+            ]
         headers: dict[str, str] = {}
         api_key = ep.get("api_key") or ""
         if api_key:
             # Uniform for every endpoint: a cloud API needs the key, local-embed
             # ignores it.  An unresolvable placeholder is never sent as a token.
             from slife.config import _resolve_secret
+
             api_key = _resolve_secret(api_key, accept_keyring_uri=True)
             if not is_env_ref(api_key):
                 headers["Authorization"] = f"Bearer {api_key}"
@@ -557,25 +710,30 @@ async def check_embeddings() -> list[dict]:
         # resolves it by pinning the listing's first entry — so that, and not
         # some arbitrary catalogue entry, is the fact to report.
         model = (ep.get("model") or "").strip() or next(
-            (m.get("id") or "" for m in models if m.get("id")), "",
+            (m.get("id") or "" for m in models if m.get("id")),
+            "",
         )
-        return [_entry("embeddings", "ok", provider,
-                       f"{model or '?'} at {base_url}")]
-    except Exception as e:
+        return [_entry("embeddings", "ok", provider, f"{model or '?'} at {base_url}")]
+    except Exception as e:  # noqa: BLE001 — embeddings health probe: config/credstore/httpx can each fail; degrade to a warning entry
         logger.warning("embeddings_check_failed err=%s", e)
-        return [{
-            "component": "embeddings", "level": "warning", "key": provider,
-            "value": "unavailable",
-            "hint": f"GET {base_url}/models failed: {e}. Point this provider "
-                    f"at a reachable endpoint with embeddings_model_set, or "
-                    f"start the service it names. Keyword search keeps "
-                    f"working meanwhile.",
-        }]
+        return [
+            {
+                "component": "embeddings",
+                "level": "warning",
+                "key": provider,
+                "value": "unavailable",
+                "hint": f"GET {base_url}/models failed: {e}. Point this provider "
+                f"at a reachable endpoint with embeddings_model_set, or "
+                f"start the service it names. Keyword search keeps "
+                f"working meanwhile.",
+            }
+        ]
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # check_watchdog
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def check_watchdog() -> list[dict]:
     """Return plugin watchdog status from health records.
@@ -597,8 +755,11 @@ def check_watchdog() -> list[dict]:
             seen[key] = r  # later records overwrite earlier ones
 
     if not seen:
-        results.append(_entry("watchdog", "ok", "status",
-                              "none (subagent, or plugins not started)"))
+        results.append(
+            _entry(
+                "watchdog", "ok", "status", "none (subagent, or plugins not started)"
+            )
+        )
         return results
 
     for name in sorted(seen):
@@ -615,13 +776,17 @@ def check_watchdog() -> list[dict]:
 #: Remediation shared by every disconnected server — identical text is what
 #: lets the report collapse 20 entries into one line instead of 20 sentences.
 #: One per family, because each is managed by its own tool set.
-_MCP_RETRY_HINT = ("The wrapper retries in the background. Re-run system_health "
-                   "shortly, or inspect one server with mcp_list and turn it "
-                   "off with mcp_set_enabled.")
-_REST_API_RETRY_HINT = ("The wrapper retries in the background. Re-run "
-                        "system_health shortly, or inspect one API with "
-                        "rest_api_list and turn it off with "
-                        "rest_api_set_enabled.")
+_MCP_RETRY_HINT = (
+    "The wrapper retries in the background. Re-run system_health "
+    "shortly, or inspect one server with mcp_list and turn it "
+    "off with mcp_set_enabled."
+)
+_REST_API_RETRY_HINT = (
+    "The wrapper retries in the background. Re-run "
+    "system_health shortly, or inspect one API with "
+    "rest_api_list and turn it off with "
+    "rest_api_set_enabled."
+)
 
 
 def _server_family(server: dict) -> str:
@@ -678,7 +843,9 @@ def _diagnose_mcp_server(server: dict) -> dict:
         # OAuth device flow needs a human — nothing repairs this in the
         # background (F5), so "wait for the retry" is not the right advice.
         return _entry(
-            component, "warning", name,
+            component,
+            "warning",
+            name,
             f"needs_user_auth ({error_msg or 'device flow not completed'})",
             f"Re-run the OAuth device flow with {remove_tool} + {add_tool}.",
         )
@@ -688,13 +855,16 @@ def _diagnose_mcp_server(server: dict) -> dict:
 
     if tools_ok:
         return _entry(
-            component, "ok", name,
+            component,
+            "ok",
+            name,
             f"tool list current ({tool_count} tools, {transport})",
         )
 
     detail = f" — {error_msg}" if error_msg else ""
-    return _entry(component, "warning", name,
-                  f"no working tool list{detail}", retry_hint)
+    return _entry(
+        component, "warning", name, f"no working tool list{detail}", retry_hint
+    )
 
 
 async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
@@ -719,9 +889,17 @@ async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
     Wrapper-level problems (client unavailable) are reported before any
     per-server diagnostics.
     """
+
     def _not_found(target: str) -> list[dict]:
-        return [_entry("mcp_servers", "warning", target, "not_found",
-                       "Use mcp_list to see the configured servers.")]
+        return [
+            _entry(
+                "mcp_servers",
+                "warning",
+                target,
+                "not_found",
+                "Use mcp_list to see the configured servers.",
+            )
+        ]
 
     try:
         if client is None:
@@ -729,11 +907,16 @@ async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
             # parent's gateway and re-points ``mcp_client`` like every other
             # plugin.  So this stays a WARNING in both processes: tolerating it
             # for workers masked a real wiring gap behind a plausible story.
-            return [_entry(
-                "mcp_servers", "warning", "status", "unavailable (client not connected)",
-                "Restart slife to respawn the plugin. Its log has the reason "
-                "if it stays down.",
-            )]
+            return [
+                _entry(
+                    "mcp_servers",
+                    "warning",
+                    "status",
+                    "unavailable (client not connected)",
+                    "Restart slife to respawn the plugin. Its log has the reason "
+                    "if it stays down.",
+                )
+            ]
 
         raw = await client.call_tool("__check")
         data = json.loads(raw)
@@ -753,16 +936,23 @@ async def check_mcp_gateway(server: str = "", client=None) -> list[dict]:
         records = [_diagnose_mcp_server(s) for s in data]
         return records
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — mcp gateway health probe: degrade to an error entry, never raise
         logger.warning("check_mcp_gateway_failed err=%s", e)
-        return [{"component": "mcp_servers", "level": "error",
-                 "key": "check_failed", "value": "probe failed",
-                 "hint": f"{e} — server states are unknown until it recovers."}]
+        return [
+            {
+                "component": "mcp_servers",
+                "level": "error",
+                "key": "check_failed",
+                "value": "probe failed",
+                "hint": f"{e} — server states are unknown until it recovers.",
+            }
+        ]
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # check_a2a
 # ═══════════════════════════════════════════════════════════════════════
+
 
 async def check_a2a(client=None) -> list[dict]:
     """Return A2A mesh status (queried from the a2a plugin).
@@ -776,8 +966,10 @@ async def check_a2a(client=None) -> list[dict]:
     that reason instead of the broker.
     """
     data, entries = await _probe_plugin(
-        client, "a2a",
-        key="status", offline_value="unavailable",
+        client,
+        "a2a",
+        key="status",
+        offline_value="unavailable",
         offline_hint="Start mosquitto, then restart slife to bring the mesh up.",
         unavailable_hint="Mesh probe failed",
     )
@@ -793,19 +985,31 @@ async def check_a2a(client=None) -> list[dict]:
         # another instance already holds, or a failed connect.  Reporting the
         # generic "start mosquitto" line here would send the reader after a
         # broker that is running fine.
-        return [{"component": "a2a", "level": "warning", "key": "status",
-                 "value": f"unavailable{where} — {error}",
-                 "hint": "Another slife may be holding this agent name, or a "
-                         "previous run's card is still on the broker.  Give "
-                         "this instance its own --agent name (the name is its "
-                         "address in the broker's org/unit namespace, and one "
-                         "name is one agent), or clear the leftover card and "
-                         "retry."}]
+        return [
+            {
+                "component": "a2a",
+                "level": "warning",
+                "key": "status",
+                "value": f"unavailable{where} — {error}",
+                "hint": "Another slife may be holding this agent name, or a "
+                "previous run's card is still on the broker.  Give "
+                "this instance its own --agent name (the name is its "
+                "address in the broker's org/unit namespace, and one "
+                "name is one agent), or clear the leftover card and "
+                "retry.",
+            }
+        ]
     if not data.get("connected"):
-        return [{"component": "a2a", "level": "warning", "key": "status",
-                 "value": f"unavailable{where}",
-                 "hint": "No active MQTT port. Start mosquitto and the plugin "
-                         "reconnects on its own."}]
+        return [
+            {
+                "component": "a2a",
+                "level": "warning",
+                "key": "status",
+                "value": f"unavailable{where}",
+                "hint": "No active MQTT port. Start mosquitto and the plugin "
+                "reconnects on its own.",
+            }
+        ]
 
     peers = data.get("peers", [])
     peer_names = ", ".join(p.get("agent_name") or "?" for p in peers)
@@ -817,15 +1021,18 @@ async def check_a2a(client=None) -> list[dict]:
     else:
         peer_clause = f"{n} peers: {peer_names}"
     queued = sum(
-        v for v in (data.get("queued") or {}).values()
-        if isinstance(v, (int, float))
+        v for v in (data.get("queued") or {}).values() if isinstance(v, (int, float))
     )
     backlog = f", {queued} queued" if queued else ""
-    return [{
-        "component": "a2a", "level": "ok", "key": "status",
-        "value": f"connected (broker {broker}, {peer_clause}{backlog})",
-        "peers": peers,
-    }]
+    return [
+        {
+            "component": "a2a",
+            "level": "ok",
+            "key": "status",
+            "value": f"connected (broker {broker}, {peer_clause}{backlog})",
+            "peers": peers,
+        }
+    ]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -834,6 +1041,7 @@ async def check_a2a(client=None) -> list[dict]:
 
 # check_media
 # ═══════════════════════════════════════════════════════════════════════
+
 
 async def check_media(client=None) -> list[dict]:
     """Return media plugin status: config + generation capabilities.
@@ -845,13 +1053,20 @@ async def check_media(client=None) -> list[dict]:
     """
     try:
         from slife.plugins.media.config import load_media_config
+
         cfg = load_media_config()
         if cfg.is_empty():
-            return [_entry("media", "ok", "enabled",
-                           "not_configured (add a media: section to enable "
-                           "generate_image / generate_video / text_to_speech / "
-                           "transcribe_audio)")]
-    except Exception as e:
+            return [
+                _entry(
+                    "media",
+                    "ok",
+                    "enabled",
+                    "not_configured (add a media: section to enable "
+                    "generate_image / generate_video / text_to_speech / "
+                    "transcribe_audio)",
+                )
+            ]
+    except Exception as e:  # noqa: BLE001 — media config health probe: degrade to a warning entry, never raise
         logger.warning("media_check_config_failed err=%s", e)
         return [_entry("media", "warning", "config", "unreadable", str(e))]
     data, entries = await _probe_plugin(client, "media")
@@ -861,8 +1076,7 @@ async def check_media(client=None) -> list[dict]:
 
     # The plugin reports facts; shape the health entries here.
     if data.get("error"):
-        return [_entry("media", "warning", "config", "error",
-                       str(data.get("error")))]
+        return [_entry("media", "warning", "config", "error", str(data.get("error")))]
     if not data.get("configured"):
         return [_entry("media", "ok", "enabled", "not_configured")]
     providers = data.get("providers") or []
@@ -871,10 +1085,14 @@ async def check_media(client=None) -> list[dict]:
     for c in calls:
         by_provider.setdefault(c.get("provider", "?"), []).append(c)
     all_kinds = sorted({k for p in providers for k in (p.get("kinds") or [])})
-    results: list[dict] = [_entry(
-        "media", "ok", "enabled",
-        f"{len(providers)} provider(s) ({', '.join(all_kinds) or 'no models'})",
-    )]
+    results: list[dict] = [
+        _entry(
+            "media",
+            "ok",
+            "enabled",
+            f"{len(providers)} provider(s) ({', '.join(all_kinds) or 'no models'})",
+        )
+    ]
     # "Key present" is a config fact, never a health verdict: the panel can only
     # see whether a key EXISTS, and a provider rejects plenty of calls it is
     # configured for (an unpurchased model answers 403 — invisible to every
@@ -884,15 +1102,24 @@ async def check_media(client=None) -> list[dict]:
         pid = p.get("id", "?")
         caps = ", ".join(p.get("kinds") or []) or "(no models)"
         if not p.get("has_api_key"):
-            results.append(_entry(
-                "media", "warning", pid, caps,
-                "No api_key set, so generation calls fail.",
-            ))
+            results.append(
+                _entry(
+                    "media",
+                    "warning",
+                    pid,
+                    caps,
+                    "No api_key set, so generation calls fail.",
+                )
+            )
         elif not by_provider.get(pid):
-            results.append(_entry(
-                "media", "ok", pid,
-                f"{caps} ({p.get('api')}) — key present, no call made",
-            ))
+            results.append(
+                _entry(
+                    "media",
+                    "ok",
+                    pid,
+                    f"{caps} ({p.get('api')}) — key present, no call made",
+                )
+            )
     # One line per recorded call outcome, so a working kind can never mask a
     # failing one (they are separate models behind the same key).
     for pid, records in by_provider.items():
@@ -900,14 +1127,23 @@ async def check_media(client=None) -> list[dict]:
             label = f"{c.get('kind')}/{c.get('model')}".strip("/")
             ago = _age(c.get("age_s"))
             if c.get("ok"):
-                results.append(_entry(
-                    "media", "ok", pid, f"{label} — last call {ago} ago OK",
-                ))
+                results.append(
+                    _entry(
+                        "media",
+                        "ok",
+                        pid,
+                        f"{label} — last call {ago} ago OK",
+                    )
+                )
             else:
-                results.append(_entry(
-                    "media", "warning", pid,
-                    f"{label} — last call {ago} ago failed: {c.get('message')}",
-                ))
+                results.append(
+                    _entry(
+                        "media",
+                        "warning",
+                        pid,
+                        f"{label} — last call {ago} ago failed: {c.get('message')}",
+                    )
+                )
     return results
 
 
@@ -955,20 +1191,34 @@ async def check_tool_catalog(ctx=None) -> list[dict]:
         # A worker opens the SAME tools.db (``_init_catalog`` runs for both),
         # so a missing catalog is a real fault in either process — not the
         # "shares no catalog" the docstring imagined.  Reported for both.
-        return [{
-            "component": "tool_catalog", "level": "warning", "key": "db",
-            "value": "unavailable",
-            "hint": ("Restart slife. tool_search and func_tool_load fall back to "
-                     "name matching meanwhile, and the session log has the reason."),
-        }]
+        return [
+            {
+                "component": "tool_catalog",
+                "level": "warning",
+                "key": "db",
+                "value": "unavailable",
+                "hint": (
+                    "Restart slife. tool_search and func_tool_load fall back to "
+                    "name matching meanwhile, and the session log has the reason."
+                ),
+            }
+        ]
     if catalog is None:
         return []
 
     from slife.mcp.host_server import _host_catalog_facts
+
     facts = await _host_catalog_facts(catalog)
     if facts.get("error"):
-        return [{"component": "tool_catalog", "level": "warning", "key": "db",
-                 "value": "probe failed", "hint": str(facts["error"])}]
+        return [
+            {
+                "component": "tool_catalog",
+                "level": "warning",
+                "key": "db",
+                "value": "probe failed",
+                "hint": str(facts["error"]),
+            }
+        ]
 
     # "servers WITH ROWS", and no family split.  The count is over catalog
     # rows, so a configured server whose tool list has not been read yet owns
@@ -976,13 +1226,18 @@ async def check_tool_catalog(ctx=None) -> list[dict]:
     # Naming the population is what keeps the two lines from reading as one
     # number; splitting it by family only put the mcp/rest-api implementation
     # detail back on a surface where it means nothing.
-    entries = [_entry(
-        "tool_catalog", "ok", "db",
-        f"{facts.get('tools', 0)} tools, {facts.get('servers', 0)} servers "
-        f"with rows, {facts.get('loaded', 0)} loaded",
-    )]
+    entries = [
+        _entry(
+            "tool_catalog",
+            "ok",
+            "db",
+            f"{facts.get('tools', 0)} tools, {facts.get('servers', 0)} servers "
+            f"with rows, {facts.get('loaded', 0)} loaded",
+        )
+    ]
     sem_level, sem_value, sem_hint = _semantic_facts(
-        facts.get("semantic") or {}, pending_noun="tools",
+        facts.get("semantic") or {},
+        pending_noun="tools",
     )
     entries.append(_entry("tool_catalog", sem_level, "semantic", sem_value, sem_hint))
     return entries
@@ -991,6 +1246,7 @@ async def check_tool_catalog(ctx=None) -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════════
 # check_job_coding
 # ═══════════════════════════════════════════════════════════════════════
+
 
 async def check_job_coding(client=None) -> list[dict]:
     """Return job-coding plugin status: registered jobs + job LLM model.
@@ -1001,33 +1257,52 @@ async def check_job_coding(client=None) -> list[dict]:
     them into health entries.
     """
     data, entries = await _probe_plugin(
-        client, "job-coding", log_name="job_coding",
+        client,
+        "job-coding",
+        log_name="job_coding",
     )
     if entries:
         return entries
     assert data is not None
 
     if data.get("error"):
-        return [_entry("job-coding", "warning", "config", "error",
-                       str(data.get("error")))]
+        return [
+            _entry("job-coding", "warning", "config", "error", str(data.get("error")))
+        ]
 
     jobs = data.get("job_names") or []
     jobs_dir = data.get("jobs_dir") or "(none)"
     if jobs:
-        entries: list[dict] = [_entry(
-            "job-coding", "ok", "jobs", f"{len(jobs)} ({', '.join(jobs)})",
-        )]
+        entries: list[dict] = [
+            _entry(
+                "job-coding",
+                "ok",
+                "jobs",
+                f"{len(jobs)} ({', '.join(jobs)})",
+            )
+        ]
     else:
-        entries = [_entry("job-coding", "ok", "jobs",
-                          f"none (add a .py file to {jobs_dir} or use job-write)")]
+        entries = [
+            _entry(
+                "job-coding",
+                "ok",
+                "jobs",
+                f"none (add a .py file to {jobs_dir} or use job-write)",
+            )
+        ]
 
     model = data.get("llm_model") or ""
     if model in ("", "?", "unconfigured"):
-        entries.append(_entry(
-            "job-coding", "warning", "llm_model", "unconfigured",
-            "Set job_coding_model in slife.yaml. Jobs that call llm.chat "
-            "fail without it, while pure-computation jobs still work.",
-        ))
+        entries.append(
+            _entry(
+                "job-coding",
+                "warning",
+                "llm_model",
+                "unconfigured",
+                "Set job_coding_model in slife.yaml. Jobs that call llm.chat "
+                "fail without it, while pure-computation jobs still work.",
+            )
+        )
     else:
         entries.append(_entry("job-coding", "ok", "llm_model", model))
 
@@ -1042,19 +1317,27 @@ async def check_job_coding(client=None) -> list[dict]:
     if isinstance(gw, dict):
         port = gw.get("port")
         if gw.get("error"):
-            entries.append(_entry("job-coding", "warning", "mcp_gateway",
-                                  "unknown", str(gw["error"])))
+            entries.append(
+                _entry(
+                    "job-coding", "warning", "mcp_gateway", "unknown", str(gw["error"])
+                )
+            )
         elif not port:
-            entries.append(_entry(
-                "job-coding", "warning", "mcp_gateway",
-                "unavailable (no gateway port)",
-                "Jobs that call mcp.call fail without it. The gateway "
-                "publishes its port when it starts, so restart slife to "
-                "respawn it.",
-            ))
+            entries.append(
+                _entry(
+                    "job-coding",
+                    "warning",
+                    "mcp_gateway",
+                    "unavailable (no gateway port)",
+                    "Jobs that call mcp.call fail without it. The gateway "
+                    "publishes its port when it starts, so restart slife to "
+                    "respawn it.",
+                )
+            )
         else:
-            entries.append(_entry("job-coding", "ok", "mcp_gateway",
-                                  f"on demand (port {port})"))
+            entries.append(
+                _entry("job-coding", "ok", "mcp_gateway", f"on demand (port {port})")
+            )
     return entries
 
 
@@ -1081,9 +1364,7 @@ _CTX_CHECKS: frozenset[str] = frozenset({"check_tool_catalog"})
 
 #: check_* function → ToolContext client field it reaches live plugin state
 #: through (also derived from the spec).
-_CLIENT_FIELD: dict[str, str] = {
-    name: ctx for name, ctx in _SPEC_CHECKS if ctx
-}
+_CLIENT_FIELD: dict[str, str] = {name: ctx for name, ctx in _SPEC_CHECKS if ctx}
 
 
 async def _run_checks(ctx=None) -> list[dict]:
@@ -1097,6 +1378,7 @@ async def _run_checks(ctx=None) -> list[dict]:
     """
     import inspect as _inspect
     import sys as _sys
+
     _mod = _sys.modules[__name__]
 
     all_entries: list[dict] = []
@@ -1121,14 +1403,18 @@ async def _run_checks(ctx=None) -> list[dict]:
             else:
                 entries = fn()
             all_entries.extend(entries)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — health-check isolation: one check failing must not abort the whole report
             logger.warning("health_check_failed check=%s err=%s", func_name, e)
-            all_entries.append({
-                "component": "system_health", "level": "error",
-                "key": f"{func_name}_failed", "value": f"{func_name} failed",
-                "hint": f"{type(e).__name__}: {e} — the rest of this report "
-                        f"is unaffected.",
-            })
+            all_entries.append(
+                {
+                    "component": "system_health",
+                    "level": "error",
+                    "key": f"{func_name}_failed",
+                    "value": f"{func_name} failed",
+                    "hint": f"{type(e).__name__}: {e} — the rest of this report "
+                    f"is unaffected.",
+                }
+            )
     return all_entries
 
 
@@ -1151,15 +1437,22 @@ def _dedupe_records(startup: list[dict], live: list[dict]) -> list[dict]:
         (e.get("component"), e.get("key"))
         for e in live
         if isinstance(e.get("component"), str)
-        and isinstance(e.get("key"), str) and e.get("key")
+        and isinstance(e.get("key"), str)
+        and e.get("key")
     }
 
     kept: list[dict] = []
     for e in startup:
         pair = (e.get("component"), e.get("key"))
-        if isinstance(pair[0], str) and isinstance(pair[1], str) and pair[1] and pair in live_keys:
+        if (
+            isinstance(pair[0], str)
+            and isinstance(pair[1], str)
+            and pair[1]
+            and pair in live_keys
+        ):
             logger.debug(
-                "health_startup_record_superseded component=%s key=%s", *pair,
+                "health_startup_record_superseded component=%s key=%s",
+                *pair,
             )
             continue
         kept.append(e)
@@ -1216,16 +1509,31 @@ _LEVELS = frozenset({"ok", "info", "warning", "error"})
 #: static startup records.  The tail is what a truncated report loses, and the
 #: environment facts are the least actionable thing in it.
 _ORDER: dict[str, int] = {
-    "system_health": 0,   # a check that blew up is the most alarming entry
-    "mcp_servers": 1, "rest-api": 2, "tool_catalog": 3, "memdb": 4,
-    "memfiles": 5, "wechat": 6, "sharefile": 7, "a2a": 8, "media": 9,
-    "job-coding": 10, "embeddings": 11, "watchdog": 12,
+    "system_health": 0,  # a check that blew up is the most alarming entry
+    "mcp_servers": 1,
+    "rest-api": 2,
+    "tool_catalog": 3,
+    "memdb": 4,
+    "memfiles": 5,
+    "wechat": 6,
+    "sharefile": 7,
+    "a2a": 8,
+    "media": 9,
+    "job-coding": 10,
+    "embeddings": 11,
+    "watchdog": 12,
     "local-embed": 13,
 }
 
 #: Static startup records (environment facts) — last by design.
 _ENV_COMPONENTS: tuple[str, ...] = (
-    "config", "model", "subagent", "node", "npm", "bun", "uv",
+    "config",
+    "model",
+    "subagent",
+    "node",
+    "npm",
+    "bun",
+    "uv",
 )
 _ORDER_FALLBACK = 20
 _ORDER_ENV = 30
@@ -1309,8 +1617,9 @@ def _component_line(items: list[dict], *, hints: bool) -> str:
     facts = [_format_fact(i) for i in items]
     if not hints:
         return "; ".join(f for f in facts if f)
-    remedies = {i["hint"] for i in items
-                if i["hint"] and i["level"] in ("warning", "error")}
+    remedies = {
+        i["hint"] for i in items if i["hint"] and i["level"] in ("warning", "error")
+    }
     if len(remedies) == 1:
         return "; ".join(f for f in facts if f) + f" — {remedies.pop()}"
     parts = []
@@ -1339,9 +1648,11 @@ def _verdict(problems: list[tuple], ok_count: int) -> str:
     shown = ", ".join(names[:_MAX_VERDICT_NAMES])
     if len(names) > _MAX_VERDICT_NAMES:
         shown += f", +{len(names) - _MAX_VERDICT_NAMES} more"
-    return (f"DEGRADED — {_plural(len(problems), 'problem')} "
-            f"({_plural(errors, 'error')}, {_plural(warnings, 'warning')}): "
-            f"{shown}; {_plural(ok_count, 'component')} OK.")
+    return (
+        f"DEGRADED — {_plural(len(problems), 'problem')} "
+        f"({_plural(errors, 'error')}, {_plural(warnings, 'warning')}): "
+        f"{shown}; {_plural(ok_count, 'component')} OK."
+    )
 
 
 def _section_width(names: list[str]) -> int:
@@ -1368,8 +1679,10 @@ def _scope_line(groups: dict[str, list[dict]]) -> str:
     missing = [c for c in _ENV_COMPONENTS if c not in groups]
     if not missing:
         return ""
-    return (f"Scope: {'/'.join(missing)} are host facts, recorded by the "
-            f"startup that probes them — absent from this process's report.")
+    return (
+        f"Scope: {'/'.join(missing)} are host facts, recorded by the "
+        f"startup that probes them — absent from this process's report."
+    )
 
 
 def _render_report(groups: dict[str, list[dict]]) -> str:
@@ -1397,8 +1710,7 @@ def _render_report(groups: dict[str, list[dict]]) -> str:
         if status == "ok":
             oks.append((component, line))
         else:
-            problems.append((_rank(status), _order(component), component,
-                             status, line))
+            problems.append((_rank(status), _order(component), component, status, line))
     problems.sort()  # worst level first, then report order
     oks.sort(key=lambda o: (_order(o[0]), o[0]))
 
@@ -1422,11 +1734,18 @@ def _render_report(groups: dict[str, list[dict]]) -> str:
             ]
         # Folding is the only lossy path in the renderer, it never touches the
         # problems, and it says so — a silently middle-cut report is worse.
-        return (["", "## Components OK"]
-                + [c.ljust(width) for c, _ in oks]
-                + ["", f"(detail omitted to fit the result budget — "
-                       f"{_plural(len(oks), 'healthy component')}; re-run "
-                       f"system_health and read one component's line below)"])
+        return (
+            ["", "## Components OK"]
+            + [c.ljust(width) for c, _ in oks]
+            + [
+                "",
+                (
+                    f"(detail omitted to fit the result budget — "
+                    f"{_plural(len(oks), 'healthy component')}; re-run "
+                    f"system_health and read one component's line below)"
+                ),
+            ]
+        )
 
     report = "\n".join(head + _ok_block(fold=False))
     if len(report) > _MAX_REPORT_CHARS:
@@ -1439,10 +1758,12 @@ class SystemHealthTool(Tool):
 
     name = "system_health"
     category: ClassVar[str] = "System"
-    description = ("One-call health report over every subsystem: problems first "
-                   "with the remedy, then one line per healthy component "
-                   "(startup records included).")
-    parameters = {"type": "object", "properties": {}, "required": []}
+    description = (
+        "One-call health report over every subsystem: problems first "
+        "with the remedy, then one line per healthy component "
+        "(startup records included)."
+    )
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
         startup = get_startup_records()
@@ -1480,7 +1801,7 @@ def _strip_server_prefix(tool, desc: str) -> str:
         server = getattr(tool, "_server", "")
         prefix = f"[{server}] "
         if server and desc.startswith(prefix):
-            return desc[len(prefix):]
+            return desc[len(prefix) :]
     return desc
 
 
@@ -1497,9 +1818,14 @@ def _is_system_tool(tool) -> bool:
         if getattr(tool, "_route", None) == ProxyRoute.EXTERNAL:
             return False
         from slife.tools.catalog_service import plugin_category
-        return plugin_category(
-            getattr(tool, "_server", "") or "", getattr(tool, "name", "") or "",
-        ) != "job"
+
+        return (
+            plugin_category(
+                getattr(tool, "_server", "") or "",
+                getattr(tool, "name", "") or "",
+            )
+            != "job"
+        )
     return True
 
 
@@ -1592,12 +1918,13 @@ def schedule(coro) -> str:
 async def _runner(coro, task_id: str) -> str:
     try:
         result = await coro
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — async task boundary: record the failure as an error string, never crash
         result = f"Error: {type(e).__name__}: {e}"
     # Sanitize at storage time, not at check_async time: while a task runs
     # its raw output sits in memory (up to the stream caps), and a save-side
     # re-sanitize would leave secrets visible to anyone between run and poll.
     from slife.logfmt import sanitize_secrets
+
     result = sanitize_secrets(result)
     logger.info("async_task_done id=%s len=%d", task_id, len(result))
     return result
@@ -1614,11 +1941,16 @@ def _pop_task(task_id: str) -> asyncio.Task | None:
 class CheckAsyncTool(Tool):
     name: ClassVar[str] = "check_async"
     category: ClassVar[str] = "System"
-    description: ClassVar[str] = "Query an async task result. Returns status while running, the result when done."
+    description: ClassVar[str] = (
+        "Query an async task result. Returns status while running, the result when done."
+    )
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "task_id": {"type": "string", "description": "The task_id returned by the async task."},
+            "task_id": {
+                "type": "string",
+                "description": "The task_id returned by the async task.",
+            },
         },
         "required": ["task_id"],
     }
@@ -1633,7 +1965,7 @@ class CheckAsyncTool(Tool):
         _pop_task(task_id)
         try:
             result = task.result()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — async task result boundary: return an error string
             result = f"Error: Async task failed: {type(e).__name__}: {e}"
         # A failed async task must keep the "Error" prefix so the loop's
         # is_error detection (result.startswith("Error")) and the TUI's
@@ -1647,7 +1979,9 @@ class CheckAsyncTool(Tool):
 class CancelAsyncTool(Tool):
     name: ClassVar[str] = "cancel_async"
     category: ClassVar[str] = "System"
-    description: ClassVar[str] = "Cancel a running async task. Completed tasks cannot be cancelled."
+    description: ClassVar[str] = (
+        "Cancel a running async task. Completed tasks cannot be cancelled."
+    )
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
@@ -1678,9 +2012,7 @@ class CancelAsyncTool(Tool):
 class SetMaxIterationsTool(Tool):
     name = "set_max_iterations"
     category: ClassVar[str] = "System"
-    description = (
-        "Set the maximum tool-call iterations per turn (0 = unlimited)."
-    )
+    description = "Set the maximum tool-call iterations per turn (0 = unlimited)."
     parameters = make_params(
         max_iterations={
             "type": "integer",
@@ -1752,9 +2084,7 @@ class NotifyUserTool(Tool):
 
     name: ClassVar[str] = "notify_user"
     category: ClassVar[str] = "System"
-    description: ClassVar[str] = (
-        "Send a desktop notification to the human user."
-    )
+    description: ClassVar[str] = "Send a desktop notification to the human user."
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
@@ -1782,13 +2112,16 @@ class NotifyUserTool(Tool):
         # WARNING, so this is diagnostic-only; the notification below is the
         # user-facing channel).
         logging.getLogger(__name__).warning(
-            "USER_NOTIFICATION title=%s message=%s", title, message,
+            "USER_NOTIFICATION title=%s message=%s",
+            title,
+            message,
         )
 
         # Fire desktop notification (best-effort, non-blocking).
         # Daemon thread: a hung notify backend must never block shutdown.
         from slife.platform import desktop_notify
         from slife.threads import run_daemon
+
         run_daemon(desktop_notify, title, message, name="desktop-notify")
 
         # t() applies str.format, and an LLM-authored {message} must never
@@ -1799,5 +2132,3 @@ class NotifyUserTool(Tool):
             title=title.replace("{", "{{").replace("}", "}}"),
             message=message.replace("{", "{{").replace("}", "}}"),
         )
-
-

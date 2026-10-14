@@ -18,17 +18,16 @@ from contextlib import asynccontextmanager
 
 from fastmcp.server.context import Context
 
-from slife.plugins.mcp_gateway import config as plugin_config
-from slife.plugins.spec import mcp_child_reserved_names
-from slife.plugins.mcp_gateway.connection import ConnectionPool, ServerConfig
 from slife.logfmt import error_json, ok_json
+from slife.plugins.mcp_gateway import config as plugin_config
+from slife.plugins.mcp_gateway.connection import ConnectionPool, ServerConfig
+from slife.plugins.spec import mcp_child_reserved_names
 from slife.server_utils import (
     ToolsChangedNotifier,
     create_plugin_server,
     request_tools_changed,
     tools_changed_bus,
 )
-
 
 #: Set when the boot pass has brought every configured server up (or failed to).
 #: Published in ``__check`` because it is the fact that tells a server whose
@@ -72,7 +71,7 @@ async def _mcp_lifespan(_app):
         # about teardown ordering.
         try:
             await _pool.shutdown()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — plugin shutdown must never raise
             logger.debug("mcp_pool_shutdown_error err=%s", e)
 
 
@@ -91,7 +90,7 @@ async def _auto_connect_configured() -> None:
     try:
         try:
             raw = plugin_config.load_config()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort boot pass; an unreadable config is skipped
             logger.warning("mcp_config_load_failed err=%s", e)
             return
         # servers live in the mcp.servers / rest-api sections (tools.yaml) —
@@ -99,10 +98,11 @@ async def _auto_connect_configured() -> None:
         # raw ``servers`` key (gone since the section restructure).
         servers = plugin_config._servers_dict(raw)
         configured = [
-            (name, entry) for name, entry in servers.items()
-            if isinstance(entry, dict)
+            (name, entry) for name, entry in servers.items() if isinstance(entry, dict)
         ]
-        logger.info("mcp_configured count=%d (connecting the enabled ones)", len(configured))
+        logger.info(
+            "mcp_configured count=%d (connecting the enabled ones)", len(configured)
+        )
 
         # Which of these are REST APIs — the SECTION decides (one read, not one
         # per server), and it rides into the pool so ``__check`` can report the
@@ -112,7 +112,9 @@ async def _auto_connect_configured() -> None:
         async def _register_one(name: str, entry: dict) -> None:
             try:
                 cfg = plugin_config.resolve_server_config(
-                    name, entry, rest_api=name in rest_api_names,
+                    name,
+                    entry,
+                    rest_api=name in rest_api_names,
                 )
                 if not cfg.enabled:
                     await _pool.add_server(cfg, connect=False)
@@ -139,7 +141,7 @@ async def _auto_connect_configured() -> None:
                 # WHOLE boot pass is done (one nudge after the gather), because a
                 # pass woken mid-spawn would judge servers whose transports are
                 # still being established.
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — one bad server must not abort the boot pass
                 logger.warning("mcp_server_setup_failed server=%s err=%s", name, e)
 
         await asyncio.gather(*(_register_one(n, e) for n, e in configured))
@@ -195,6 +197,7 @@ def _request_tools_changed() -> None:
 # re-list, and reconciles server runtime + tool rows from ``__mcp_list_tools`` /
 # ``__check`` itself.
 
+
 async def _on_tools_changed(server_name: str) -> None:
     """A server's tool list may have changed — tell the host to re-sync."""
     _request_tools_changed()
@@ -214,6 +217,7 @@ _RESERVED_SERVER_NAMES = mcp_child_reserved_names()
 
 
 # ── Config comparison for idempotency ──────────────────────────────
+
 
 def _server_config_equal(a: ServerConfig, b: ServerConfig) -> bool:
     """Compare two ServerConfigs for equality.
@@ -282,17 +286,21 @@ def _persist_entry(
         "enabled": enabled,
     }
     entry = {
-        key: value for key, value in entry.items()
+        key: value
+        for key, value in entry.items()
         if value is not None and value != "" and value != [] and value != {}
     }
     plugin_config.add_server_entry(
-        name, entry, section=plugin_config.server_section(name) or "mcp",
+        name,
+        entry,
+        section=plugin_config.server_section(name) or "mcp",
     )
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # Family gate — the mcp_* tools own the MCP family, and only it
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def _family_refusal(name: str, category: str, twin: str) -> str | None:
     """Refuse a call that speaks for *category* but names the other family.
@@ -326,7 +334,8 @@ def _disabled_refusal(server: str) -> str:
     switched-off server reads the same however it is approached.
     """
     enable_tool = (
-        "rest_api_set_enabled" if plugin_config.is_rest_api(server)
+        "rest_api_set_enabled"
+        if plugin_config.is_rest_api(server)
         else "mcp_set_enabled"
     )
     return f"Server '{server}' is disabled — enable it with {enable_tool}."
@@ -385,13 +394,17 @@ async def _set_server(
     # never matched — tearing down + reconnecting (and re-running OAuth).
     resolved_env = None
     if env:
-        resolved_env = {k: plugin_config._resolve_secret(str(v)) for k, v in env.items()}
+        resolved_env = {
+            k: plugin_config._resolve_secret(str(v)) for k, v in env.items()
+        }
     resolved_auth = None
     if auth:
         resolved_auth = dict(auth)
         for auth_key in ("client_id", "client_secret"):
             if auth_key in resolved_auth and isinstance(resolved_auth[auth_key], str):
-                resolved_auth[auth_key] = plugin_config._resolve_secret(resolved_auth[auth_key])
+                resolved_auth[auth_key] = plugin_config._resolve_secret(
+                    resolved_auth[auth_key]
+                )
     config = ServerConfig(
         name=name,
         command=command,
@@ -404,56 +417,82 @@ async def _set_server(
         auth=resolved_auth,
         os_paths=existing.config.os_paths if existing else False,
         auto_load=existing.config.auto_load if existing else False,
-        source=(source if source is not None
-                else (existing.config.source if existing else None)),
+        source=(
+            source
+            if source is not None
+            else (existing.config.source if existing else None)
+        ),
         # Same rule as the other derived fields: preserve what the entry's
         # placement says.  A server already in the pool keeps its answer; a new
         # one takes the section its name resolves to (mcp unless rest_api_set
         # wrote it there first, which it does before calling us).
-        rest_api=(existing.config.rest_api if existing
-                  else plugin_config.server_section(name) == "rest-api"),
+        rest_api=(
+            existing.config.rest_api
+            if existing
+            else plugin_config.server_section(name) == "rest-api"
+        ),
     )
 
     try:
-        if existing is not None and _server_config_equal(existing.config, config):
-            if existing.tools_ok:
-                # description/source are deliberately outside the comparison — a
-                # metadata edit must not restart the transport — but that also
-                # meant a metadata-ONLY edit was never written anywhere: mcp_set
-                # answered "already_connected" and tools.yaml kept the old text
-                # while the caller was told nothing had changed.  Persist it
-                # here instead, leaving the live connection alone.
-                #
-                # An empty description is the tool's default, so it reads as
-                # "not supplied" rather than "clear it" — otherwise every
-                # idempotent re-run would blank a description it never mentioned.
-                # source needs no such rule: the built config already resolved a
-                # missing one to the existing value, so a difference is real.
-                meta_changed = (
-                    (description != "" and description != existing.config.description)
-                    or config.source != existing.config.source
+        if (
+            existing is not None
+            and _server_config_equal(existing.config, config)
+            and existing.tools_ok
+        ):
+            # description/source are deliberately outside the comparison — a
+            # metadata edit must not restart the transport — but that also
+            # meant a metadata-ONLY edit was never written anywhere: mcp_set
+            # answered "already_connected" and tools.yaml kept the old text
+            # while the caller was told nothing had changed.  Persist it
+            # here instead, leaving the live connection alone.
+            #
+            # An empty description is the tool's default, so it reads as
+            # "not supplied" rather than "clear it" — otherwise every
+            # idempotent re-run would blank a description it never mentioned.
+            # source needs no such rule: the built config already resolved a
+            # missing one to the existing value, so a difference is real.
+            meta_changed = (
+                description != "" and description != existing.config.description
+            ) or config.source != existing.config.source
+            if meta_changed:
+                _persist_entry(
+                    name,
+                    command,
+                    args,
+                    env,
+                    url,
+                    headers,
+                    description,
+                    config.source,
+                    auth,
+                    enabled,
                 )
-                if meta_changed:
-                    _persist_entry(
-                        name, command, args, env, url, headers,
-                        description, config.source, auth, enabled,
-                    )
-                tools = existing.list_tools()
-                return ok_json(
-                    status="already_connected",
-                    server=name,
-                    transport=config.transport,
-                    tool_count=len(tools),
-                    tools=[t["name"] for t in tools],
-                    note=("Server config unchanged — metadata updated, no restart needed."
-                          if meta_changed else
-                          "Server config unchanged — no restart needed."),
-                )
+            tools = existing.list_tools()
+            return ok_json(
+                status="already_connected",
+                server=name,
+                transport=config.transport,
+                tool_count=len(tools),
+                tools=[t["name"] for t in tools],
+                note=(
+                    "Server config unchanged — metadata updated, no restart needed."
+                    if meta_changed
+                    else "Server config unchanged — no restart needed."
+                ),
+            )
 
         conn = await _pool.add_server(config)
         _persist_entry(
-            name, command, args, env, url, headers,
-            description, source, auth, enabled,
+            name,
+            command,
+            args,
+            env,
+            url,
+            headers,
+            description,
+            source,
+            auth,
+            enabled,
         )
 
         if conn.tools_ok:
@@ -522,8 +561,18 @@ async def mcp_set(
         auth: OAuth config for device code flow (auth type 'oauth').
     """
     return await _set_server(
-        name, command, args, env, url, headers, description, enabled,
-        source, auth, category="mcp", ctx=ctx,
+        name,
+        command,
+        args,
+        env,
+        url,
+        headers,
+        description,
+        enabled,
+        source,
+        auth,
+        category="mcp",
+        ctx=ctx,
     )
 
 
@@ -550,16 +599,25 @@ async def __mcp_set(
 ) -> str:
     """The ``rest_api_*`` family's registration of the shared upsert."""
     return await _set_server(
-        name, command, args, env, url, headers, description, enabled,
-        source, auth, category="rest-api", ctx=ctx,
+        name,
+        command,
+        args,
+        env,
+        url,
+        headers,
+        description,
+        enabled,
+        source,
+        auth,
+        category="rest-api",
+        ctx=ctx,
     )
 
 
 @mcp.tool(
     name="mcp_set_enabled",
     description=(
-        "Enable or disable an MCP server (enable connects it, disable "
-        "disconnects it)."
+        "Enable or disable an MCP server (enable connects it, disable disconnects it)."
     ),
 )
 async def mcp_set_enabled(name: str, enabled: bool, ctx: Context | None = None) -> str:
@@ -583,14 +641,19 @@ async def mcp_set_enabled(name: str, enabled: bool, ctx: Context | None = None) 
     ),
 )
 async def __mcp_set_enabled(
-    name: str, enabled: bool, ctx: Context | None = None,
+    name: str,
+    enabled: bool,
+    ctx: Context | None = None,
 ) -> str:
     """The ``rest_api_*`` family's registration of the shared toggle."""
     return await _set_server_enabled(name, enabled, category="rest-api", ctx=ctx)
 
 
 async def _set_server_enabled(
-    name: str, enabled: bool, category: str, ctx: Context | None,
+    name: str,
+    enabled: bool,
+    category: str,
+    ctx: Context | None,
 ) -> str:
     """The shared toggle behind ``mcp_set_enabled`` and ``__mcp_set_enabled``.
 
@@ -622,6 +685,7 @@ async def _set_server_enabled(
                 tools=[t["name"] for t in tools],
                 note="Server enabled.",
             )
+
         # No working tool list — fan the (re)read out behind a fast response.
         # refresh_tools() owns its per-connection lock and, on success, fires
         # ``_on_tools_changed`` -> catalog sync + one coalesced list_changed
@@ -632,7 +696,7 @@ async def _set_server_enabled(
         async def _connect_async() -> None:
             try:
                 await existing.refresh_tools()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — background connect failure is logged, not raised
                 logger.warning("mcp_enable_connect_failed server=%s err=%s", name, e)
 
         _background(_connect_async(), name=f"mcp-connect:{name}")
@@ -657,9 +721,7 @@ async def _set_server_enabled(
 
 @mcp.tool(
     name="mcp_remove",
-    description=(
-        "Remove an MCP server: stops it and deletes its config entry."
-    ),
+    description=("Remove an MCP server: stops it and deletes its config entry."),
 )
 async def mcp_remove(name: str, ctx: Context | None = None) -> str:
     """Stop and remove an MCP server.
@@ -779,7 +841,8 @@ async def __check(ctx: Context | None = None) -> str:
     servers = _pool.list_servers()
     return json.dumps(
         {"servers": servers, "spawn_settled": _spawn_settled.is_set()},
-        ensure_ascii=False, indent=2,
+        ensure_ascii=False,
+        indent=2,
     )
 
 
@@ -791,7 +854,9 @@ async def __check(ctx: Context | None = None) -> str:
     ),
 )
 async def __mcp_list_tools(
-    server: str, limit: int = 0, ctx: Context | None = None,
+    server: str,
+    limit: int = 0,
+    ctx: Context | None = None,
 ) -> str:
     """The listing itself, uncapped unless asked otherwise — host-side only.
 
@@ -856,7 +921,7 @@ async def __mcp_list_tools(
 
     try:
         live = _pool.list_all_tools(server_name=server)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — mcp_list returns an error result, never raises
         logger.warning("mcp_list_tools_live_failed server=%s err=%s", server, e)
         return error_json(
             f"MCP unavailable for server '{server}' — live tool read failed: {e}",
@@ -875,8 +940,8 @@ async def __mcp_list_tools(
         note=(
             f"Showing {len(shown)} of {len(live)} tools from the live MCP "
             "tools/list — use tool_search to find a specific one."
-            if truncated else
-            "Live tool list from the connected server (built-in MCP tools/list)."
+            if truncated
+            else "Live tool list from the connected server (built-in MCP tools/list)."
         ),
     )
 
@@ -889,7 +954,9 @@ async def __mcp_list_tools(
     ),
 )
 async def mcp_list_tools(
-    name: str, limit: int | None = None, ctx: Context | None = None,
+    name: str,
+    limit: int | None = None,
+    ctx: Context | None = None,
 ) -> str:
     """List a server's tools, capped for the caller's context.
 
@@ -949,7 +1016,9 @@ async def __mcp_call_tool(
     conn = _pool.get_server(server)
     if conn is not None and not conn.config.enabled:
         return error_json(
-            _disabled_refusal(server), server=server, tool=tool_name,
+            _disabled_refusal(server),
+            server=server,
+            tool=tool_name,
         )
 
     result = await _pool.call_tool(server, tool_name, args_dict)
@@ -972,7 +1041,9 @@ def main():
 
     parser = argparse.ArgumentParser(prog="mcp-gateway-server")
     parser.add_argument(
-        "--port", type=int, default=0,
+        "--port",
+        type=int,
+        default=0,
         help="Port to serve on (default: auto-assign a free port).",
     )
     args = parser.parse_args()

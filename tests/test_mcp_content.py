@@ -1,18 +1,24 @@
 """Tests for slife.mcp.content — the shared CallToolResult reader."""
-from __future__ import annotations
 
-import pytest; pytestmark = pytest.mark.unit
+from __future__ import annotations
 
 import base64
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from slife.mcp.content import format_content_blocks
+
+pytestmark = pytest.mark.unit
 
 
 def _result(*blocks, is_error=False, **extra):
-    return SimpleNamespace(content=list(blocks), is_error=is_error,
-                           model_dump=lambda: {"content": [], **extra})
+    return SimpleNamespace(
+        content=list(blocks),
+        is_error=is_error,
+        model_dump=lambda: {"content": [], **extra},
+    )
 
 
 def _text(text):
@@ -43,9 +49,13 @@ class TestBinaryBlocks:
             seen["data"] = data
             return "/tmp/shot.png"
 
-        assert format_content_blocks(
-            _result(_image("QUJD")), save_image=save,
-        ) == "/tmp/shot.png"
+        assert (
+            format_content_blocks(
+                _result(_image("QUJD")),
+                save_image=save,
+            )
+            == "/tmp/shot.png"
+        )
         assert seen["data"] == "QUJD"
 
     def test_described_when_nothing_can_materialize_it(self):
@@ -55,15 +65,19 @@ class TestBinaryBlocks:
 
     def test_described_when_the_saver_declines(self):
         out = format_content_blocks(
-            _result(_image("x" * 12, "")), save_image=lambda data: None,
+            _result(_image("x" * 12, "")),
+            save_image=lambda data: None,
         )
         assert out == "[binary data: 12 bytes]"
 
     def test_a_non_string_mime_is_not_a_mime(self):
         """A mock or malformed block still gets described, not printed."""
-        assert format_content_blocks(
-            _result(_image("x" * 12, mime_type=object())),
-        ) == "[binary data: 12 bytes]"
+        assert (
+            format_content_blocks(
+                _result(_image("x" * 12, mime_type=object())),
+            )
+            == "[binary data: 12 bytes]"
+        )
 
 
 class TestUnknownBlocks:
@@ -88,7 +102,8 @@ class TestEmpty:
 
     def test_empty_content_can_dump_the_whole_result(self):
         out = format_content_blocks(
-            _result(structuredContent={"a": 1}), dump_on_empty=True,
+            _result(structuredContent={"a": 1}),
+            dump_on_empty=True,
         )
         assert json.loads(out) == {"content": [], "structuredContent": {"a": 1}}
 
@@ -100,6 +115,9 @@ def test_the_base64_payload_is_passed_through_undecoded():
     decodes, and the one that only describes it needs the length, not bytes.
     """
     encoded = base64.b64encode(b"PNG").decode()
-    assert format_content_blocks(
-        _result(_image(encoded, "image/png")),
-    ) == f"[image: image/png {len(encoded)} bytes]"
+    assert (
+        format_content_blocks(
+            _result(_image(encoded, "image/png")),
+        )
+        == f"[image: image/png {len(encoded)} bytes]"
+    )

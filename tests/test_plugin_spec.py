@@ -1,8 +1,8 @@
 """Tests for slife.plugins.spec — the central plugin contract table."""
 
-import pytest; pytestmark = pytest.mark.unit
-
 import importlib.util
+
+import pytest
 
 from slife.plugins.spec import (
     PLUGIN_SPECS,
@@ -10,6 +10,8 @@ from slife.plugins.spec import (
     mcp_child_reserved_names,
     spec_for,
 )
+
+pytestmark = pytest.mark.unit
 
 #: (public name, module, ctx field) — the full built-in contract.
 _EXPECTED = [
@@ -52,6 +54,7 @@ class TestPluginSpecs:
     def test_ctx_field_matches_tool_context(self):
         # The declared ctx fields must exist on ToolContext.
         from slife.tools.context import ToolContext
+
         fields = {f.name for f in __import__("dataclasses").fields(ToolContext)}
         for name, _, ctx in _EXPECTED:
             assert ctx in fields, f"ctx_field {ctx} missing on ToolContext"
@@ -74,9 +77,9 @@ class TestReservedNames:
     def test_reserved_covers_every_builtin(self):
         names = mcp_child_reserved_names()
         assert names == set(PLUGIN_SPECS)
-        assert "mcp-gateway" in names         # gateway name is reserved too
-        assert "job-coding" in names          # regression: was hand-listed and missed
-        assert "mcp" not in names             # the gateway is now mcp-gateway
+        assert "mcp-gateway" in names  # gateway name is reserved too
+        assert "job-coding" in names  # regression: was hand-listed and missed
+        assert "mcp" not in names  # the gateway is now mcp-gateway
 
 
 class TestSpecFor:

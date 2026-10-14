@@ -14,7 +14,11 @@ from pathlib import Path
 
 import httpx2
 
-from slife.plugins.media.adapters.base import ArtifactSaver, MediaAdapterError, _HttpClientMixin
+from slife.plugins.media.adapters.base import (
+    ArtifactSaver,
+    MediaAdapterError,
+    _HttpClientMixin,
+)
 from slife.plugins.media.config import ProviderConfig
 
 logger = logging.getLogger(__name__)
@@ -27,14 +31,18 @@ class OpenAICompatAdapter(_HttpClientMixin):
         self._saver = ArtifactSaver()
 
     async def generate_image(
-        self, *, model: str, prompt: str, size: str = "",
-        image: str | Path | None = None, outputs_dir: str = "",
+        self,
+        *,
+        model: str,
+        prompt: str,
+        size: str = "",
+        image: str | Path | None = None,
+        outputs_dir: str = "",
         extra_params: dict | None = None,
     ) -> str:
         if image is not None:
             raise NotImplementedError(
-                "image-conditioned generation is not supported by this "
-                "adapter yet"
+                "image-conditioned generation is not supported by this adapter yet"
             )
         body: dict = {"model": model, "prompt": prompt, "n": 1}
         if size:
@@ -43,7 +51,8 @@ class OpenAICompatAdapter(_HttpClientMixin):
         client = await self._ensure_client()
         try:
             resp = await client.post(
-                f"{self._config.base_url}/images/generations", json=body,
+                f"{self._config.base_url}/images/generations",
+                json=body,
             )
         except httpx2.HTTPError as e:
             raise MediaAdapterError(f"Image generation request failed: {e}") from e
@@ -55,19 +64,22 @@ class OpenAICompatAdapter(_HttpClientMixin):
         data = resp.json()
         items = data.get("data") or []
         if not items:
-            raise MediaAdapterError(
-                f"No images in response: {str(data)[:300]}"
-            )
+            raise MediaAdapterError(f"No images in response: {str(data)[:300]}")
         item = items[0]
         if item.get("b64_json"):
             path = self._saver.save_bytes(
-                base64.b64decode(item["b64_json"]), "image", "png", outputs_dir,
+                base64.b64decode(item["b64_json"]),
+                "image",
+                "png",
+                outputs_dir,
             )
             return str(path)
         url = item.get("url")
         if url:
             path = await self._saver.save_url(
-                str(url), "image", outputs_dir=outputs_dir,
+                str(url),
+                "image",
+                outputs_dir=outputs_dir,
             )
             return str(path)
         raise MediaAdapterError(

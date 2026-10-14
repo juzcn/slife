@@ -1,12 +1,9 @@
 """Tests for slife_mcp.connection — ConnectionPool, MCPServerConnection, ServerConfig."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
 import logging
 import time as _time
-from contextlib import asynccontextmanager, AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,16 +11,17 @@ import pytest
 
 import slife.timeouts as _timeouts
 from slife.plugins.mcp_gateway.connection import (
-    ServerConfig,
-    MCPServerConnection,
     ConnectionPool,
+    MCPServerConnection,
+    ServerConfig,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _pacing():
     """The live cadence registry — a test patches HERE, never a module constant."""
     return _timeouts.timeouts.pacing
-
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -41,7 +39,8 @@ def _mock_session(tools=(), *, ttl_ms=0, next_cursor=None):
     session = AsyncMock()
     result = MagicMock()
     result.tools = [
-        t if not isinstance(t, str)
+        t
+        if not isinstance(t, str)
         else Tool(name=t, description="", inputSchema={"type": "object"})
         for t in tools
     ]
@@ -54,8 +53,7 @@ def _mock_session(tools=(), *, ttl_ms=0, next_cursor=None):
 def _listed(conn, tools=(), *, ttl_ms=0, age_s=0.0):  # noqa-timeout
     """Give *conn* a tool snapshot as if ``tools/list`` had just answered."""
     conn._tools = [
-        {"name": t, "description": "", "inputSchema": {"type": "object"}}
-        for t in tools
+        {"name": t, "description": "", "inputSchema": {"type": "object"}} for t in tools
     ]
     conn._tools_fetched_at = _time.monotonic() - age_s
     conn._tools_ttl_ms = ttl_ms
@@ -142,7 +140,7 @@ class TestMCPServerConnectionSnapshot:
         assert snap["tools_age_s"] is None
         assert snap["last_error"] is None
         assert snap["needs_user_auth"] is False
-        assert snap["rest_api"] is False   # mcp.servers is the default placement
+        assert snap["rest_api"] is False  # mcp.servers is the default placement
         # No transport was ever established, so this one could NOT come up —
         # the fact that separates a settled failure from a server still to be
         # read.  ("No list" alone is both.)
@@ -155,9 +153,11 @@ class TestMCPServerConnectionSnapshot:
     def test_facts_of_a_listed_server(self):
         conn = _listed(
             MCPServerConnection(ServerConfig(name="s", command="echo")),
-            ["a", "b"], ttl_ms=60000, age_s=3.0,  # noqa-timeout
+            ["a", "b"],
+            ttl_ms=60000,
+            age_s=3.0,  # noqa-timeout
         )
-        conn._session = object()   # a transport had to be up to read that list
+        conn._session = object()  # a transport had to be up to read that list
         snap = conn.snapshot()
         assert snap["tools_ok"] is True
         assert snap["tool_count"] == 2
@@ -255,7 +255,10 @@ class TestConnectionPoolListConfigured:
     def test_returns_config_fields_only(self):
         pool = ConnectionPool()
         cfg = ServerConfig(
-            name="srv1", command="cmd1", args=["-a"], description="First",
+            name="srv1",
+            command="cmd1",
+            args=["-a"],
+            description="First",
         )
         conn = _listed(MCPServerConnection(cfg), ["t1", "t2"])
         pool._connections["srv1"] = conn
@@ -283,7 +286,9 @@ class TestConnectionPoolListConfigured:
         """A REST-API entry is returned too, flagged — the pool is family-blind,
         the listing tool is not."""
         pool = ConnectionPool()
-        conn = MCPServerConnection(ServerConfig(name="gh", url="http://x/mcp", rest_api=True))
+        conn = MCPServerConnection(
+            ServerConfig(name="gh", url="http://x/mcp", rest_api=True)
+        )
         pool._connections["gh"] = conn
 
         servers = pool.list_configured()
@@ -293,7 +298,8 @@ class TestConnectionPoolListConfigured:
     def test_omits_secret_holding_fields(self):
         pool = ConnectionPool()
         cfg = ServerConfig(
-            name="srv", url="http://localhost:8080/mcp",
+            name="srv",
+            url="http://localhost:8080/mcp",
             headers={"Authorization": "Bearer secret"},
             env={"API_KEY": "sk-secret"},
             auth={"client_id": "x"},
@@ -343,11 +349,13 @@ class TestConnectionPoolAddServerGate:
             ServerConfig(name="off", command="npx", enabled=False),
         )
         with patch.object(
-            conn, "ensure_session", new=AsyncMock(),
+            conn,
+            "ensure_session",
+            new=AsyncMock(),
         ) as mock_session:
             assert await conn.refresh_tools() is False
 
-        mock_session.assert_not_awaited()      # no transport was established
+        mock_session.assert_not_awaited()  # no transport was established
         assert "disabled" in (conn.error or "")
 
     @pytest.mark.asyncio
@@ -370,14 +378,19 @@ class TestConnectionPoolAddServerGate:
         pool = ConnectionPool()
         with (
             patch.object(
-                MCPServerConnection, "refresh_tools", new=AsyncMock(),
+                MCPServerConnection,
+                "refresh_tools",
+                new=AsyncMock(),
             ) as mock_refresh,
             patch.object(
-                MCPServerConnection, "ensure_session", new=AsyncMock(return_value=True),
+                MCPServerConnection,
+                "ensure_session",
+                new=AsyncMock(return_value=True),
             ) as mock_session,
         ):
             conn = await pool.add_server(
-                ServerConfig(name="boot", command="npx"), read_tools=False,
+                ServerConfig(name="boot", command="npx"),
+                read_tools=False,
             )
         assert pool.get_server("boot") is conn
         mock_session.assert_awaited_once()
@@ -391,17 +404,23 @@ class TestConnectionPoolAddServerGate:
         pool = ConnectionPool()
         with (
             patch.object(
-                MCPServerConnection, "refresh_tools", new=AsyncMock(),
+                MCPServerConnection,
+                "refresh_tools",
+                new=AsyncMock(),
             ),
             patch.object(
-                MCPServerConnection, "ensure_session", new=AsyncMock(return_value=False),
+                MCPServerConnection,
+                "ensure_session",
+                new=AsyncMock(return_value=False),
             ),
             patch.object(
-                MCPServerConnection, "arm_refresh",
+                MCPServerConnection,
+                "arm_refresh",
             ) as mock_arm,
         ):
             await pool.add_server(
-                ServerConfig(name="down", command="npx"), read_tools=False,
+                ServerConfig(name="down", command="npx"),
+                read_tools=False,
             )
         mock_arm.assert_called_once()
 
@@ -548,9 +567,13 @@ class TestMCPServerConnectionHTTP:
 
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
-        session = _mock_session([
-            Tool(name="tool1", description="A tool", inputSchema={"type": "object"}),
-        ])
+        session = _mock_session(
+            [
+                Tool(
+                    name="tool1", description="A tool", inputSchema={"type": "object"}
+                ),
+            ]
+        )
 
         # Short-circuit transport establishment; the session it would have
         # produced is handed over directly.
@@ -592,7 +615,7 @@ class TestMCPServerConnectionHTTP:
             assert await conn.refresh_tools() is True
             assert conn._watch_task is not None
             watch.assert_called_once()
-            await conn._cleanup_resources()      # stops the supervisor
+            await conn._cleanup_resources()  # stops the supervisor
 
         assert conn._watch_task is None
 
@@ -604,9 +627,11 @@ class TestMCPServerConnectionHTTP:
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
         session = AsyncMock()
-        session.call_tool = AsyncMock(return_value=CallToolResult(
-            content=[TextContent(type="text", text="hello")],
-        ))
+        session.call_tool = AsyncMock(
+            return_value=CallToolResult(
+                content=[TextContent(type="text", text="hello")],
+            )
+        )
         conn._session = session
 
         result = await conn.call_tool("greet", {"name": "world"})
@@ -621,10 +646,12 @@ class TestMCPServerConnectionHTTP:
         cfg = ServerConfig(name="http_srv", url="http://remote:8080/mcp")
         conn = MCPServerConnection(cfg)
         session = AsyncMock()
-        session.call_tool = AsyncMock(return_value=CallToolResult(
-            content=[TextContent(type="text", text="nope")],
-            isError=True,
-        ))
+        session.call_tool = AsyncMock(
+            return_value=CallToolResult(
+                content=[TextContent(type="text", text="nope")],
+                isError=True,
+            )
+        )
         conn._session = session
 
         result = await conn.call_tool("do", {})
@@ -639,9 +666,12 @@ class TestMCPServerConnectionHTTP:
         conn = MCPServerConnection(cfg)
         session = AsyncMock()
         session.call_tool = AsyncMock(
-            side_effect=[ConnectionError("died"), CallToolResult(
-                content=[TextContent(type="text", text="recovered")],
-            )],
+            side_effect=[
+                ConnectionError("died"),
+                CallToolResult(
+                    content=[TextContent(type="text", text="recovered")],
+                ),
+            ],
         )
         conn._session = session
         rebuilt = {"n": 0}
@@ -673,6 +703,7 @@ class TestMCPServerConnectionHTTP:
         then fall through to that transport when SSE is unsupported.
         """
         import httpx2
+
         from slife.plugins.mcp_gateway import connection as conn_mod
 
         cfg = ServerConfig(
@@ -697,9 +728,13 @@ class TestMCPServerConnectionHTTP:
             yield (AsyncMock(), AsyncMock())
 
         mock_http = MagicMock(spec=httpx2.AsyncClient)
-        with patch.object(httpx2, "AsyncClient", return_value=mock_http) as mock_client_cls, \
-             patch.object(conn_mod, "streamable_http_client", new=_streamable_entry), \
-             patch.object(conn_mod, "sse_client", new=_sse_fail):
+        with (
+            patch.object(
+                httpx2, "AsyncClient", return_value=mock_http
+            ) as mock_client_cls,
+            patch.object(conn_mod, "streamable_http_client", new=_streamable_entry),
+            patch.object(conn_mod, "sse_client", new=_sse_fail),
+        ):
             await conn._connect_http()
 
         assert entered["http_client"] is conn._http_client
@@ -717,11 +752,13 @@ class TestMCPServerConnectionHTTP:
         conn = MCPServerConnection(cfg)
 
         entered = {}
+
         @asynccontextmanager
         async def _sse_entry(url, headers=None, **kw):
             entered["url"] = url
             entered["headers"] = headers
             yield (AsyncMock(), AsyncMock())
+
         with patch.object(conn_mod, "sse_client", new=_sse_entry):
             await conn._connect_http()
 
@@ -837,14 +874,15 @@ class TestMCPServerConnectionRefresh:
         assert conn.tool_count == 1
         assert conn._tools_ttl_ms == 30000
         assert conn.snapshot()["tools_age_s"] is not None
-        notify.assert_awaited()          # the host re-reads the catalog
+        notify.assert_awaited()  # the host re-reads the catalog
 
     @pytest.mark.asyncio
     async def test_a_list_inside_its_ttl_is_served_from_the_snapshot(self):
         """A chatty peer must not cost a re-fetch of a 1239-tool payload."""
         conn = _listed(
             MCPServerConnection(ServerConfig(name="s", command="echo")),
-            ["t1"], ttl_ms=60000,
+            ["t1"],
+            ttl_ms=60000,
         )
         session = _mock_session()
         conn._session = session
@@ -856,7 +894,8 @@ class TestMCPServerConnectionRefresh:
     async def test_force_bypasses_the_ttl(self):
         conn = _listed(
             MCPServerConnection(ServerConfig(name="s", command="echo")),
-            ["t1"], ttl_ms=60000,
+            ["t1"],
+            ttl_ms=60000,
         )
         session = _mock_session()
         conn._session = session
@@ -868,7 +907,9 @@ class TestMCPServerConnectionRefresh:
     async def test_an_expired_list_is_re_read(self):
         conn = _listed(
             MCPServerConnection(ServerConfig(name="s", command="echo")),
-            ["t1"], ttl_ms=500, age_s=5.0,  # noqa-timeout
+            ["t1"],
+            ttl_ms=500,
+            age_s=5.0,  # noqa-timeout
         )
         session = _mock_session()
         conn._session = session
@@ -880,7 +921,8 @@ class TestMCPServerConnectionRefresh:
     async def test_a_change_event_marks_the_list_stale(self):
         conn = _listed(
             MCPServerConnection(ServerConfig(name="s", command="echo")),
-            ["t1"], ttl_ms=60000,
+            ["t1"],
+            ttl_ms=60000,
         )
         assert conn._needs_fetch() is False
 
@@ -976,7 +1018,9 @@ class TestMCPServerConnectionRefresh:
         deferred, not done here — this handler runs inside the dying session's
         own task group (see the method's note).
         """
-        conn = _listed(MCPServerConnection(ServerConfig(name="s", command="echo")), ["t1"])
+        conn = _listed(
+            MCPServerConnection(ServerConfig(name="s", command="echo")), ["t1"]
+        )
         conn._session = _mock_session()
 
         await conn._handle_notification(ConnectionError("Transport closed"))
@@ -991,7 +1035,9 @@ class TestMCPServerConnectionRefresh:
     async def test_a_dead_link_is_torn_down_by_the_next_establishment(self):
         """The deferred half of the fault path — under the connect lock, in a
         task that is not the dying session's own."""
-        conn = _listed(MCPServerConnection(ServerConfig(name="s", command="echo")), ["t1"])
+        conn = _listed(
+            MCPServerConnection(ServerConfig(name="s", command="echo")), ["t1"]
+        )
         conn._session = _mock_session()
         conn._link_dead = True
 
@@ -1022,7 +1068,7 @@ class TestMCPServerConnectionRepair:
             attempts["n"] += 1
             if attempts["n"] == 1:
                 conn._session = None
-                return False            # refresh_tools records + returns
+                return False  # refresh_tools records + returns
             conn._session = session
             return True
 
@@ -1030,7 +1076,7 @@ class TestMCPServerConnectionRepair:
         with patch.object(_pacing(), "mcp_relist_initial", 0.01):
             await conn._refresh_until_listed()
 
-        assert attempts["n"] == 2      # failed once, succeeded, stopped
+        assert attempts["n"] == 2  # failed once, succeeded, stopped
 
     @pytest.mark.asyncio
     async def test_the_loop_stops_when_oauth_needs_a_human(self):
@@ -1045,13 +1091,15 @@ class TestMCPServerConnectionRepair:
             raise NeedsUserAuthError("device flow not completed")
 
         conn.refresh_tools = _needs_auth
-        await conn._refresh_until_listed()   # returns; does not raise
+        await conn._refresh_until_listed()  # returns; does not raise
 
         assert conn._needs_user_auth is True
 
     @pytest.mark.asyncio
     async def test_no_retry_for_a_disabled_server(self):
-        conn = MCPServerConnection(ServerConfig(name="s", command="echo", enabled=False))
+        conn = MCPServerConnection(
+            ServerConfig(name="s", command="echo", enabled=False)
+        )
         conn._start_refresh_task()
         assert conn._refresh_task is None
 
@@ -1116,11 +1164,12 @@ class TestMCPServerConnectionRepair:
         """F5: a refresh failure that requires the device flow marks the
         connection needs_user_auth, and a SECOND attempt does not re-run the
         device flow (it raises NeedsUserAuthError instead)."""
-        from slife.plugins.mcp_gateway.connection import NeedsUserAuthError
         from slife.plugins.mcp_gateway import oauth as oauth_mod
+        from slife.plugins.mcp_gateway.connection import NeedsUserAuthError
 
         cfg = ServerConfig(
-            name="test", command="echo",
+            name="test",
+            command="echo",
             auth={"type": "oauth", "client_id": "cid"},
         )
         conn = MCPServerConnection(cfg)
@@ -1133,17 +1182,24 @@ class TestMCPServerConnectionRepair:
                 raise RuntimeError("user never authorized")
             return fake_tokens
 
-        with patch.object(oauth_mod, "get_valid_token", return_value=None), \
-             patch.object(oauth_mod, "refresh_access_token",
-                          AsyncMock(side_effect=RuntimeError("refresh revoked"))), \
-             patch.object(oauth_mod, "run_device_code_flow", new=fake_flow):
+        with (
+            patch.object(oauth_mod, "get_valid_token", return_value=None),
+            patch.object(
+                oauth_mod,
+                "refresh_access_token",
+                AsyncMock(side_effect=RuntimeError("refresh revoked")),
+            ),
+            patch.object(oauth_mod, "run_device_code_flow", new=fake_flow),
+        ):
             # First attempt: flow runs, fails → needs_user_auth set.
             with pytest.raises(NeedsUserAuthError):
                 await conn._ensure_oauth_token()
             assert conn._needs_user_auth is True
 
             # Second attempt: flag already set → device flow NOT re-run.
-            with pytest.raises(NeedsUserAuthError, match="needs OAuth re-authorization"):
+            with pytest.raises(
+                NeedsUserAuthError, match="needs OAuth re-authorization"
+            ):
                 await conn._ensure_oauth_token()
             assert flow_ok["token"] is None  # fake never re-invoked with a token
 
@@ -1175,9 +1231,11 @@ class TestMCPServerConnectionLazyReconnect:
         conn = MCPServerConnection(cfg)
         established = {"done": False}
         session = AsyncMock()
-        session.call_tool = AsyncMock(return_value=CallToolResult(
-            content=[TextContent(type="text", text="ok")],
-        ))
+        session.call_tool = AsyncMock(
+            return_value=CallToolResult(
+                content=[TextContent(type="text", text="ok")],
+            )
+        )
 
         async def fake_ensure_session():
             established["done"] = True
@@ -1233,9 +1291,11 @@ class TestMCPServerConnectionCancelCleanup:
             raise asyncio.CancelledError
 
         conn._connect_stdio = _cancel_mid_connect
-        with patch.object(conn, "_cleanup_resources", new=AsyncMock()) as mock_cleanup:
-            with pytest.raises(asyncio.CancelledError):
-                await conn.refresh_tools()
+        with (
+            patch.object(conn, "_cleanup_resources", new=AsyncMock()) as mock_cleanup,
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await conn.refresh_tools()
 
         mock_cleanup.assert_awaited_once()
         assert conn._session is None
@@ -1254,16 +1314,21 @@ class TestMCPServerConnectionStdio:
         from slife.plugins.mcp_gateway import connection as conn_mod
 
         cfg = ServerConfig(
-            name="test", command="npx", args=["-y", "srv"], env={"FOO": "bar"},
+            name="test",
+            command="npx",
+            args=["-y", "srv"],
+            env={"FOO": "bar"},
         )
         conn = MCPServerConnection(cfg)
 
         saw = {}
+
         @asynccontextmanager
         async def _stdio_entry(params, errlog=None, **kw):
             saw["params"] = params
             saw["errlog"] = errlog
             yield (AsyncMock(), AsyncMock())
+
         with patch.object(conn_mod, "stdio_client", new=_stdio_entry):
             await conn._connect_stdio()
 
@@ -1310,7 +1375,8 @@ class TestMCPServerConnectionNotify:
     async def test_first_and_later_events_both_notify(self):
         cb = AsyncMock()
         conn = MCPServerConnection(
-            ServerConfig(name="test", command="echo"), on_tools_changed=cb,
+            ServerConfig(name="test", command="echo"),
+            on_tools_changed=cb,
         )
         await conn._notify_tools_changed()
         cb.assert_awaited_once()
@@ -1323,7 +1389,8 @@ class TestMCPServerConnectionNotify:
             raise RuntimeError("listener failed")
 
         conn = MCPServerConnection(
-            ServerConfig(name="test", command="echo"), on_tools_changed=boom,
+            ServerConfig(name="test", command="echo"),
+            on_tools_changed=boom,
         )
         # A failing listener must never propagate into a refresh.
         await conn._notify_tools_changed()

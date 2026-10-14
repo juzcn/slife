@@ -25,8 +25,9 @@ inventing an order across the results.
 """
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ def _clamp_limit(limit: int) -> int:
     if limit is None or limit < 1:
         return 20
     return min(limit, _MAX_SEARCH_LIMIT)
+
 
 # RRF smoothing constant. Higher = less influence from rank position.
 # 60 is the standard value from the literature.
@@ -178,7 +180,9 @@ def merge_hybrid(
 
     logger.debug(
         "rrf_merge keyword=%d semantic=%d merged=%d",
-        len(keyword_results), len(semantic_results), len(results),
+        len(keyword_results),
+        len(semantic_results),
+        len(results),
     )
     return results
 
@@ -249,8 +253,13 @@ async def run_hybrid(
     over-fetch to have anything left to discard from.
     """
     return await fuse_hybrid(
-        turn_legs(store), manager, query=query, limit=limit,
-        since=since, until=until, overfetch=overfetch,
+        turn_legs(store),
+        manager,
+        query=query,
+        limit=limit,
+        since=since,
+        until=until,
+        overfetch=overfetch,
     )
 
 
@@ -267,16 +276,19 @@ def hybrid_hint(result: HybridResult, noun: str = "turns") -> str:
     """
     if not result.semantic_available:
         if result.embedder_ready:
-            hint = ("hybrid degraded to fts5 — query embedding generation "
-                    "failed (API error or timeout). Check the API key, or "
-                    "switch to a local model")
+            hint = (
+                "hybrid degraded to fts5 — query embedding generation "
+                "failed (API error or timeout). Check the API key, or "
+                "switch to a local model"
+            )
         else:
             # ``reason`` is "" both before the manager has started and when a
             # transition had nothing to say, so the fallback is on emptiness,
             # not on None — an unexplained degradation is exactly the silent
             # fallback this line exists to prevent.
             hint = result.reason or (
-                "hybrid degraded to fts5 — embedding backend unavailable")
+                "hybrid degraded to fts5 — embedding backend unavailable"
+            )
         if not result.hits:
             hint += " — no keyword (fts5) matches either"
         return hint
@@ -371,8 +383,13 @@ def _normalize(legs: SearchLegs, hits: list[dict]) -> None:
 
 
 async def _semantic_leg(
-    legs: SearchLegs, manager: Any, *, query: str, limit: int,
-    since: str | None, until: str | None,
+    legs: SearchLegs,
+    manager: Any,
+    *,
+    query: str,
+    limit: int,
+    since: str | None,
+    until: str | None,
 ) -> tuple[list[dict], bool]:
     """The embedded query's hits, and whether the leg ran at all.
 
@@ -392,7 +409,10 @@ async def _semantic_leg(
         return [], False
     return (
         await legs.semantic(
-            embedding=emb, limit=limit, since=since, until=until,
+            embedding=emb,
+            limit=limit,
+            since=since,
+            until=until,
         ),
         True,
     )
@@ -410,11 +430,18 @@ async def fuse_hybrid(
 ) -> HybridResult:
     """Run both legs and fuse them — the fusion every caller shares."""
     keyword_hits = await legs.keyword(
-        query=query, limit=limit * overfetch, since=since, until=until,
+        query=query,
+        limit=limit * overfetch,
+        since=since,
+        until=until,
     )
     semantic_hits, semantic_available = await _semantic_leg(
-        legs, manager, query=query, limit=limit * overfetch,
-        since=since, until=until,
+        legs,
+        manager,
+        query=query,
+        limit=limit * overfetch,
+        since=since,
+        until=until,
     )
 
     _normalize(legs, keyword_hits)
@@ -461,8 +488,7 @@ async def run_search(
         raise ValueError(f"mode must be one of hybrid/fts5/grep — got {mode!r}")
     if not query.strip():
         raise ValueError(
-            "query must not be empty — to browse instead of search, use "
-            f"{legs.browse}"
+            f"query must not be empty — to browse instead of search, use {legs.browse}"
         )
     limit = _clamp_limit(limit)
 
@@ -470,20 +496,31 @@ async def run_search(
         # A real regex, run in Python (SQLite has no regexp engine).  An
         # unusable pattern raises ``re.error`` for the caller to report.
         hits = await legs.regex(
-            pattern=query, limit=limit, since=since, until=until,
+            pattern=query,
+            limit=limit,
+            since=since,
+            until=until,
         )
         _normalize(legs, hits)
         return SearchOutcome(hits, "grep", _no_hits(legs, "contain", query, hits))
 
     if mode == "fts5":
         hits = await legs.keyword(
-            query=query, limit=limit, since=since, until=until,
+            query=query,
+            limit=limit,
+            since=since,
+            until=until,
         )
         _normalize(legs, hits)
         return SearchOutcome(hits, "fts5", _no_hits(legs, "related to", query, hits))
 
     result = await fuse_hybrid(
-        legs, manager, query=query, limit=limit, since=since, until=until,
+        legs,
+        manager,
+        query=query,
+        limit=limit,
+        since=since,
+        until=until,
     )
     return SearchOutcome(
         results=result.hits[:limit],
@@ -493,7 +530,10 @@ async def run_search(
 
 
 def _no_hits(
-    legs: SearchLegs, relation: str, query: str, hits: list[dict],
+    legs: SearchLegs,
+    relation: str,
+    query: str,
+    hits: list[dict],
 ) -> str:
     """The empty-result line for the two non-fused modes.
 

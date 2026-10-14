@@ -1,8 +1,5 @@
 """Tests for Slife.bootstrap — logging setup and session initialization."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import json
 import logging
 import os
@@ -11,8 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
-import slife.bootstrap as bootstrap
+from slife import bootstrap
 
+pytestmark = pytest.mark.unit
 
 # ── _session_log_path ──────────────────────────────────────────────────────
 
@@ -67,10 +65,10 @@ class TestSetupLogging:
         root = logging.getLogger()
         root.handlers.clear()
 
-        log_path1, console1 = bootstrap.setup_logging()
+        _log_path1, console1 = bootstrap.setup_logging()
         handler_count = len(root.handlers)
 
-        log_path2, console2 = bootstrap.setup_logging()
+        _log_path2, console2 = bootstrap.setup_logging()
         assert console2 is console1
         assert len(root.handlers) == handler_count
 
@@ -89,7 +87,7 @@ class TestSetupLogging:
         root.addHandler(null_handler)
 
         try:
-            log_path, console = bootstrap.setup_logging()
+            log_path, _console = bootstrap.setup_logging()
             # Should return path but no StreamHandler console found
             assert isinstance(log_path, Path)
             # console may still be None since NullHandler is not a StreamHandler
@@ -131,7 +129,7 @@ class TestSetupLogging:
         root.handlers.clear()
 
         try:
-            log_path, console = bootstrap.setup_logging()
+            _log_path, console = bootstrap.setup_logging()
             assert console.level == logging.CRITICAL + 1
         finally:
             for h in root.handlers:
@@ -188,11 +186,13 @@ class TestSessionMarker:
     def test_killed_previous_session_is_reported_once(self, mock_alive, tmp_path):
         marker = tmp_path / ".session.slife.4242.state"
         marker.write_text(
-            json.dumps({
-                "pid": 4242,
-                "started": "2026-09-25T21:18:20",
-                "log": "logs/20260925_211820_slife.log",
-            }),
+            json.dumps(
+                {
+                    "pid": 4242,
+                    "started": "2026-09-25T21:18:20",
+                    "log": "logs/20260925_211820_slife.log",
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -224,7 +224,8 @@ class TestSessionMarker:
         """
         sibling = tmp_path / ".session.jack.4242.state"
         sibling.write_text(
-            json.dumps({"agent": "jack", "pid": 4242}), encoding="utf-8",
+            json.dumps({"agent": "jack", "pid": 4242}),
+            encoding="utf-8",
         )
 
         assert bootstrap.previous_session_killed(tmp_path) is None

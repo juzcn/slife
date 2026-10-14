@@ -12,8 +12,9 @@ instead.
 from __future__ import annotations
 
 import asyncio
+from typing import ClassVar
 
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.content import Content
 from textual.widgets import Static
 
@@ -42,7 +43,7 @@ class ApprovalPrompt(Static):
     # the App's non-priority ``escape -> cancel`` , so Y/N/Esc
     # really decide here instead of typing into the input bar or cancelling
     # the whole agent loop.
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("y", "approve", "Approve", priority=True),
         Binding("n", "deny", "Deny", priority=True),
         Binding("escape", "deny", "Deny", priority=True),
@@ -105,11 +106,13 @@ class ApprovalPrompt(Static):
             for k, v in args.items():
                 s = str(v)
                 if len(s) > _ARG_MAX:
-                    s = s[: _ARG_MAX] + "…"
+                    s = s[:_ARG_MAX] + "…"
                 arg_lines.append(f"  {k}: {s}")
-            display = "\n".join(arg_lines[: _ARG_LINES_MAX])
+            display = "\n".join(arg_lines[:_ARG_LINES_MAX])
             if len(arg_lines) > _ARG_LINES_MAX:
-                display += f"\n  {t('approval_more', n=len(arg_lines) - _ARG_LINES_MAX)}"
+                display += (
+                    f"\n  {t('approval_more', n=len(arg_lines) - _ARG_LINES_MAX)}"
+                )
             content = content + _mc("\n") + _lit(display, "#8b949e")
 
         content = content + _mc(

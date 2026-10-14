@@ -10,6 +10,7 @@ import os
 import sys
 from pathlib import Path
 
+
 def is_dev() -> bool:
     """Check whether we're running from the slife source tree.
 
@@ -31,9 +32,7 @@ def is_dev() -> bool:
         import tomllib
 
         root = Path.cwd().resolve()
-        data = tomllib.loads(
-            (root / "pyproject.toml").read_text(encoding="utf-8")
-        )
+        data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
         if data.get("project", {}).get("name") != "slife":
             return False
 
@@ -45,7 +44,7 @@ def is_dev() -> bool:
         # The loaded package must be this checkout's ``slife/`` subdir (editable
         # installs point back at the tree), not a site-packages copy.
         return pkg_dir.parent == root
-    except Exception:
+    except (OSError, ValueError, ImportError, AttributeError, TypeError):
         return False
 
 

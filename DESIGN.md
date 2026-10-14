@@ -2347,9 +2347,10 @@ address.
 
 **Config sections.** Two files carry *Slife's* configuration: the main config, and the unified tool
 config of §4.3 — the old inline tool array is retired. The media and job-model sections are read by
-their own plugins rather than by the main config parser, and two further files belong to components
-rather than to Slife: `sharefile.yaml` is the sharefile plugin's own, and `local_embed.yaml` seeds to
-the embedding daemon's directory because it is its own service. **There is no user-facing timeout
+their own plugins rather than by the main config parser, and one further file belongs to a component
+rather than to Slife: `sharefile.yaml` is the sharefile plugin's own. `local_embed.yaml` and
+credstore's store belong to the extracted applications — each owns its own config, and Slife neither
+seeds nor writes them. **There is no user-facing timeout
 section** — every timeout is a developer-owned constant (§4.7).
 
 **Config writes preserve the file's comments.** Every writer mutates a dict and calls one write
@@ -2469,9 +2470,9 @@ slife/
   *.py         # platform · config · paths · health · logfmt · timeouts · threads · timeutil ·
                # headless (the no-terminal host, §2.8) · …
 
-credstore/     # standalone package — cross-platform credential store
-cc-switch/     # standalone package — generates the Claude Code settings file
-local-embed/   # standalone package — the OpenAI-compatible embeddings service
+               # credstore · cc-switch · local-embed are no longer in this
+               # tree — they are separate repositories (juzcn/credstore,
+               # juzcn/cc-switch, juzcn/local-embed) pulled from PyPI
 skills/ · jobs/  # seeded to the data dir at install
 tests/         # the static-source gates (timeouts, subagent parity) live here
 ```

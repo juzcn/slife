@@ -133,7 +133,8 @@ def gate_turns(candidates: list[dict], *, policy: RecallPolicy) -> list[int]:
 
     logger.info(
         "recall_gated gated=%d low_similarity=%d",
-        len(picked), skipped_low_similarity,
+        len(picked),
+        skipped_low_similarity,
     )
     return picked
 
@@ -167,7 +168,9 @@ def fit_budget(
     ordered = sorted(kept)
     logger.info(
         "recall_budgeted selected=%d tokens=%d over_budget=%d",
-        len(ordered), spent, skipped,
+        len(ordered),
+        spent,
+        skipped,
     )
     return ordered
 
@@ -212,6 +215,9 @@ def fit_window(
     ordered = sorted(kept)
     logger.info(
         "recall_window selected=%d tokens=%d budget=%d unreached=%d",
-        len(ordered), spent, budget, unreached,
+        len(ordered),
+        spent,
+        budget,
+        unreached,
     )
     return ordered

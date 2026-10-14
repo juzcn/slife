@@ -19,19 +19,22 @@ import sys
 import time as _time
 import weakref
 from collections import deque
-from datetime import datetime
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from slife.agent.system_prompt import build as build_system_prompt
-from slife.config import Config
+from slife.a2a.identity import HUMAN
+from slife.agent.inbox import (
+    Inbox,
+    MemorySaveError,
+    MessageHistoryStore,
+    WorkerHistoryStore,
+)
 from slife.agent.llm_client import LLMClient, TokenUsage
+from slife.agent.loop import AgentEventHandler, AgentLoop, AgentResult
 from slife.agent.message_history import MessageHistory, turn_header
-from slife.agent.loop import AgentLoop, AgentEventHandler, AgentResult
-from slife.agent.inbox import Inbox, MemorySaveError, MessageHistoryStore, WorkerHistoryStore
-from slife.agent.roles import Role, caps_for
 from slife.agent.plugins import (
     PluginBehavior,
     PluginLifecycle,
@@ -39,18 +42,21 @@ from slife.agent.plugins import (
     PluginStartStatus,
     plugin_port_env,
 )
+from slife.agent.roles import Role, caps_for
+from slife.agent.system_prompt import build as build_system_prompt
+from slife.config import Config
 from slife.plugins.spec import PLUGIN_SPECS
-from slife.a2a.identity import HUMAN
 
 if TYPE_CHECKING:
     from slife.tools.catalog import CatalogOpDelta
     from slife.tools.catalog_service import ToolCatalogService
-from slife.tools.factory import create_tools_from_config, disabled_tool_instances
-from slife.tools._config_io import config_read_modify_write
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.mcp.tool_adapter import create_proxy_tools
 from slife.platform import terminate_process_sync
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.server_utils import is_internal_tool
+from slife.tools._config_io import config_read_modify_write
+from slife.tools.factory import create_tools_from_config, disabled_tool_instances
+
 # The harness composes the TUI's user-facing text, so it localizes it too
 # (same as slife/tools/system.py) — the TUI only renders what it is handed.
 from slife.ui.i18n import t
@@ -136,7 +142,9 @@ def _server_category(name: str) -> str:
 
         return "rest-api" if _cfg.is_rest_api(name) else "mcp"
     except Exception:
-        logger.debug("catalog_server_category_lookup_failed server=%s", name, exc_info=True)
+        logger.debug(
+            "catalog_server_category_lookup_failed server=%s", name, exc_info=True
+        )
         return "mcp"
 
 
@@ -245,7 +253,9 @@ def compact_tool_results(turn_messages: list[dict], budget_chars: int) -> int:
             continue
         tcid = m.get("tool_call_id")
         tool_name = name_by_id.get(str(tcid), "") if tcid else ""
-        name_note = f"by re-running {tool_name}" if tool_name else "by re-running the tool"
+        name_note = (
+            f"by re-running {tool_name}" if tool_name else "by re-running the tool"
+        )
         marker = (
             f"\n… [compacted at save: original {len(content)} chars — "
             f"full output retrievable {name_note}]\n"
@@ -318,16 +328,19 @@ class AgentService:
         # Build the shared ToolContext, which carries the config + registry
         # that tools need at runtime.
         from slife.tools.context import ToolContext
+
         self._tool_ctx = ToolContext(config=config)
         self.tool_registry = create_tools_from_config(
-            config.tools, config=config, ctx=self._tool_ctx,
+            config.tools,
+            config=config,
+            ctx=self._tool_ctx,
         )
         # Backfill the registry reference (created by the factory)
         self._tool_ctx.registry = self.tool_registry
         #: Shared tool catalog (SE tools.db) — opened async in
         #: :meth:`_init_catalog` (start_inbox).  Best-effort: None on failure
         #: degrades the loop to today's all-registered injection.
-        self._catalog: "ToolCatalogService | None" = None
+        self._catalog: ToolCatalogService | None = None
         #: Host-side semantic drainer over the catalog (main agent only).
         self._catalog_semantic = None
         self._catalog_semantic_task: asyncio.Task | None = None
@@ -338,9 +351,7 @@ class AgentService:
         self.llm_client = LLMClient(config.active_model)
         # Max tool result = tool_result_ceiling × context_window × 3 chars/token
         max_tool_result_chars = int(
-            config.tool_result_ceiling
-            * config.active_model.context_window
-            * 3
+            config.tool_result_ceiling * config.active_model.context_window * 3
         )
         # Pending A2A peer presence events (epoch, TUI line), drained into
         # the turn prompt on the next turn.  Unbounded by design — events
@@ -365,7 +376,8 @@ class AgentService:
         # ``stream_retries`` is that grant; the timeout is its companion.
         subagent_stream_timeout = (
             _timeouts.timeouts.work.task_budget
-            if not self.caps.stream_retries else None
+            if not self.caps.stream_retries
+            else None
         )
         self.agent_loop = AgentLoop(
             llm_client=self.llm_client,
@@ -405,9 +417,7 @@ class AgentService:
             turns_by_ids=self.turns_by_ids,
             # The role decides, not the config: a worker's per-task context is
             # seeded from its parent's clone and rebuilt like any other.
-            rebuild_message=(
-                self.config.rebuild_message and self.caps.recall
-            ),
+            rebuild_message=(self.config.rebuild_message and self.caps.recall),
             # Where the window ceiling is enforced, not whether it is: a
             # persisted history is trimmed at the save point, a worker's at the
             # request boundary (it has no save point).
@@ -485,9 +495,7 @@ class AgentService:
             # Startup gate: no turn runs until every plugin spawn converged.
             # Only the process that SPAWNS plugins can converge them, so a
             # worker's inbox must not gate on an event nothing would ever set.
-            ready=(
-                self.wait_startup_settled if self.caps.startup_gate else None
-            ),
+            ready=(self.wait_startup_settled if self.caps.startup_gate else None),
         )
         # Cut-in mode wiring: the loop gates the boundary check on the inbox's
         # has_injectable; the auto-invoked _check_new_input tool pulls the
@@ -508,12 +516,12 @@ class AgentService:
         # the inbox — the agent must not keep running turns it can't persist.
         self._memory_error = ""
         # TUI callback (set by the app) → persistent red banner.
-        self._on_memory_broken: "Callable[[str], None] | None" = None
+        self._on_memory_broken: Callable[[str], None] | None = None
         # TUI callback (set by the app) → file-sharing tunnel unavailable.
         # The harness owns the surfacing: the memfiles plugin never talks
         # to the TUI — the main process probes __check after the
         # plugin is ready and reports a terminal failure here.
-        self._on_tunnel_down: "Callable[[str], None] | None" = None
+        self._on_tunnel_down: Callable[[str], None] | None = None
 
         # ── Plugin registry — the single source of truth ────────────
         # Built once from the central plugin contract (PLUGIN_SPECS): every
@@ -525,7 +533,9 @@ class AgentService:
         # Per-plugin behavior (enable gate / after-ready glue), bound from the
         # spec's declared method-names.  A spec naming a missing method is a
         # programming error — _resolve_plugin_behaviors asserts at startup.
-        self._plugin_behaviors: dict[str, PluginBehavior] = self._resolve_plugin_behaviors()
+        self._plugin_behaviors: dict[str, PluginBehavior] = (
+            self._resolve_plugin_behaviors()
+        )
         # MCP enrichment guard: coalesces per-server tool discovery between
         # startup glue and mcp_set callbacks.
         self._mcp_syncing: set[str] = set()
@@ -617,11 +627,13 @@ class AgentService:
                     f"AgentService.{spec.after_ready_method} (spec {spec.name}) missing"
                 )
                 after_ready = cast(
-                    Callable[[PluginLifecycle], Awaitable[None]], bound,
+                    Callable[[PluginLifecycle], Awaitable[None]],
+                    bound,
                 )
             if enable is not None or after_ready is not None:
                 behaviors[spec.name] = PluginBehavior(
-                    enable=enable, after_ready=after_ready,
+                    enable=enable,
+                    after_ready=after_ready,
                 )
         return behaviors
 
@@ -670,7 +682,8 @@ class AgentService:
         autonomy framing included — for every later task in that process.
         """
         return build_system_prompt(
-            self.config, is_subagent=not self.caps.turn_persistence,
+            self.config,
+            is_subagent=not self.caps.turn_persistence,
         )
 
     @property
@@ -734,7 +747,8 @@ class AgentService:
         if self.config._path is not None:
             with config_read_modify_write(self.config._path):
                 raw = self.config._read_config(
-                    "set_midturn_input", self.config.agent_name,
+                    "set_midturn_input",
+                    self.config.agent_name,
                 )
                 if raw is not None:
                     raw.setdefault("agent", {})["cutin_enabled"] = enabled
@@ -758,7 +772,9 @@ class AgentService:
 
         logger.info(
             "model_reloaded from=%s to=%s display=%s",
-            old_ref, new_ref, model.display_name,
+            old_ref,
+            new_ref,
+            model.display_name,
         )
 
         # Rebuild LLM client with the new model config
@@ -796,6 +812,7 @@ class AgentService:
         # only place the model describes itself.  ``replace=True`` inside the
         # recorder keeps it a single entry.
         from slife.health import record_active_model
+
         record_active_model(model)
 
     def clear(self) -> None:
@@ -806,7 +823,9 @@ class AgentService:
     # ── Plugin auto-discovery & lifecycle ───────────────────────────────
 
     async def start_plugin_server(
-        self, name: str, module: str,
+        self,
+        name: str,
+        module: str,
     ) -> PluginStartStatus:
         """Spawn a plugin child process, connect, and register its tools.
 
@@ -843,7 +862,8 @@ class AgentService:
                 # TUI) — the one failure that most needs a trail.
                 logger.warning(
                     "plugin_start_timeout name=%s after=%.0fs",
-                    name, _timeouts.timeouts.ready.plugin_start,
+                    name,
+                    _timeouts.timeouts.ready.plugin_start,
                 )
                 raise
         finally:
@@ -852,7 +872,11 @@ class AgentService:
                 self._startup_settled.set()
 
     async def _start_plugin_server_impl(
-        self, name: str, module: str | None = None, *, allow_gate: bool = True,
+        self,
+        name: str,
+        module: str | None = None,
+        *,
+        allow_gate: bool = True,
     ) -> PluginStartStatus:
         """Uniformly start a child plugin by registry name.
 
@@ -870,27 +894,37 @@ class AgentService:
             return PluginStartStatus.STARTED  # idempotent — already running
 
         bhv = self._plugin_behaviors.get(name)
-        if allow_gate and bhv is not None and bhv.enable is not None:
-            if not await bhv.enable():
-                logger.info("plugin_skipped name=%s", name)
-                # A plugin that does not start owns no tools: drop its rows, or
-                # tool_search keeps offering tools that cannot run until the
-                # last session's file is replaced.
-                if self._catalog is not None:
-                    try:
-                        await self._catalog.purge_source(name)
-                    except Exception as e:
-                        logger.debug("catalog_skipped_purge_failed name=%s err=%s", name, e)
-                return PluginStartStatus.SKIPPED
+        if (
+            allow_gate
+            and bhv is not None
+            and bhv.enable is not None
+            and not await bhv.enable()
+        ):
+            logger.info("plugin_skipped name=%s", name)
+            # A plugin that does not start owns no tools: drop its rows, or
+            # tool_search keeps offering tools that cannot run until the
+            # last session's file is replaced.
+            if self._catalog is not None:
+                try:
+                    await self._catalog.purge_source(name)
+                except Exception as e:  # noqa: BLE001 — best-effort: a skipped plugin's row purge must not stop the start path
+                    logger.debug(
+                        "catalog_skipped_purge_failed name=%s err=%s",
+                        name,
+                        e,
+                    )
+            return PluginStartStatus.SKIPPED
 
         try:
             return await self._start_plugin_uniform(spec, lc)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — plugin isolation: any start failure becomes FAILED
             logger.warning("plugin_start_failed name=%s err=%s", name, e)
             return PluginStartStatus.FAILED
 
     async def _start_plugin_uniform(
-        self, spec, lc,
+        self,
+        spec,
+        lc,
     ) -> PluginStartStatus:
         """Spawn *spec*'s child, register its tools, apply the ctx re-point,
         run the after-ready glue and arm the watchdog — the single path every
@@ -929,9 +963,12 @@ class AgentService:
         (main-agent) start path; subagents connect over HTTP and never own a
         child process.
         """
+
         async def _restart() -> None:
             await self._start_plugin_server_impl(
-                spec.name, spec.module, allow_gate=False,
+                spec.name,
+                spec.module,
+                allow_gate=False,
             )
             await self._notify_subagents_plugin_restart(spec.name, lc.port)
 
@@ -959,6 +996,7 @@ class AgentService:
         # merge layer can supersede this record by (component, key) — one
         # component name per subsystem, no alias table.
         from slife.health import record
+
         record("wechat", "ok", key="status", value="plugin started")
 
     async def _wechat_restore_session(self) -> None:
@@ -976,7 +1014,7 @@ class AgentService:
         try:
             await client.call_tool("wechat_check_status", {})
             logger.debug("wechat_auto_restore_triggered")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort session restore must never fail its caller
             logger.debug("wechat_restore_failed err=%r", e)
 
     async def _gate_a2a(self) -> bool:
@@ -1002,10 +1040,12 @@ class AgentService:
             return False
 
         from slife.a2a.broker import probe_broker
+
         if not await probe_broker(a2a_cfg.broker_host, a2a_cfg.broker_port):
             logger.info(
                 "a2a_broker_not_found host=%s port=%d action=a2a_disabled",
-                a2a_cfg.broker_host, a2a_cfg.broker_port,
+                a2a_cfg.broker_host,
+                a2a_cfg.broker_port,
             )
             a2a_cfg.enabled = False
             return False
@@ -1013,8 +1053,10 @@ class AgentService:
 
         # Pass the a2a config to the plugin process via env.
         from dataclasses import asdict
+
         os.environ["SLIFE_A2A_CONFIG"] = json.dumps(
-            asdict(a2a_cfg), ensure_ascii=False,
+            asdict(a2a_cfg),
+            ensure_ascii=False,
         )
         return True
 
@@ -1027,6 +1069,7 @@ class AgentService:
         # the plugin did start; the merge layer drops it once the live entry
         # covers it.
         from slife.health import record
+
         record("a2a", "ok", key="status", value="plugin started")
         logger.info("a2a_plugin_started")
 
@@ -1074,9 +1117,11 @@ class AgentService:
     # resynced — a pure superset of the spawn-time registration.
 
     def _plugin_tools_changed_handler(
-        self, name: str,
+        self,
+        name: str,
     ):
         """Return the ``on_notification`` handler for *name*'s client."""
+
         async def _handler(method: str = "", _params=None, name=name) -> None:
             if method and not method.endswith("tools/list_changed"):
                 return
@@ -1084,8 +1129,11 @@ class AgentService:
                 await self._sync_plugin_tools(name)
             except Exception:
                 logger.debug(
-                    "plugin_tools_changed_rescan_failed name=%s", name, exc_info=True,
+                    "plugin_tools_changed_rescan_failed name=%s",
+                    name,
+                    exc_info=True,
                 )
+
         return _handler
 
     def _register_plugin_proxies(self, proxy_tools: list) -> set[str]:
@@ -1163,7 +1211,9 @@ class AgentService:
             # ``_turn_prompt``.)
             logger.debug(
                 "plugin_tools_filtered name=%s kept=%d dropped=%d",
-                name, len(tagged), len(plugin_tools) - len(tagged),
+                name,
+                len(tagged),
+                len(plugin_tools) - len(tagged),
             )
         proxy_tools = create_proxy_tools(client, tagged)
         # Names registered on the PREVIOUS connection — a plugin restart can
@@ -1184,11 +1234,13 @@ class AgentService:
             try:
                 await self._catalog.sync_system_tools(proxy_tools, source=name)
                 await self._catalog.mark_plugin_connected(name)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort: the catalog sync MUST NOT escape the spawn path
                 logger.debug("plugin_catalog_sync_failed name=%s err=%s", name, e)
         logger.debug(
             "plugin_tools_synced name=%s added=%d removed=%d total=%d",
-            name, len(registered - old_names), len(old_names - registered),
+            name,
+            len(registered - old_names),
+            len(old_names - registered),
             len(proxy_tools),
         )
 
@@ -1225,7 +1277,7 @@ class AgentService:
             try:
                 raw = await client.call_tool("__check")
                 data = json.loads(raw)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort tunnel probe: a gone plugin must not surface
                 logger.warning("tunnel_status_probe_failed err=%s", e)
                 return  # plugin gone/unreachable — nothing to surface
             if data.get("active"):
@@ -1278,6 +1330,7 @@ class AgentService:
         # crash watchdog and shutdown manage them exactly like the built-ins
         if name not in self._plugins:
             from slife.agent.plugins import PluginLifecycle
+
             self._plugins[name] = PluginLifecycle(name, self)
 
         # The external-plugin log contract: the child inherits this env var
@@ -1312,9 +1365,12 @@ class AgentService:
                     tool_timeout=self.config.tool_timeout,
                 )
                 plugin_tools = await client.list_tools()
-            logger.debug("plugin_tools name=%s count=%d names=%s",
-                         name, len(plugin_tools),
-                         [t.get("name", "") for t in plugin_tools])
+            logger.debug(
+                "plugin_tools name=%s count=%d names=%s",
+                name,
+                len(plugin_tools),
+                [t.get("name", "") for t in plugin_tools],
+            )
 
             # Register the proxies, diff the registry, mirror into the shared
             # catalog — the one path every plugin's tool set goes through (see
@@ -1323,8 +1379,11 @@ class AgentService:
             # round trip here would re-earn the timeout it just retried.
             await self._sync_plugin_tools(name, client, tools=plugin_tools)
 
-            logger.info("plugin_ready name=%s tools=%d",
-                         name, len(self.tool_registry.list_tools()))
+            logger.info(
+                "plugin_ready name=%s tools=%d",
+                name,
+                len(self.tool_registry.list_tools()),
+            )
 
             # Store for cleanup/watchdog — PluginLifecycle for all plugins
             # (built-in or auto-discovered third-party).
@@ -1361,7 +1420,7 @@ class AgentService:
             self._plugins[name].port = 0
             try:
                 await process.stop()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — stop() before re-raising; must not mask the original error
                 pass
             raise
 
@@ -1577,7 +1636,7 @@ class AgentService:
                     _timeouts.timeouts.ready.tool_sync_wait,
                 )
                 servers = []
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort reconcile listing: a failed list is not a verdict
                 logger.debug("mcp_reconcile_list_failed err=%s", e)
                 servers = []
             self._mcp_reconcile_progress()
@@ -1601,7 +1660,9 @@ class AgentService:
             # up" live now.
             if self.caps.catalog_owner and self._catalog is not None:
                 await self._mark_server_connectivity(
-                    client, configured, enabled_servers,
+                    client,
+                    configured,
+                    enabled_servers,
                 )
             self._mcp_reconcile_progress()
 
@@ -1699,8 +1760,11 @@ class AgentService:
             ]
             await asyncio.gather(
                 *(
-                    _mirror(n, self._discover_and_register_external_tools(server_name=n),
-                            "mcp_sync_failed")
+                    _mirror(
+                        n,
+                        self._discover_and_register_external_tools(server_name=n),
+                        "mcp_sync_failed",
+                    )
                     for n in enabled_configured
                 ),
             )
@@ -1714,12 +1778,14 @@ class AgentService:
             if self.caps.catalog_owner and self._catalog is not None:
                 try:
                     states = await self._mark_server_connectivity(
-                        client, configured, enabled_servers,
+                        client,
+                        configured,
+                        enabled_servers,
                     )
                     pending = set(states.pending)
                     unanswered = set(states.unanswered)
                     probe_ok = states.probe_ok
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — best-effort connectivity recheck must not break the pass
                     logger.debug("mcp_connectivity_recheck_failed err=%s", e)
                     pending, unanswered, probe_ok = set(), set(), False
                 self._mcp_reconcile_progress()
@@ -1731,7 +1797,10 @@ class AgentService:
             # 3 — a proxy whose server left the CONFIG is dropped; a merely
             # disconnected/disabled server keeps it (its rows are `error`).
             for tool in list(self.tool_registry.list_tools()):
-                if not (isinstance(tool, MCPProxyTool) and tool._route == ProxyRoute.EXTERNAL):
+                if not (
+                    isinstance(tool, MCPProxyTool)
+                    and tool._route == ProxyRoute.EXTERNAL
+                ):
                     continue
                 if getattr(tool, "_server", "") in configured:
                     continue
@@ -1747,10 +1816,11 @@ class AgentService:
             if self.caps.catalog_owner and self._catalog is not None:
                 try:
                     from slife.plugins.mcp_gateway import config as _gw_cfg
+
                     await self._catalog.purge_unconfigured_sources(
                         set(_gw_cfg.servers()),
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — best-effort live purge must not break the reconcile
                     logger.debug("catalog_live_purge_failed err=%s", e)
                 # 3c — the same "tools.yaml is the authority" rule for the
                 # families the registry cannot see: a hand-edited cli entry or
@@ -1767,8 +1837,11 @@ class AgentService:
             # pass is not done until its line is out.
             if self._mcp_reconcile_owner is owner:
                 await self._report_tool_sync(
-                    started, pending=pending, unanswered=unanswered,
-                    probe_ok=probe_ok, failure=failure,
+                    started,
+                    pending=pending,
+                    unanswered=unanswered,
+                    probe_ok=probe_ok,
+                    failure=failure,
                 )
                 # Released only now, and the order is load-bearing: the report
                 # AWAITS, and the latch it sets is read by whoever reports next.
@@ -1807,8 +1880,13 @@ class AgentService:
             logger.debug("mcp_reconcile_deferred_failed", exc_info=True)
 
     async def _report_tool_sync(
-        self, started: float, *, pending: set[str], unanswered: set[str],
-        probe_ok: bool = True, failure: str = "",
+        self,
+        started: float,
+        *,
+        pending: set[str],
+        unanswered: set[str],
+        probe_ok: bool = True,
+        failure: str = "",
     ) -> None:
         """Tell the TUI the tool set is ready — once, and only once it has converged.
 
@@ -1913,9 +1991,7 @@ class AgentService:
         #: OPEN, not answered: an empty reading must not latch the correction
         #: shut, or a ``__check`` timeout on a contended cold boot would
         #: reproduce this whole bug by itself.
-        self._tool_sync_partial = bool(
-            failure or pending or unanswered or not probe_ok
-        )
+        self._tool_sync_partial = bool(failure or pending or unanswered or not probe_ok)
         #: The bar the NEXT probe must clear to earn one more pass.  ``None``
         #: (nothing was read) is "no baseline": any reading beats it, so the
         #: correction waits for a second look rather than firing on the first.
@@ -1927,7 +2003,7 @@ class AgentService:
         # RE-ARMS it, because the correction is owed the same question — what
         # did this startup change — and the answer it owes is the part the user
         # has not been told yet: what arrived after the line they already read.
-        delta: "CatalogOpDelta | None" = (
+        delta: CatalogOpDelta | None = (
             self._catalog.store.end_ops() if self._catalog is not None else None
         )
         if self._tool_sync_partial and self._catalog is not None:
@@ -1958,7 +2034,7 @@ class AgentService:
                 corrected=corrected,
                 error=failure,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — a notification must never break the reconcile
             pass  # a notification must never break the reconcile
 
     def _tool_sync_wait_over(self) -> bool:
@@ -1999,11 +2075,14 @@ class AgentService:
             if name == "mcp-gateway":
                 await catalog.mark_all_external_error()
             await catalog.mark_source_error(name)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort catalog mark must not fail the caller
             logger.debug("catalog_plugin_down_mark_failed name=%s err=%s", name, e)
 
     async def _mark_server_connectivity(
-        self, client, configured: set[str], enabled: dict[str, bool] | None = None,
+        self,
+        client,
+        configured: set[str],
+        enabled: dict[str, bool] | None = None,
     ) -> ServerStates:
         """Project each configured server's state onto its tool rows.
 
@@ -2067,7 +2146,7 @@ class AgentService:
                 _timeouts.timeouts.ready.tool_sync_wait,
             )
             return ServerStates(probe_ok=False)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — a failed probe is not a verdict; the pass must not break
             # A failed probe is NOT a verdict — leave the rows alone rather
             # than marking every server broken on a transient error.  It is
             # also not something to wait on: no pending set, so the report
@@ -2108,12 +2187,13 @@ class AgentService:
         #: whole point: a probe may stop WAITING on a server, but the line may
         #: not stop SAYING so.
         unanswered = frozenset(
-            name for name in configured
-            if switches.get(name, True) is not False
-            and name not in live
+            name
+            for name in configured
+            if switches.get(name, True) is not False and name not in live
         )
         pending = {
-            name for name in configured
+            name
+            for name in configured
             if switches.get(name, True) is not False
             and name not in live
             and name not in awaiting_auth
@@ -2131,14 +2211,20 @@ class AgentService:
                     await catalog.mark_server_connected(name)
                 else:
                     await catalog.mark_source_error(name)
-            except Exception as se:
+            except Exception as se:  # noqa: BLE001 — one server's write failing must never crash the reconcile loop
                 # One server's write failing (a transient lock) must never
                 # crash the reconcile loop — the next pass retries.
-                logger.debug("catalog_connectivity_mark_failed server=%s err=%s", name, se)
+                logger.debug(
+                    "catalog_connectivity_mark_failed server=%s err=%s", name, se
+                )
         return ServerStates(pending=frozenset(pending), unanswered=unanswered)
 
     async def _upsert_external_catalog_rows(
-        self, server_name: str, tools: list[dict], *, category: str,
+        self,
+        server_name: str,
+        tools: list[dict],
+        *,
+        category: str,
     ) -> None:
         """Upsert a server's tool rows into the shared catalog.
 
@@ -2171,14 +2257,18 @@ class AgentService:
             return
         try:
             from slife.plugins.mcp_gateway import config as _gw_cfg
+
             _entry = _gw_cfg.get_server(server_name) or {}
             server_enabled = _entry.get("enabled") is not False
-        except Exception:
+        except Exception:  # noqa: BLE001 — an unreadable config is not a reason to call a server disabled
             # Unreadable config is not a reason to call a server disabled.
             server_enabled = True
 
         await catalog.mirror_external_tools(
-            server_name, tools, category=category, enabled=server_enabled,
+            server_name,
+            tools,
+            category=category,
+            enabled=server_enabled,
         )
 
     async def _register_external_server_tools(self, name: str = "", **kwargs) -> None:
@@ -2204,7 +2294,7 @@ class AgentService:
         if self.caps.catalog_owner and self._catalog is not None:
             try:
                 await self._catalog.purge_source(name)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort catalog cleanup on server removal
                 logger.debug("catalog_server_remove_failed server=%s err=%s", name, e)
 
     async def _notify_subagents_plugin_restart(self, name: str, port: int) -> None:
@@ -2219,12 +2309,14 @@ class AgentService:
         if not port:
             return
         from slife.subagent.process import get_manager
+
         manager = get_manager()
         if manager is None:
             return
         logger.info("plugin_restart_notify_subagents plugin=%s port=%d", name, port)
         await manager.broadcast(
-            "worker/plugin_restart", {"plugin": name, "port": port},
+            "worker/plugin_restart",
+            {"plugin": name, "port": port},
         )
 
     # ── HTTP-connect helpers (subagents share the main agent's plugins) ──
@@ -2278,7 +2370,9 @@ class AgentService:
         # The docstring always said "also"; the branch said otherwise.
         if spec.ctx_field is not None:
             setattr(self._tool_ctx, spec.ctx_field, self._plugins[name].client)
-        logger.info("%s_http_connect_done tools=%d", name, len(self.tool_registry.list_tools()))
+        logger.info(
+            "%s_http_connect_done tools=%d", name, len(self.tool_registry.list_tools())
+        )
 
     async def connect_shared_plugins(self) -> None:
         """Connect to every plugin another process started, by inherited port.
@@ -2297,8 +2391,8 @@ class AgentService:
         Failures are logged and skipped — one unreachable plugin must not cost
         the worker its other tools.
         """
-        from slife.plugins import discover_plugins
         from slife.agent.plugins import plugin_port_env
+        from slife.plugins import discover_plugins
 
         for name, _module in discover_plugins():
             port = os.environ.get(plugin_port_env(name), "")
@@ -2306,7 +2400,7 @@ class AgentService:
                 continue
             try:
                 await self.connect_plugin_http(name, int(port))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort plugin reconnect: one failure must not stop the rest
                 logger.warning("%s_http_failed port=%s err=%s", name, port, e)
 
     # ── MCP tool discovery & registration ────────────────────────────
@@ -2342,7 +2436,8 @@ class AgentService:
             tools_json = await client.call_tool(
                 # __mcp_list_tools: registration is a full diff over every tool
                 # the server publishes — a capped listing would drop the rest.
-                "__mcp_list_tools", {"server": server_name}
+                "__mcp_list_tools",
+                {"server": server_name},
             )
             tools_data = json.loads(tools_json)
             external = tools_data.get("tools", [])
@@ -2358,25 +2453,29 @@ class AgentService:
                 # one entry rather than stack a new one, and the success path
                 # below writes over it with the same component and key.
                 record(
-                    _health_component(server_name), "warning",
-                    key=server_name, value="no tool list",
+                    _health_component(server_name),
+                    "warning",
+                    key=server_name,
+                    value="no tool list",
                     hint="the server published no tool list, so it owns no "
-                         "catalog rows; the wrapper retries in the background "
-                         "and this entry clears when its tools register. "
-                         "Check system_health for the current state.",
+                    "catalog rows; the wrapper retries in the background "
+                    "and this entry clears when its tools register. "
+                    "Check system_health for the current state.",
                     replace=True,
                 )
                 return
 
             proxy_tools = create_proxy_tools(
-                client, external,
+                client,
+                external,
                 on_server_added=self._register_external_server_tools,
                 on_server_removed=self._unregister_external_server_tools,
                 on_server_updated=self._register_external_server_tools,
             )
             new_names = {t.name for t in proxy_tools}
             old_names = {
-                t.name for t in self.tool_registry.list_tools()
+                t.name
+                for t in self.tool_registry.list_tools()
                 if t.name.startswith(f"{server_name}__")
             }
             for tool in proxy_tools:
@@ -2398,8 +2497,10 @@ class AgentService:
             # recovers mid-session — and it is what clears the "no tool list"
             # entry this method records for a server that had not listed yet.
             record(
-                _health_component(server_name), "ok",
-                key=server_name, value="tools registered",
+                _health_component(server_name),
+                "ok",
+                key=server_name,
+                value="tools registered",
                 replace=True,
             )
 
@@ -2408,22 +2509,27 @@ class AgentService:
             # host semantic drainer is woken below.
             if self.caps.catalog_owner and self._catalog is not None:
                 await self._upsert_external_catalog_rows(
-                    server_name, external, category=_server_category(server_name),
+                    server_name,
+                    external,
+                    category=_server_category(server_name),
                 )
                 if self._catalog_semantic is not None:
                     self._catalog_semantic.on_saved()
 
             logger.debug(
                 "mcp_tools_registered server=%s count=%d",
-                server_name, len(proxy_tools),
+                server_name,
+                len(proxy_tools),
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — per-server discovery: one server's failure must not break the others
             logger.error("mcp_discover_failed server=%s err=%s", server_name, e)
             record(
-                _health_component(server_name), "warning",
-                key=server_name, value="tool discovery failed",
+                _health_component(server_name),
+                "warning",
+                key=server_name,
+                value="tool discovery failed",
                 hint=f"{e} — the server connected but its tool list is empty; "
-                     f"re-run system_health to retry discovery.",
+                f"re-run system_health to retry discovery.",
             )
         finally:
             self._mcp_syncing.discard(server_name)
@@ -2441,14 +2547,16 @@ class AgentService:
         uniform stop covers them and there are no per-plugin stop methods to
         keep in step.
         """
+
         async def _stop_one(lc) -> None:
             try:
                 await asyncio.wait_for(
-                    lc.stop(), timeout=_timeouts.timeouts.grace.shutdown,
+                    lc.stop(),
+                    timeout=_timeouts.timeouts.grace.shutdown,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("shutdown_timeout service=%s", lc.name)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — shutdown must not raise; a failed stop is logged by its owner
                 pass
 
         await asyncio.gather(
@@ -2474,31 +2582,36 @@ class AgentService:
         the db connection.  Idempotent; no-op when never opened."""
         # The reader's boot warmup first: it holds the store, and cancelling it
         # must not leave a task awaiting a closed db.
-        if (self._catalog_reader_warmup is not None
-                and not self._catalog_reader_warmup.done()):
+        if (
+            self._catalog_reader_warmup is not None
+            and not self._catalog_reader_warmup.done()
+        ):
             self._catalog_reader_warmup.cancel()
             try:
                 await self._catalog_reader_warmup
-            except (asyncio.CancelledError, Exception):
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110 — awaiting a cancelled warmup task: either outcome is expected at close
                 pass
         self._catalog_reader_warmup = None
-        if self._catalog_semantic_task is not None and not self._catalog_semantic_task.done():
+        if (
+            self._catalog_semantic_task is not None
+            and not self._catalog_semantic_task.done()
+        ):
             self._catalog_semantic_task.cancel()
             try:
                 await self._catalog_semantic_task
-            except (asyncio.CancelledError, Exception):
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110 — awaiting a cancelled drainer task: either outcome is expected at close
                 pass
             self._catalog_semantic_task = None
         if self._catalog_semantic is not None:
             try:
                 await self._catalog_semantic.close()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — teardown: a close failure must not abort the rest of shutdown
                 logger.debug("catalog_semantic_close_error err=%s", e)
             self._catalog_semantic = None
         if self._catalog is not None:
             try:
                 await self._catalog.store.close()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — teardown: a close failure must not abort the rest of shutdown
                 logger.debug("catalog_close_error err=%s", e)
             self._catalog = None
             self._tool_ctx.catalog = None
@@ -2535,12 +2648,18 @@ class AgentService:
     @property
     def memdb_enabled(self) -> bool:
         """Whether the memdb service is connected."""
-        return self._plugins["memdb"].client is not None and self._plugins["memdb"].client.is_connected
+        return (
+            self._plugins["memdb"].client is not None
+            and self._plugins["memdb"].client.is_connected
+        )
 
     @property
     def wechat_enabled(self) -> bool:
         """Whether the WeChat plugin is connected."""
-        return self._plugins["wechat"].client is not None and self._plugins["wechat"].client.is_connected
+        return (
+            self._plugins["wechat"].client is not None
+            and self._plugins["wechat"].client.is_connected
+        )
 
     # ── WeChat lifecycle ───────────────────────────────────────────────
 
@@ -2561,7 +2680,8 @@ class AgentService:
         tests pass a small value to drive the loop fast.
         """
         import json as _json
-        from slife.a2a.identity import AgentMessage, Channel, WECHAT
+
+        from slife.a2a.identity import WECHAT, AgentMessage, Channel
         from slife.agent.message_history import wechat_marker
 
         if interval is None:
@@ -2573,7 +2693,8 @@ class AgentService:
                 assert self._plugins["wechat"].client is not None
 
                 result = await self._plugins["wechat"].client.call_tool(
-                    "__wechat_drain_incoming", {},
+                    "__wechat_drain_incoming",
+                    {},
                 )
                 data = _json.loads(result)
                 msgs = data.get("messages", [])
@@ -2595,11 +2716,12 @@ class AgentService:
                     logged_in = status == "ok"
                     prev = self._wechat_logged_in
                     if prev is None and not logged_in:
-                        self._wechat_logged_in = False   # cold: seed silently
+                        self._wechat_logged_in = False  # cold: seed silently
                     elif prev != logged_in:
                         self._wechat_logged_in = logged_in
                         await self._notify_activity(
-                            "wechat_status", logged_in=logged_in,
+                            "wechat_status",
+                            logged_in=logged_in,
                         )
 
                 for m in msgs:
@@ -2616,8 +2738,7 @@ class AgentService:
                         # the model can reply via wechat_send_message; the TUI
                         # drops it for display (channel already shows Wechat>).
                         content=(
-                            f"{wechat_marker(peer_id, context_token or None)}"
-                            f"{text}"
+                            f"{wechat_marker(peer_id, context_token or None)}{text}"
                         ),
                         metadata={"channel": "wechat"},
                         channel=Channel.wechat(),
@@ -2627,7 +2748,7 @@ class AgentService:
 
             except asyncio.CancelledError:
                 break
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — the wechat poll loop must survive any error
                 logger.debug("wechat_poll_error err=%s", e)
 
             await asyncio.sleep(interval)
@@ -2699,7 +2820,7 @@ class AgentService:
             if set_completed is not None:
                 try:
                     set_completed(now)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 — a TUI completion callback is advisory
                     pass
 
         # Extract turn messages: everything after the user message that
@@ -2713,6 +2834,7 @@ class AgentService:
         # No turn open ⇒ nothing was produced ⇒ nothing to persist — which is
         # also the rolled-back case, where pop_last_turn removed the message.
         from slife.logfmt import sanitize_secrets
+
         target = sanitize_secrets(user_message)
         all_messages = list(conv.messages)
         user_idx = conv.take_open_turn()
@@ -2720,7 +2842,7 @@ class AgentService:
             return
         if all_messages[user_idx].get("role") != "user":
             return
-        turn_messages: list[dict] = all_messages[user_idx + 1:]
+        turn_messages: list[dict] = all_messages[user_idx + 1 :]
 
         # Context trimming happens after this save, in
         # AgentLoop._trim_context (invoked below once the row is written)
@@ -2734,9 +2856,8 @@ class AgentService:
         # turn ids go with it: the loop needs them in memory to map turns
         # back to turn rows, but they are not part of the record.
         from slife.agent.message_history import MessageHistory as _MH
-        turn_messages = _MH.strip_turn_ids(
-            _MH.strip_trim_markers(turn_messages)
-        )
+
+        turn_messages = _MH.strip_turn_ids(_MH.strip_trim_markers(turn_messages))
 
         # Permanent memory keeps only head+tail digests of oversized tool
         # results — the Turns DB never hoards reproducible tool output, so a
@@ -2744,12 +2865,14 @@ class AgentService:
         # rebuild within the context floor.  The live history is not
         # touched (the copy swapped into turn_messages is a new dict).
         compacted = compact_tool_results(
-            turn_messages, self.config.memory_tool_result_chars,
+            turn_messages,
+            self.config.memory_tool_result_chars,
         )
         if compacted:
             logger.info(
                 "memory_tool_result_compacted count=%d budget=%d",
-                compacted, self.config.memory_tool_result_chars,
+                compacted,
+                self.config.memory_tool_result_chars,
             )
 
         if not self.memdb_enabled:
@@ -2798,7 +2921,7 @@ class AgentService:
                 ),
                 timeout=_timeouts.timeouts.work.save_memory,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # The save is a fast insert (embedding is deferred to the memdb
             # plugin's background reindex) — a timeout now means the MCP
             # channel itself is slow, not a first-save model load.  The row
@@ -2818,7 +2941,7 @@ class AgentService:
         if isinstance(result, str):
             try:
                 parsed = json.loads(result)
-            except Exception:
+            except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
                 parsed = None
             if isinstance(parsed, dict) and parsed.get("error"):
                 self._memory_error = parsed["error"]
@@ -2830,7 +2953,7 @@ class AgentService:
                 if self._on_memory_broken is not None:
                     try:
                         self._on_memory_broken(self._memory_error)
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110 — a TUI notification callback is advisory
                         pass
             elif isinstance(parsed, dict):
                 # The turn now has a turn_id — annotate its user message so the
@@ -2842,8 +2965,11 @@ class AgentService:
                 # leaves the message unannotated.
                 try:
                     self._annotate_saved_turn(
-                        conv, user_idx, rowid=parsed.get("turn_id"),
-                        created_at=created_at, completed_at=now,
+                        conv,
+                        user_idx,
+                        rowid=parsed.get("turn_id"),
+                        created_at=created_at,
+                        completed_at=now,
                     )
                 except Exception:
                     logger.debug("turn_annotation_skipped", exc_info=True)
@@ -2910,11 +3036,13 @@ class AgentService:
                 return value.astimezone().isoformat(timespec="seconds")
             return value or ""
 
-        header = turn_header({
-            "rowid": rowid,
-            "created_at": _iso(created_at),
-            "completed_at": _iso(completed_at),
-        })
+        header = turn_header(
+            {
+                "rowid": rowid,
+                "created_at": _iso(created_at),
+                "completed_at": _iso(completed_at),
+            }
+        )
         if not header:
             return
         content = msgs[user_idx].get("content", "")
@@ -2980,7 +3108,7 @@ class AgentService:
             if store is not None:
                 try:
                     await store.close()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 — teardown: a close failure must not mask the original error
                     pass
 
     async def drop_context_turns(self, turn_ids: list[int]) -> bool:
@@ -3001,7 +3129,9 @@ class AgentService:
         )
 
     async def _call_context_tool_payload(
-        self, tool: str, args: dict,
+        self,
+        tool: str,
+        args: dict,
     ) -> dict | None:
         """Call an internal memdb tool; return its parsed payload or None.
 
@@ -3024,7 +3154,7 @@ class AgentService:
                 client.call_tool(tool, args),
                 timeout=_timeouts.timeouts.work.save_memory,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 — an internal memdb call is best-effort
             logger.warning("context_tool_call_failed tool=%s", tool)
             return None
         if not isinstance(result, str):
@@ -3032,20 +3162,24 @@ class AgentService:
             return None
         try:
             parsed = json.loads(result)
-        except Exception:
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
             # Local import, off the success path (as at the save path).
             from slife.logfmt import sanitize_secrets
 
             logger.warning(
                 "context_tool_payload_unusable tool=%s result=%.120s",
-                tool, sanitize_secrets(result),
+                tool,
+                sanitize_secrets(result),
             )
             return None
         return parsed if isinstance(parsed, dict) else None
 
     async def recall_turns(
-        self, query: str = "", since: str | None = None,
-        until: str | None = None, anchor: str | None = None,
+        self,
+        query: str = "",
+        since: str | None = None,
+        until: str | None = None,
+        anchor: str | None = None,
         reserved_tokens: int = 0,
     ) -> list[int] | None:
         """Recall the turn ids this turn should **add** to its context.
@@ -3081,8 +3215,13 @@ class AgentService:
             return None
         payload = await self._call_context_tool_payload(
             "__memory_turn_recall",
-            {"query": query, "since": since, "until": until,
-             "anchor": anchor, "reserved_tokens": reserved_tokens},
+            {
+                "query": query,
+                "since": since,
+                "until": until,
+                "anchor": anchor,
+                "reserved_tokens": reserved_tokens,
+            },
         )
         if not payload or payload.get("error"):
             return None
@@ -3109,7 +3248,8 @@ class AgentService:
         if not turn_ids or not self.memdb_enabled:
             return []
         payload = await self._call_context_tool_payload(
-            "__memory_turns_by_ids", {"turn_ids": list(turn_ids)},
+            "__memory_turns_by_ids",
+            {"turn_ids": list(turn_ids)},
         )
         if not payload or payload.get("error"):
             return []
@@ -3142,11 +3282,16 @@ class AgentService:
         if not self.memdb_enabled:
             return False
         return await self._call_context_tool(
-            "__memory_context_turns_clear", {}, "clear",
+            "__memory_context_turns_clear",
+            {},
+            "clear",
         )
 
     async def _call_context_tool(
-        self, tool: str, args: dict, tag: str,
+        self,
+        tool: str,
+        args: dict,
+        tag: str,
     ) -> bool:
         """Call an internal memdb context tool, best-effort."""
         plugin = self._plugins.get("memdb")
@@ -3159,7 +3304,7 @@ class AgentService:
                 timeout=_timeouts.timeouts.work.save_memory,
             )
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 — an internal memdb call is best-effort
             logger.warning("context_turns_call_skipped tool=%s %s", tool, tag)
             return False
 
@@ -3236,7 +3381,7 @@ class AgentService:
         if cb is not None:
             try:
                 await cb(outcome)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — a TUI heartbeat callback is advisory
                 pass
 
     @staticmethod
@@ -3256,7 +3401,10 @@ class AgentService:
         return stripped if stripped and stripped != "." else None
 
     async def surface_autonomous_reply(
-        self, text: str, cancelled: bool = False, stop_reason: str = "",
+        self,
+        text: str,
+        cancelled: bool = False,
+        stop_reason: str = "",
     ) -> None:
         """``on_reply`` for heartbeat turns — surface only real content.
 
@@ -3302,13 +3450,15 @@ class AgentService:
 
         async def _wake() -> None:
             await asyncio.sleep(delay_seconds)
-            await self.inbox.post(AgentMessage(
-                source=SYSTEM,
-                content=timer_text(delay_seconds / 60, note),
-                handler=_SilentHandler(),
-                on_reply=self._surface_timer_reply,
-                channel=Channel.system(),
-            ))
+            await self.inbox.post(
+                AgentMessage(
+                    source=SYSTEM,
+                    content=timer_text(delay_seconds / 60, note),
+                    handler=_SilentHandler(),
+                    on_reply=self._surface_timer_reply,
+                    channel=Channel.system(),
+                )
+            )
             logger.info("timer_fired delay_seconds=%s", delay_seconds)
 
         task = asyncio.create_task(_wake())
@@ -3316,7 +3466,10 @@ class AgentService:
         task.add_done_callback(self._timer_tasks.discard)
 
     async def _surface_timer_reply(
-        self, text: str, cancelled: bool = False, stop_reason: str = "",
+        self,
+        text: str,
+        cancelled: bool = False,
+        stop_reason: str = "",
     ) -> None:
         """``on_reply`` for timer turns — surface non-silent replies.
 
@@ -3340,7 +3493,10 @@ class AgentService:
         change touches the prompt cache — accepted, both events are rare.
         """
         new_system = self._role_system_prompt()
-        if self.message_history.messages and self.message_history.messages[0]["role"] == "system":
+        if (
+            self.message_history.messages
+            and self.message_history.messages[0]["role"] == "system"
+        ):
             self.message_history.messages[0]["content"] = new_system
         self.inbox._histories.update_system_prompt(new_system)
 
@@ -3374,9 +3530,9 @@ class AgentService:
         """
         if self._catalog is not None:
             return
+        from slife.paths import get_tools_db_path
         from slife.tools.catalog import CatalogStore
         from slife.tools.catalog_service import ToolCatalogService
-        from slife.paths import get_tools_db_path
 
         try:
             store = CatalogStore(get_tools_db_path())
@@ -3428,12 +3584,17 @@ class AgentService:
                 # that left the code loses its row in this pass — every other
                 # family purges from its own source (a plugin's rescan, the
                 # skill/cli mirror, the `tools.yaml` comparison for servers).
-                await svc.sync_system_tools([
-                    *self.tool_registry.list_tools(),
-                    *disabled_tool_instances(
-                        self.config.tools, config=self.config, ctx=self._tool_ctx,
-                    ),
-                ], own_builtins=True)
+                await svc.sync_system_tools(
+                    [
+                        *self.tool_registry.list_tools(),
+                        *disabled_tool_instances(
+                            self.config.tools,
+                            config=self.config,
+                            ctx=self._tool_ctx,
+                        ),
+                    ],
+                    own_builtins=True,
+                )
                 # Skill and cli rows come from their own live sources (the
                 # skills dir, the cli section of tools.yaml), not from the
                 # registry — sync_system_tools cannot see them, so they are
@@ -3515,7 +3676,7 @@ class AgentService:
                 len(await svc.store.names_by_category("skill")),
                 len(await svc.store.names_by_category("cli")),
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort local mirror: the previous rows stand
             logger.debug("catalog_local_mirror_failed err=%s", e)
 
     async def _refresh_local_rows_if_changed(self, svc) -> None:
@@ -3561,12 +3722,14 @@ class AgentService:
             raw = _gw_cfg.load_config()
             cli_section = raw.get("cli") if isinstance(raw, dict) else None
             await sync_cli_catalog(
-                self._tool_ctx, cli_section if isinstance(cli_section, dict) else {},
+                self._tool_ctx,
+                cli_section if isinstance(cli_section, dict) else {},
             )
             await sync_skill_catalog(self._tool_ctx, get_skills_dir())
             # The in-memory disable flags move with the file too — otherwise a
             # hand-edited `enabled: false` would wait for the next boot.
             from slife.config import _disabled_names
+
             svc.reload_disabled(
                 builtins=_disabled_names(raw.get("builtin") or []),
                 jobs=_disabled_names(raw.get("job") or []),
@@ -3577,7 +3740,7 @@ class AgentService:
                 len(await svc.store.names_by_category("skill")),
                 len(await svc.store.names_by_category("cli")),
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort, like every other mirror: the previous rows stand
             # Best-effort, like every other mirror: the previous rows stand.
             logger.debug("catalog_local_refresh_failed err=%s", e)
 
@@ -3595,8 +3758,9 @@ class AgentService:
             return
         try:
             from slife.plugins.mcp_gateway import config as _cfg
+
             await catalog.purge_unconfigured_sources(set(_cfg.servers()))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort by contract: the catalog stays live on a failed sync
             # Best-effort by contract: a failure leaves whichever rows the
             # purge already handled and keeps the catalog live.  Nulling it
             # here would silently disable every catalog-using path for the
@@ -3621,6 +3785,7 @@ class AgentService:
         # agent only; subagents are workers and never serve their own face.
         if self.caps.host_server:
             from slife.mcp.host_server import start_host_server
+
             try:
                 # Every instance binds its own OS-assigned free port — there is
                 # no fixed well-known address, so a second concurrent agent in
@@ -3667,8 +3832,10 @@ class AgentService:
             # reaps unconfirmed runs to failed.  Runs once and exits.
             from slife.agent.schedules import schedule_startup_sweep
 
-            if (self._schedule_startup_task is None
-                    or self._schedule_startup_task.done()):
+            if (
+                self._schedule_startup_task is None
+                or self._schedule_startup_task.done()
+            ):
                 self._schedule_startup_task = asyncio.create_task(
                     schedule_startup_sweep(self)
                 )
@@ -3680,7 +3847,7 @@ class AgentService:
             _server, _task, _stop, _port = self._host_server
             try:
                 await _stop()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — teardown: a stop failure must not abort the rest of shutdown
                 logger.debug("host_server_stop_error err=%s", e)
             self._host_server = None
             os.environ.pop("SLIFE_HOST_PORT", None)
@@ -3742,8 +3909,9 @@ class AgentService:
         tests pass a small value to drive the loop fast.
         """
         import json as _json
-        from slife.a2a.identity import AgentName, AgentMessage, Channel
+
         from slife.a2a.card import AgentCard, format_presence_line
+        from slife.a2a.identity import AgentMessage, AgentName, Channel
         from slife.agent.message_history import a2a_marker
 
         if interval is None:
@@ -3782,8 +3950,7 @@ class AgentService:
                     marker_id = task_id or None if kind == "task" else None
                     marker_type = "message" if kind != "task" else "task_request"
                     task_text = (
-                        f"{a2a_marker(src, marker_id, type=marker_type)}"
-                        f"{task_text}"
+                        f"{a2a_marker(src, marker_id, type=marker_type)}{task_text}"
                     )
                     msg = AgentMessage(
                         source=AgentName(src),
@@ -3801,7 +3968,8 @@ class AgentService:
                     await self.inbox.post(msg)
                     logger.debug(
                         "a2a_in source=%s task=%.80s",
-                        msg.source, ev.get("content", ""),
+                        msg.source,
+                        ev.get("content", ""),
                     )
 
                 # A peer withdrew an inbound task.  A task that never started
@@ -3828,7 +3996,8 @@ class AgentService:
                         continue
                     if self.inbox.drop_queued(task_id):
                         logger.info(
-                            "a2a_cancel_dropped_queued task=%s", task_id,
+                            "a2a_cancel_dropped_queued task=%s",
+                            task_id,
                         )
                         continue
                     peer = cev.get("peer", "unknown")
@@ -3846,7 +4015,9 @@ class AgentService:
                     )
                     await self.inbox.post(msg)
                     logger.debug(
-                        "a2a_cancel_in source=%s task=%.80s", peer, task_id,
+                        "a2a_cancel_in source=%s task=%.80s",
+                        peer,
+                        task_id,
                     )
 
                 # Fire-and-forget broadcast events — passive, no task_id, no
@@ -3879,7 +4050,9 @@ class AgentService:
                     if text is not None:
                         self._presence_events.append((_time.time(), text))
                     await self._notify_activity(
-                        "agent_change", event=pev.get("event", ""), card=card,
+                        "agent_change",
+                        event=pev.get("event", ""),
+                        card=card,
                     )
 
                 # Outbound async-task results (auto-push) — the peer's result
@@ -3908,21 +4081,24 @@ class AgentService:
                             f"Peer **{peer}** {state} async task "
                             f"(ID: `{corr_id}`):\n\n{result}"
                         )
-                    await self.inbox.post(AgentMessage(
-                        source=AgentName(peer),
-                        content=content,
-                        # A result push is an FYI (a response to a prior request),
-                        # never a task — frames the injected pair accordingly.
-                        metadata={"a2a_kind": "push"},
-                        channel=Channel.a2a(peer),
-                    ))
+                    await self.inbox.post(
+                        AgentMessage(
+                            source=AgentName(peer),
+                            content=content,
+                            # A result push is an FYI (a response to a prior request),
+                            # never a task — frames the injected pair accordingly.
+                            metadata={"a2a_kind": "push"},
+                            channel=Channel.a2a(peer),
+                        )
+                    )
                     logger.debug(
                         "a2a_completion_autopushed peer=%s task=%s",
-                        peer, corr_id,
+                        peer,
+                        corr_id,
                     )
             except asyncio.CancelledError:
                 break
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — the A2A poll loop must survive any error
                 logger.debug("a2a_poll_error err=%s", e)
 
             await asyncio.sleep(interval)
@@ -3941,6 +4117,7 @@ class AgentService:
         logger.info("subagent_init_start")
 
         from slife.subagent.process import SubagentManager, set_manager
+
         self._subagent_manager = SubagentManager(self.config)
 
         # Set module-level transport reference so builtin subagent tools
@@ -3956,10 +4133,12 @@ class AgentService:
         async def _on_subagent_done(agent_name: str, task_id: str, result: str) -> None:
             from slife.a2a.identity import AgentMessage, Channel
             from slife.agent.message_history import subagent_marker
-            from slife.subagent.identity import SUBAGENT
             from slife.agent.schedules import (
-                _schedule_completion_content, take_scheduled_task,
+                _schedule_completion_content,
+                take_scheduled_task,
             )
+            from slife.subagent.identity import SUBAGENT
+
             # Which scheduled task this was is a fact about the task id, not
             # about the worker: a scheduled run goes to whichever worker the
             # pool handed out, so the worker's name never names the task.
@@ -3967,7 +4146,9 @@ class AgentService:
             task_name = scheduled[0] if scheduled else ""
             if scheduled is not None:
                 content = await _schedule_completion_content(
-                    self, task_name, scheduled[1],
+                    self,
+                    task_name,
+                    scheduled[1],
                 )
             else:
                 # The [Subagent:…] marker names the worker and task id so the
@@ -3983,7 +4164,9 @@ class AgentService:
                 source=SUBAGENT,
                 content=content,
                 channel=Channel.subagent(
-                    agent_name, task_id=task_id, scheduled_task=task_name,
+                    agent_name,
+                    task_id=task_id,
+                    scheduled_task=task_name,
                 ),
             )
             await self.inbox.post(msg)
@@ -3992,9 +4175,12 @@ class AgentService:
 
         logger.info("subagent_init_done tools=%d", len(self.tool_registry.list_tools()))
         from slife.health import record
+
         record(
-            "subagent", "ok",
-            key="status", value=(
+            "subagent",
+            "ok",
+            key="status",
+            value=(
                 "ready (max_subagents="
                 f"{(self.config.subagent_config or {}).get('max_subagents', '?')})"
             ),
@@ -4005,12 +4191,13 @@ class AgentService:
         if self._subagent_manager:
             try:
                 await self._subagent_manager.stop_all()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — teardown: a stop failure must not abort shutdown
                 logger.debug("subagent_stop_all_error err=%s", e)
             self._subagent_manager = None
 
         # Clear module-level transport reference
         from slife.subagent.process import clear_manager
+
         clear_manager()
 
         logger.info("subagent_shutdown")
@@ -4067,7 +4254,7 @@ class AgentService:
         for cb in self._on_activity_callbacks:
             try:
                 await cb(kind, **kwargs)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — a TUI activity callback is advisory
                 pass
 
     def on_activity(self, callback) -> None:

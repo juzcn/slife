@@ -7,20 +7,20 @@ the gate, how the LLM-visible ``turn_search`` / ``turn_list`` answer, and how
 ``__memory_save_turn`` wakes the drainer.
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import importlib
 import logging
 import re
 import sys
 from pathlib import Path
+from typing import Self
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from slife.agent.message_history import TokenizerUnavailable
 from slife.plugins.memdb.recall import RecallPolicy
 
-import pytest
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
@@ -90,8 +90,13 @@ class TestRecallDegradation:
         """The stored rows for a selection: the tool reads their fields for the
         answer and their size for the token budget."""
         return [
-            {"rowid": r, "created_at": "2026-08-01T10:00:00+08:00",
-             "user_message": f"turn {r}", "summary": "", "messages": "[]"}
+            {
+                "rowid": r,
+                "created_at": "2026-08-01T10:00:00+08:00",
+                "user_message": f"turn {r}",
+                "summary": "",
+                "messages": "[]",
+            }
             for r in rowids
         ]
 
@@ -109,8 +114,10 @@ class TestRecallDegradation:
 
         srv, store = self._server(
             keyword_hits=[],
-            manager=_fake_manager(semantic_ready=False,
-                                  reason="hybrid degraded to fts5 — semantic index is building"),
+            manager=_fake_manager(
+                semantic_ready=False,
+                reason="hybrid degraded to fts5 — semantic index is building",
+            ),
         )
         srv.logger = MagicMock()
 
@@ -127,10 +134,17 @@ class TestRecallDegradation:
 
         srv, store = self._server(
             keyword_hits=[
-                {"turn_id": 1, "user_message": "微信登录", "snippet": "…", "rank": -1.0},
+                {
+                    "turn_id": 1,
+                    "user_message": "微信登录",
+                    "snippet": "…",
+                    "rank": -1.0,
+                },
             ],
-            manager=_fake_manager(semantic_ready=False,
-                                  reason="hybrid degraded to fts5 — semantic index is building"),
+            manager=_fake_manager(
+                semantic_ready=False,
+                reason="hybrid degraded to fts5 — semantic index is building",
+            ),
             turns=self._turns(1),
         )
         srv.logger = MagicMock()
@@ -143,7 +157,8 @@ class TestRecallDegradation:
 
     @pytest.mark.asyncio
     async def test_tokenizer_failure_is_fatal_not_an_empty_answer(
-        self, restore_root_logger,
+        self,
+        restore_root_logger,
     ):
         """An unusable tokenizer is an environment failure, not an answer.
 
@@ -156,20 +171,31 @@ class TestRecallDegradation:
         """
         srv, store = self._server(
             keyword_hits=[
-                {"turn_id": 1, "user_message": "微信登录", "snippet": "…", "rank": -1.0},
+                {
+                    "turn_id": 1,
+                    "user_message": "微信登录",
+                    "snippet": "…",
+                    "rank": -1.0,
+                },
             ],
             manager=_fake_manager(semantic_ready=False, reason=""),
             turns=self._turns(1),
         )
 
-        with patch.object(
-            srv, "_ensure_store_locked", AsyncMock(return_value=store),
-        ), patch.object(
-            srv, "estimate_turn_tokens",
-            side_effect=TokenizerUnavailable("no vocabulary"),
+        with (
+            patch.object(
+                srv,
+                "_ensure_store_locked",
+                AsyncMock(return_value=store),
+            ),
+            patch.object(
+                srv,
+                "estimate_turn_tokens",
+                side_effect=TokenizerUnavailable("no vocabulary"),
+            ),
+            pytest.raises(TokenizerUnavailable),
         ):
-            with pytest.raises(TokenizerUnavailable):
-                await _recall(srv)(query="微信登录")
+            await _recall(srv)(query="微信登录")
 
     @pytest.mark.asyncio
     async def test_gate_on_but_query_embed_fails(self, restore_root_logger):
@@ -206,11 +232,18 @@ class TestRecallAnswerIsIds:
         store = AsyncMock()
         store.search_keyword = AsyncMock(return_value=keyword_hits)
         store.search_semantic = AsyncMock(return_value=semantic_hits)
-        store.get_turns_by_ids = AsyncMock(return_value=[
-            {"rowid": r, "created_at": "2026-08-01T10:00:00+08:00",
-             "user_message": f"turn {r}", "summary": "", "messages": "[]"}
-            for r in (1, 2, 5)
-        ])
+        store.get_turns_by_ids = AsyncMock(
+            return_value=[
+                {
+                    "rowid": r,
+                    "created_at": "2026-08-01T10:00:00+08:00",
+                    "user_message": f"turn {r}",
+                    "summary": "",
+                    "messages": "[]",
+                }
+                for r in (1, 2, 5)
+            ]
+        )
         manager = _fake_manager(semantic_ready=True, reason="")
         manager.embedder.embed_one = AsyncMock(return_value=[0.1, 0.2, 0.3])
         srv._store = store
@@ -224,14 +257,34 @@ class TestRecallAnswerIsIds:
 
         srv, store = self._server(
             keyword_hits=[
-                {"rowid": 1, "user_message": "微信登录", "summary": "s1",
-                 "tags": "", "created_at": "2026-08-01", "snippet": "…", "rank": -1.0},
-                {"rowid": 2, "user_message": "other", "summary": "s2",
-                 "tags": "", "created_at": "2026-08-02", "snippet": "…", "rank": -0.5},
+                {
+                    "rowid": 1,
+                    "user_message": "微信登录",
+                    "summary": "s1",
+                    "tags": "",
+                    "created_at": "2026-08-01",
+                    "snippet": "…",
+                    "rank": -1.0,
+                },
+                {
+                    "rowid": 2,
+                    "user_message": "other",
+                    "summary": "s2",
+                    "tags": "",
+                    "created_at": "2026-08-02",
+                    "snippet": "…",
+                    "rank": -0.5,
+                },
             ],
             semantic_hits=[
-                {"rowid": 5, "turn_rowid": 5, "summary": "s5", "tags": "",
-                 "created_at": "2026-08-01", "distance": 0.5},
+                {
+                    "rowid": 5,
+                    "turn_rowid": 5,
+                    "summary": "s5",
+                    "tags": "",
+                    "created_at": "2026-08-01",
+                    "distance": 0.5,
+                },
             ],
         )
 
@@ -261,14 +314,21 @@ class TestRecallHeadroom:
     def _server(self, count: int = 5):
         srv = _import_memdb_server()
         rows = [
-            {"rowid": r, "created_at": f"2026-08-0{r}", "summary": "",
-             "user_message": "x" * 400, "messages": "[]"}
+            {
+                "rowid": r,
+                "created_at": f"2026-08-0{r}",
+                "summary": "",
+                "user_message": "x" * 400,
+                "messages": "[]",
+            }
             for r in range(1, count + 1)
         ]
         store = AsyncMock()
-        store.search_keyword = AsyncMock(return_value=[
-            {**row, "tags": "", "snippet": "…", "rank": -1.0} for row in rows
-        ])
+        store.search_keyword = AsyncMock(
+            return_value=[
+                {**row, "tags": "", "snippet": "…", "rank": -1.0} for row in rows
+            ]
+        )
         store.search_semantic = AsyncMock(return_value=[])
         store.get_turns_by_ids = AsyncMock(return_value=rows)
         srv._store = store
@@ -279,7 +339,8 @@ class TestRecallHeadroom:
 
     @pytest.mark.asyncio
     async def test_nothing_reserved_is_exactly_todays_budget(
-        self, restore_root_logger,
+        self,
+        restore_root_logger,
     ):
         """The floor still sizes the selection when a decision keeps nothing
         (``"clear"`` + recall) — the overriding behaviour, unchanged."""
@@ -291,7 +352,8 @@ class TestRecallHeadroom:
         cost = estimate_turn_tokens(rows[0])
         # Room for three turns, under a ceiling with plenty of room left.
         srv._recall_policy = lambda: RecallPolicy(
-            token_budget=cost * 3, ceiling_tokens=cost * 100,
+            token_budget=cost * 3,
+            ceiling_tokens=cost * 100,
         )
 
         with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
@@ -312,7 +374,8 @@ class TestRecallHeadroom:
         # Floor: three turns.  Ceiling: five.  A decision keeping four turns
         # worth of context leaves room for one more.
         srv._recall_policy = lambda: RecallPolicy(
-            token_budget=cost * 3, ceiling_tokens=cost * 5,
+            token_budget=cost * 3,
+            ceiling_tokens=cost * 5,
         )
 
         with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
@@ -327,7 +390,8 @@ class TestRecallHeadroom:
 
     @pytest.mark.asyncio
     async def test_the_ceiling_is_what_the_reservation_is_measured_from(
-        self, restore_root_logger,
+        self,
+        restore_root_logger,
     ):
         """The bug this replaced: measured against the *floor*, a context that
         had reached it (the state a trim leaves behind, and so most of a
@@ -339,7 +403,8 @@ class TestRecallHeadroom:
         srv, store, rows = self._server()
         cost = estimate_turn_tokens(rows[0])
         srv._recall_policy = lambda: RecallPolicy(
-            token_budget=cost * 3, ceiling_tokens=cost * 12,
+            token_budget=cost * 3,
+            ceiling_tokens=cost * 12,
         )
 
         with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
@@ -354,7 +419,8 @@ class TestRecallHeadroom:
 
     @pytest.mark.asyncio
     async def test_a_base_at_the_ceiling_recalls_nothing(
-        self, restore_root_logger,
+        self,
+        restore_root_logger,
     ):
         """Headroom is never negative: at the ceiling the answer is empty
         rather than a budget that inverts into a bigger one."""
@@ -365,19 +431,19 @@ class TestRecallHeadroom:
         srv, store, rows = self._server()
         cost = estimate_turn_tokens(rows[0])
         srv._recall_policy = lambda: RecallPolicy(
-            token_budget=cost * 3, ceiling_tokens=cost * 5,
+            token_budget=cost * 3,
+            ceiling_tokens=cost * 5,
         )
 
         with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
-            out = json.loads(
-                await _recall(srv)(query="x", reserved_tokens=cost * 5)
-            )
+            out = json.loads(await _recall(srv)(query="x", reserved_tokens=cost * 5))
 
         assert out == {"turns": []}
 
     @pytest.mark.asyncio
     async def test_an_unset_ceiling_leaves_the_budget_alone(
-        self, restore_root_logger,
+        self,
+        restore_root_logger,
     ):
         """``ceiling_tokens = 0`` is "unset", not "no room" — a policy built by
         hand (the default in tests) keeps its old meaning."""
@@ -390,9 +456,7 @@ class TestRecallHeadroom:
         srv._recall_policy = lambda: RecallPolicy(token_budget=cost * 3)
 
         with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
-            out = json.loads(
-                await _recall(srv)(query="x", reserved_tokens=cost * 99)
-            )
+            out = json.loads(await _recall(srv)(query="x", reserved_tokens=cost * 99))
 
         assert out["turns"] == [1, 2, 3]
 
@@ -493,7 +557,9 @@ class TestTurnSummarize:
         assert data["status"] == "updated"
         assert data["turn_id"] == 3
         store.update_summary.assert_awaited_once_with(
-            rowid=3, summary="sum", tags=None,
+            rowid=3,
+            summary="sum",
+            tags=None,
         )
 
     @pytest.mark.asyncio
@@ -504,27 +570,36 @@ class TestTurnSummarize:
         srv, store = self._server()
         store.save_turn = AsyncMock(return_value=9)
         with patch.object(
-            srv, "_ensure_store_locked", AsyncMock(return_value=store),
+            srv,
+            "_ensure_store_locked",
+            AsyncMock(return_value=store),
         ):
             out = await getattr(srv, "__memory_save_turn")(
-                user_message="hi", summary="sum", tags="a,b",
+                user_message="hi",
+                summary="sum",
+                tags="a,b",
             )
 
         assert json.loads(out)["turn_id"] == 9
         store.update_summary.assert_awaited_once_with(
-            rowid=9, summary="sum", tags="a,b",
+            rowid=9,
+            summary="sum",
+            tags="a,b",
         )
 
     @pytest.mark.asyncio
     async def test_save_without_captured_annotation_writes_nothing_extra(
-        self, restore_root_logger,
+        self,
+        restore_root_logger,
     ):
         import json
 
         srv, store = self._server()
         store.save_turn = AsyncMock(return_value=9)
         with patch.object(
-            srv, "_ensure_store_locked", AsyncMock(return_value=store),
+            srv,
+            "_ensure_store_locked",
+            AsyncMock(return_value=store),
         ):
             out = await getattr(srv, "__memory_save_turn")(user_message="hi")
 
@@ -541,19 +616,27 @@ class TestTokenUsage:
 
         srv = _import_memdb_server()
         store = AsyncMock()
-        store.token_usage = AsyncMock(return_value={
-            "turns": [{"rowid": 1, "token_count": 100}],
-            "summary": {"count": 1},
-            "filters": {},
-        })
+        store.token_usage = AsyncMock(
+            return_value={
+                "turns": [{"rowid": 1, "token_count": 100}],
+                "summary": {"count": 1},
+                "filters": {},
+            }
+        )
         srv._store = store
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
             out = await srv.turn_token_usage(
-                turn_id=3, since="2026-01-01", until="2026-02-01", limit=10,
+                turn_id=3,
+                since="2026-01-01",
+                until="2026-02-01",
+                limit=10,
             )
 
         store.token_usage.assert_awaited_once_with(
-            rowid=3, since="2026-01-01", until="2026-02-01", limit=10,
+            rowid=3,
+            since="2026-01-01",
+            until="2026-02-01",
+            limit=10,
         )
         assert json.loads(out)["summary"]["count"] == 1
 
@@ -561,7 +644,7 @@ class TestTokenUsage:
 class _QueryCursor:
     """An aiosqlite-like cursor: async context manager with async fetchone."""
 
-    async def __aenter__(self) -> "_QueryCursor":
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc) -> bool:
@@ -593,13 +676,16 @@ class TestMemdbLifespan:
     async def test_store_failure_raises(self, restore_root_logger):
         """Store cannot be established → the lifespan raises on enter."""
         srv = _import_memdb_server()
-        with patch.object(
-            srv, "_ensure_store",
-            AsyncMock(side_effect=RuntimeError("db locked")),
+        with (
+            patch.object(
+                srv,
+                "_ensure_store",
+                AsyncMock(side_effect=RuntimeError("db locked")),
+            ),
+            pytest.raises(RuntimeError, match="db locked"),
         ):
-            with pytest.raises(RuntimeError, match="db locked"):
-                async with srv._memdb_lifespan(None):
-                    pass
+            async with srv._memdb_lifespan(None):
+                pass
 
     @pytest.mark.asyncio
     async def test_store_query_failure_raises(self, restore_root_logger):
@@ -607,10 +693,12 @@ class TestMemdbLifespan:
         srv = _import_memdb_server()
         store = AsyncMock()
         store._c.execute = MagicMock(side_effect=RuntimeError("query boom"))
-        with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
-            with pytest.raises(RuntimeError, match="query boom"):
-                async with srv._memdb_lifespan(None):
-                    pass
+        with (
+            patch.object(srv, "_ensure_store", AsyncMock(return_value=store)),
+            pytest.raises(RuntimeError, match="query boom"),
+        ):
+            async with srv._memdb_lifespan(None):
+                pass
 
     @pytest.mark.asyncio
     async def test_store_ok_yields_then_closes(self, restore_root_logger):
@@ -653,7 +741,8 @@ class TestTurnRecallContract:
 
     @pytest.mark.asyncio
     async def test_a_rejected_time_bound_is_an_empty_selection(
-        self, restore_root_logger,
+        self,
+        restore_root_logger,
     ):
         import json
 
@@ -672,7 +761,8 @@ class TestTurnRecallContract:
 
     @pytest.mark.asyncio
     async def test_an_unexpected_failure_is_also_an_empty_selection(
-        self, restore_root_logger,
+        self,
+        restore_root_logger,
     ):
         import json
 
@@ -696,9 +786,11 @@ class TestTurnRecallContract:
         )
         recall = _recall(srv)
 
-        with patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)):
-            with pytest.raises(sqlite3.DatabaseError):
-                await recall(query="", since="today")
+        with (
+            patch.object(srv, "_ensure_store_locked", AsyncMock(return_value=store)),
+            pytest.raises(sqlite3.DatabaseError),
+        ):
+            await recall(query="", since="today")
 
 
 class TestTurnRecallIsInternal:
@@ -716,7 +808,8 @@ class TestTurnRecallIsInternal:
 
     @pytest.mark.asyncio
     async def test_it_is_registered_under_the_internal_prefix(
-        self, restore_root_logger,
+        self,
+        restore_root_logger,
     ):
         srv = _import_memdb_server()
 
@@ -727,7 +820,8 @@ class TestTurnRecallIsInternal:
 
     @pytest.mark.asyncio
     async def test_schema_parameters_are_the_four_and_the_headroom(
-        self, restore_root_logger,
+        self,
+        restore_root_logger,
     ):
         """The discriminator fills exactly four of these in — no caps, no mode
         knob.  The fifth is the *caller's*: the headroom below the context
@@ -740,7 +834,11 @@ class TestTurnRecallIsInternal:
 
         props = tool.parameters["properties"]
         assert set(props) == {
-            "query", "since", "until", "anchor", "reserved_tokens",
+            "query",
+            "since",
+            "until",
+            "anchor",
+            "reserved_tokens",
         }
         assert tool.parameters.get("required", []) == [], "all five are optional"
         # The per-parameter how-to-use text rides the schema (FastMCP lifts it
@@ -773,7 +871,8 @@ class TestTurnRecallIsInternal:
 
     @pytest.mark.asyncio
     async def test_the_anchor_orders_the_window_by_its_end(
-        self, restore_root_logger,
+        self,
+        restore_root_logger,
     ):
         """``anchor`` is the direction the *store* reads the window in, so the
         ids come back in that order — the budget then spends from the head.
@@ -867,7 +966,6 @@ class TestTurnSearch:
         """grep compiles the empty pattern, which matches EVERY string — so an
         empty query would silently become a second browse path.  ``turn_list``
         is the browse, which is why this one says so."""
-        import json
 
         store = AsyncMock()
         srv = self._server(store)
@@ -889,9 +987,11 @@ class TestTurnSearch:
         import json
 
         store = AsyncMock()
-        store.search_keyword = AsyncMock(return_value=[
-            {"rowid": 3, "user_message": "微信登录", "snippet": "…", "rank": -1.0},
-        ])
+        store.search_keyword = AsyncMock(
+            return_value=[
+                {"rowid": 3, "user_message": "微信登录", "snippet": "…", "rank": -1.0},
+            ]
+        )
         srv = self._server(store)
 
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
@@ -904,7 +1004,6 @@ class TestTurnSearch:
 
     @pytest.mark.asyncio
     async def test_grep_reports_an_unusable_pattern(self, restore_root_logger):
-        import json
 
         store = AsyncMock()
         store.search_grep = AsyncMock(
@@ -925,7 +1024,6 @@ class TestTurnSearch:
         (The *selector* collapses the same failure into an empty selection,
         because there an error would force the caller to keep a context it was
         told to replace.)"""
-        import json
 
         from slife.timeutil import InvalidTimeBound
 
@@ -948,10 +1046,19 @@ class TestTurnSearch:
         import json
 
         store = AsyncMock()
-        store.search_keyword = AsyncMock(return_value=[
-            {"rowid": 1, "user_message": "微信登录", "summary": "", "tags": "",
-             "created_at": "2026-08-01", "snippet": "…", "rank": -1.0},
-        ])
+        store.search_keyword = AsyncMock(
+            return_value=[
+                {
+                    "rowid": 1,
+                    "user_message": "微信登录",
+                    "summary": "",
+                    "tags": "",
+                    "created_at": "2026-08-01",
+                    "snippet": "…",
+                    "rank": -1.0,
+                },
+            ]
+        )
         srv = self._server(store)
 
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
@@ -964,9 +1071,9 @@ class TestTurnSearch:
 
     @pytest.mark.asyncio
     async def test_a_failed_search_is_an_error_not_a_silent_empty(
-        self, restore_root_logger,
+        self,
+        restore_root_logger,
     ):
-        import json
 
         store = AsyncMock()
         store.search_keyword = AsyncMock(side_effect=RuntimeError("pipeline bug"))
@@ -998,22 +1105,39 @@ class TestTurnList:
         import json
 
         store = AsyncMock()
-        store.turn_list = AsyncMock(return_value={
-            "total": 7,
-            "entries": [
-                {"rowid": 2, "user_message": "x" * 250, "summary": "s",
-                 "tags": "t", "created_at": "2026-08-02", "token_count": 5},
-                {"rowid": 1, "user_message": "short", "summary": "",
-                 "tags": "", "created_at": "2026-08-01", "token_count": 3},
-            ],
-        })
+        store.turn_list = AsyncMock(
+            return_value={
+                "total": 7,
+                "entries": [
+                    {
+                        "rowid": 2,
+                        "user_message": "x" * 250,
+                        "summary": "s",
+                        "tags": "t",
+                        "created_at": "2026-08-02",
+                        "token_count": 5,
+                    },
+                    {
+                        "rowid": 1,
+                        "user_message": "short",
+                        "summary": "",
+                        "tags": "",
+                        "created_at": "2026-08-01",
+                        "token_count": 3,
+                    },
+                ],
+            }
+        )
         srv = self._server(store)
 
         with patch.object(srv, "_ensure_store", AsyncMock(return_value=store)):
             out = await srv.turn_list(limit=2, offset=1)
 
         store.turn_list.assert_awaited_once_with(
-            since=None, until=None, limit=2, offset=1,
+            since=None,
+            until=None,
+            limit=2,
+            offset=1,
         )
         data = json.loads(out)
         assert (data["total"], data["limit"], data["offset"]) == (7, 2, 1)
@@ -1026,7 +1150,6 @@ class TestTurnList:
 
     @pytest.mark.asyncio
     async def test_a_rejected_time_bound_is_an_error(self, restore_root_logger):
-        import json
 
         from slife.timeutil import InvalidTimeBound
 

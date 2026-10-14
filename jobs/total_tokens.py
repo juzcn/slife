@@ -73,8 +73,7 @@ def _looks_like_memdb(path: str) -> bool:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
             row = conn.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='turn'"
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='turn'"
             ).fetchone()
         finally:
             conn.close()

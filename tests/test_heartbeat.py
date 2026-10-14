@@ -1,7 +1,5 @@
 """Tests for the autonomous heartbeat — the "." reply contract and TUI mark."""
 
-import pytest; pytestmark = pytest.mark.unit
-
 import asyncio
 from types import SimpleNamespace
 
@@ -9,32 +7,40 @@ import pytest
 
 from slife.agent.heartbeat import HEARTBEAT_MARK, HEARTBEAT_PROMPT, heartbeat_period
 
+pytestmark = pytest.mark.unit
+
 
 class TestHeartbeatPeriod:
     """``0`` is OFF — it never falls back to the registry default."""
 
     def test_configured_value_wins(self):
-        assert heartbeat_period(
-            SimpleNamespace(heartbeat_interval=90)  # noqa-timeout
-        ) == 90.0
+        assert (
+            heartbeat_period(
+                SimpleNamespace(heartbeat_interval=90)  # noqa-timeout
+            )
+            == 90.0
+        )
 
     def test_zero_is_off(self):
-        assert heartbeat_period(
-            SimpleNamespace(heartbeat_interval=0)  # noqa-timeout
-        ) == 0.0
+        assert (
+            heartbeat_period(
+                SimpleNamespace(heartbeat_interval=0)  # noqa-timeout
+            )
+            == 0.0
+        )
 
     def test_negative_is_off(self):
         assert heartbeat_period(SimpleNamespace(heartbeat_interval=-5)) <= 0
 
     def test_absent_resolves_to_registry(self):
-        import slife.timeouts as timeouts
+        from slife import timeouts
 
         assert heartbeat_period(SimpleNamespace(heartbeat_interval=None)) == float(
             timeouts.timeouts.pacing.heartbeat
         )
 
     def test_unparseable_resolves_to_registry(self):
-        import slife.timeouts as timeouts
+        from slife import timeouts
 
         assert heartbeat_period(SimpleNamespace(heartbeat_interval="soon")) == float(
             timeouts.timeouts.pacing.heartbeat

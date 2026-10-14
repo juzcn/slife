@@ -44,13 +44,15 @@ def _immediate_env_value(value: str) -> str | None:
     """
     if value.startswith("${") and value.endswith("}"):
         from slife.config import _resolve_secret
+
         resolved = _resolve_secret(value)
         return resolved if resolved != value else None
     if "${" in value:
         from slife.env import resolve_env
+
         try:
             return resolve_env(value)
-        except Exception:
+        except KeyError:
             return value
     return value
 
@@ -111,12 +113,20 @@ def _format_one(key: str, value: str) -> str:
 class ConfigEnvSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "config_env_set"
     category: ClassVar[str] = "Config"
-    description = "Write an env var to slife.yaml. Use ${VAR} refs for secrets — never plaintext."
-    parameters = {
+    description = (
+        "Write an env var to slife.yaml. Use ${VAR} refs for secrets — never plaintext."
+    )
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "key": {"type": "string", "description": "Env var name, e.g. EDITOR, DEEPSEEK_API_KEY."},
-            "value": {"type": "string", "description": "Value to set. Omit to write a placeholder."},
+            "key": {
+                "type": "string",
+                "description": "Env var name, e.g. EDITOR, DEEPSEEK_API_KEY.",
+            },
+            "value": {
+                "type": "string",
+                "description": "Value to set. Omit to write a placeholder.",
+            },
         },
         "required": ["key"],
     }
@@ -149,8 +159,10 @@ class ConfigEnvSetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompa
 class ConfigEnvGetTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "config_env_get"
     category: ClassVar[str] = "Config"
-    description = "Read an env var (shell → slife.yaml → mcp env). Omit key to list all."
-    parameters = {
+    description = (
+        "Read an env var (shell → slife.yaml → mcp env). Omit key to list all."
+    )
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "key": {"type": "string", "description": "Env var name. Omit to list all."},
@@ -186,7 +198,7 @@ class ConfigEnvRemoveTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportInco
     name = "config_env_remove"
     category: ClassVar[str] = "Config"
     description = "Remove an env var from slife.yaml. Does NOT touch credstore."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "key": {"type": "string", "description": "Env var name to remove."},

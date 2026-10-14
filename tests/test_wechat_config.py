@@ -1,22 +1,20 @@
 """Tests for slife.plugins.wechat.config — per-user WeChat config I/O."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import dump_config
 from slife.plugins.wechat.config import (
+    DEFAULT_BASE_URL,
     _config_path,
+    clear_wechat_config,
     load_wechat_config,
     save_wechat_config,
     update_wechat_updates_buf,
-    clear_wechat_config,
-    DEFAULT_BASE_URL,
 )
+from tests.conftest import dump_config
 
+pytestmark = pytest.mark.unit
 
 # ── Mock credstore so tests don't touch real keyring ──────────
 
@@ -37,11 +35,13 @@ def _mock_credstore(monkeypatch):
 
     # Patch credstore public API
     import credstore
+
     monkeypatch.setattr(credstore, "get_credential", _get)
     monkeypatch.setattr(credstore, "delete_credential", _delete)
 
     # Patch the internal module too
     import credstore._store as sm
+
     monkeypatch.setattr(sm, "init_store", lambda **kw: None)
     store = sm.CredentialStore()
     store.get = _get
@@ -54,11 +54,11 @@ def _mock_credstore(monkeypatch):
 
     # Mock backend to prevent real keyring init
     import credstore._backend as backend
+
     monkeypatch.setattr(backend, "init_backend", lambda **kw: None)
     monkeypatch.setattr(backend, "get_system_keyring", lambda: None)
     monkeypatch.setattr(backend, "get_cryptfile", lambda: None)
     monkeypatch.setattr(backend, "has_master_key", lambda: True)
-
 
 
 class TestConfigPath:
@@ -90,11 +90,16 @@ class TestLoadWechatConfig:
 
     def test_loads_valid_config(self, tmp_path):
         path = tmp_path / "wechat_test.yaml"
-        path.write_text(dump_config({
-            "bot_token": "abc123",
-            "base_url": "https://custom.example.com",
-            "saved_at": 1718400000.0,
-        }), encoding="utf-8")
+        path.write_text(
+            dump_config(
+                {
+                    "bot_token": "abc123",
+                    "base_url": "https://custom.example.com",
+                    "saved_at": 1718400000.0,
+                }
+            ),
+            encoding="utf-8",
+        )
         result = load_wechat_config("test", work_dir=tmp_path)
         assert result["bot_token"] == "abc123"
         assert result["base_url"] == "https://custom.example.com"
@@ -132,10 +137,15 @@ class TestLoadWechatConfig:
 
     def test_with_ilink_user_id(self, tmp_path):
         path = tmp_path / "wechat_test.yaml"
-        path.write_text(dump_config({
-            "bot_token": "tok",
-            "ilink_user_id": "wxid_abc123",
-        }), encoding="utf-8")
+        path.write_text(
+            dump_config(
+                {
+                    "bot_token": "tok",
+                    "ilink_user_id": "wxid_abc123",
+                }
+            ),
+            encoding="utf-8",
+        )
         result = load_wechat_config("test", work_dir=tmp_path)
         assert result["ilink_user_id"] == "wxid_abc123"
 
@@ -250,10 +260,12 @@ class TestIntegration:
         assert load_wechat_config("flow", work_dir=tmp_path) == {}
 
     def test_config_per_user_isolation(self, tmp_path):
-        save_wechat_config("alice", {"bot_token": "alice_token", "saved_at": 1},
-                           work_dir=tmp_path)
-        save_wechat_config("bob", {"bot_token": "bob_token", "saved_at": 2},
-                           work_dir=tmp_path)
+        save_wechat_config(
+            "alice", {"bot_token": "alice_token", "saved_at": 1}, work_dir=tmp_path
+        )
+        save_wechat_config(
+            "bob", {"bot_token": "bob_token", "saved_at": 2}, work_dir=tmp_path
+        )
 
         alice = load_wechat_config("alice", work_dir=tmp_path)
         bob = load_wechat_config("bob", work_dir=tmp_path)
@@ -266,11 +278,15 @@ class TestUpdatesBufRoundtrip:
     resumes ack'ing instead of re-receiving the replay window."""
 
     def test_merge_preserves_session(self, tmp_path):
-        save_wechat_config("alice", {
-            "bot_token": "base-token",
-            "saved_at": 1111.0,
-            "ilink_user_id": "wxid_a",
-        }, work_dir=tmp_path)
+        save_wechat_config(
+            "alice",
+            {
+                "bot_token": "base-token",
+                "saved_at": 1111.0,
+                "ilink_user_id": "wxid_a",
+            },
+            work_dir=tmp_path,
+        )
         update_wechat_updates_buf("alice", "buf-1", work_dir=tmp_path)
         loaded = load_wechat_config("alice", work_dir=tmp_path)
         assert loaded["bot_token"] == "base-token"
@@ -279,11 +295,14 @@ class TestUpdatesBufRoundtrip:
         assert loaded["get_updates_buf"] == "buf-1"
 
     def test_latest_wins(self, tmp_path):
-        save_wechat_config("alice", {"bot_token": "tok", "saved_at": 1},
-                           work_dir=tmp_path)
+        save_wechat_config(
+            "alice", {"bot_token": "tok", "saved_at": 1}, work_dir=tmp_path
+        )
         update_wechat_updates_buf("alice", "buf-a", work_dir=tmp_path)
         update_wechat_updates_buf("alice", "buf-b", work_dir=tmp_path)
-        assert load_wechat_config("alice", work_dir=tmp_path)["get_updates_buf"] == "buf-b"
+        assert (
+            load_wechat_config("alice", work_dir=tmp_path)["get_updates_buf"] == "buf-b"
+        )
 
     def test_no_session_skipped(self, tmp_path):
         # No session file — a cursor without credentials is meaningless.
@@ -295,6 +314,7 @@ class TestUpdatesBufRoundtrip:
         assert update_wechat_updates_buf("alice", "buf", work_dir=tmp_path) is None
 
     def test_empty_buf_skipped(self, tmp_path):
-        save_wechat_config("alice", {"bot_token": "tok", "saved_at": 1},
-                           work_dir=tmp_path)
+        save_wechat_config(
+            "alice", {"bot_token": "tok", "saved_at": 1}, work_dir=tmp_path
+        )
         assert update_wechat_updates_buf("alice", "", work_dir=tmp_path) is None

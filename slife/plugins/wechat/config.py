@@ -23,6 +23,8 @@ Config format::
 import logging
 from pathlib import Path
 
+from ruamel.yaml.error import YAMLError
+
 from slife.tools._yaml_doc import new_yaml
 
 logger = logging.getLogger("slife_wechat")
@@ -51,7 +53,8 @@ def _config_path(user: str, work_dir: Path | None = None) -> Path:
 
 
 def load_wechat_config(
-    user: str, work_dir: Path | None = None,
+    user: str,
+    work_dir: Path | None = None,
 ) -> dict:
     """Load WeChat session config for *user*.
 
@@ -65,7 +68,7 @@ def load_wechat_config(
 
     try:
         raw = new_yaml().load(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (YAMLError, ValueError, OSError):
         logger.warning("wechat_config_parse_failed path=%s", path)
         return {}
 
@@ -83,7 +86,9 @@ def load_wechat_config(
 
 
 def save_wechat_config(
-    user: str, session: dict, work_dir: Path | None = None,
+    user: str,
+    session: dict,
+    work_dir: Path | None = None,
 ) -> Path:
     """Save (or update) WeChat session config for *user* (atomic write).
 
@@ -113,7 +118,9 @@ def save_wechat_config(
 
 
 def update_wechat_updates_buf(
-    user: str, get_updates_buf: str, work_dir: Path | None = None,
+    user: str,
+    get_updates_buf: str,
+    work_dir: Path | None = None,
 ) -> Path | None:
     """Merge *get_updates_buf* into the session file for *user* (atomic).
 
@@ -129,7 +136,7 @@ def update_wechat_updates_buf(
         return None
     try:
         raw = new_yaml().load(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (YAMLError, ValueError, OSError):
         logger.warning("wechat_cursor_merge_parse_failed path=%s", path)
         return None
     if not isinstance(raw, dict) or not raw.get("bot_token"):
@@ -143,7 +150,8 @@ def update_wechat_updates_buf(
 
 
 def clear_wechat_config(
-    user: str, work_dir: Path | None = None,
+    user: str,
+    work_dir: Path | None = None,
 ) -> bool:
     """Delete the WeChat session file for *user* — the ack cursor goes with it."""
     path = _config_path(user, work_dir)

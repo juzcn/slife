@@ -93,6 +93,7 @@ def _sync_in_memory_models(config, raw: dict) -> None:
     if config is None:
         return
     from slife.config import Config
+
     config.models, _ = Config._parse_models_section(raw.get(_MODELS_KEY, {}))
 
 
@@ -113,10 +114,10 @@ class _ModelConfigTool(_ConfigPathMixin, Tool):
 
     def __init__(self, config_path=None, config=None):
         super().__init__(config_path=config_path)
-        self._config: "Config | None" = config
+        self._config: Config | None = config
 
     @classmethod
-    def from_config(cls, cfg: dict, config: "Config | None", ctx=None):  # noqa: ARG003
+    def from_config(cls, cfg: dict, config: Config | None, ctx=None):
         tool = cls(config_path=config._path if config else None, config=config)
         if ctx is not None:
             object.__setattr__(tool, "_ctx", ctx)
@@ -153,7 +154,8 @@ class ListModelsTool(_ConfigPathMixin, Tool):
         models_section = raw.get(_MODELS_KEY, {})
         providers = (
             models_section.get("providers", {})
-            if isinstance(models_section, dict) else None
+            if isinstance(models_section, dict)
+            else None
         )
         active = raw.get(_ACTIVE_KEY, "")
 
@@ -204,7 +206,9 @@ class ListModelsTool(_ConfigPathMixin, Tool):
                 ctx = m.get("context_window", "?")
                 max_tok = m.get("max_tokens", "?")
                 compat = m.get("compat")
-                compat_tag = f"  compat={compat}" if isinstance(compat, dict) and compat else ""
+                compat_tag = (
+                    f"  compat={compat}" if isinstance(compat, dict) and compat else ""
+                )
                 lines.append(
                     f"  {star} `{ref}` — {name}"
                     f"  ctx={ctx} max_tok={max_tok}"
@@ -245,7 +249,11 @@ class SetModelTool(_ModelConfigTool):
             "api": {
                 "type": "string",
                 "description": "API type; default openai-completions.",
-                "enum": ["openai-completions", "anthropic-messages", "openai-responses"],
+                "enum": [
+                    "openai-completions",
+                    "anthropic-messages",
+                    "openai-responses",
+                ],
             },
             "base_url": {
                 "type": "string",
@@ -384,7 +392,12 @@ class SetModelTool(_ModelConfigTool):
         return f"[OK] {action} model `{ref}` ({name})"
 
     def _set_in_flat_list(
-        self, raw: dict, pid: str, model_id: str, name: str, kwargs: dict,
+        self,
+        raw: dict,
+        pid: str,
+        model_id: str,
+        name: str,
+        kwargs: dict,
     ) -> str:
         """Add or update one model inside a flat-list ``models:`` section.
 
@@ -399,8 +412,16 @@ class SetModelTool(_ModelConfigTool):
         flat = raw[_MODELS_KEY]
         target = f"{pid}/{model_id}"
         updates: dict = {"name": name}
-        for key in ("reasoning", "input", "context_window", "max_tokens",
-                    "compat", "base_url", "api_key", "api"):
+        for key in (
+            "reasoning",
+            "input",
+            "context_window",
+            "max_tokens",
+            "compat",
+            "base_url",
+            "api_key",
+            "api",
+        ):
             if key in kwargs:
                 updates[key] = kwargs[key]
 
@@ -438,8 +459,7 @@ class RemoveModelTool(_ModelConfigTool):
     name: ClassVar[str] = "model_remove"
     category: ClassVar[str] = "Models"
     description: ClassVar[str] = (
-        "Remove an LLM model by ref (provider/model); cannot remove the "
-        "active model."
+        "Remove an LLM model by ref (provider/model); cannot remove the active model."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -468,7 +488,8 @@ class RemoveModelTool(_ModelConfigTool):
         models_section = raw.get(_MODELS_KEY, {})
         providers = (
             models_section.get("providers", {})
-            if isinstance(models_section, dict) else None
+            if isinstance(models_section, dict)
+            else None
         )
 
         flat = _flat_list(raw)
@@ -514,7 +535,12 @@ class RemoveModelTool(_ModelConfigTool):
         return f"[OK] Removed `{ref}`."
 
     def _remove_from_flat_list(
-        self, raw: dict, flat: list, ref: str, pid: str, model_id: str,
+        self,
+        raw: dict,
+        flat: list,
+        ref: str,
+        pid: str,
+        model_id: str,
     ) -> str:
         """Remove one entry from a flat-list ``models:`` section.
 
@@ -551,9 +577,7 @@ class SwitchModelTool(_ModelConfigTool):
 
     name: ClassVar[str] = "model_switch"
     category: ClassVar[str] = "Models"
-    description: ClassVar[str] = (
-        "Switch the active LLM model; ref from model_list."
-    )
+    description: ClassVar[str] = "Switch the active LLM model; ref from model_list."
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
@@ -579,7 +603,8 @@ class SwitchModelTool(_ModelConfigTool):
         models_section = raw.get(_MODELS_KEY, {})
         providers = (
             models_section.get("providers", {})
-            if isinstance(models_section, dict) else None
+            if isinstance(models_section, dict)
+            else None
         )
 
         if "/" not in ref:
@@ -624,6 +649,7 @@ class SwitchModelTool(_ModelConfigTool):
         # LLM client and the TUI refreshes the status bar.
         try:
             from slife.agent.service import _on_model_switched
+
             for cb in _on_model_switched:
                 try:
                     cb(ref)
@@ -658,13 +684,9 @@ class AttachImageTool(Tool):
                 "type": "array",
                 "items": {
                     "type": "string",
-                    "description": (
-                        "Data URI, local file path, or HTTP(S) URL."
-                    ),
+                    "description": ("Data URI, local file path, or HTTP(S) URL."),
                 },
-                "description": (
-                    "Images to attach in this call."
-                ),
+                "description": ("Images to attach in this call."),
             },
         },
         "required": ["sources"],
@@ -672,6 +694,7 @@ class AttachImageTool(Tool):
 
     async def execute(self, **kwargs) -> str:
         from slife.agent.multimodal import include_image_urls
+
         sources = self._resolve_sources(kwargs)
 
         # Guard against a non-vision model — this is the runtime gate that
@@ -749,37 +772,66 @@ class AttachImageTool(Tool):
 #: are passed only on the turn they change, which keeps the prompt from
 #: repeating unchanged facts every round.
 _TURN_PROMPT_PARAMS = make_params(
-    context_window={"type": "integer", "default": 0,
-                    "description": "Context window size in tokens (0 = unknown)."},
-    last_context_tokens={"type": "integer", "default": 0,
-                         "description": "Prompt tokens of the previous turn's "
-                                        "last API call — the context size this "
-                                        "turn starts from (0 = unknown)."},
-    model_name={"type": "string", "default": "",
-                "description": "Display name of the active model; omitted "
-                               "while it is unchanged."},
-    input_modalities={"type": "string", "default": "",
-                      "description": 'Input modalities of model_name, e.g. '
-                                     '"text, image".'},
-    cwd={"type": "string", "default": "",
-         "description": "Working directory; omitted while it is unchanged."},
-    shell={"type": "string", "default": "",
-           "description": "Active shell; omitted while it is unchanged."},
-    presence_events={"type": "array", "default": [],
-                     "items": {"type": "array"},
-                     "description": "Peer online/offline/timeout events since "
-                                    "the last turn, as [epoch_seconds, line] pairs."},
-    schedule_status={"type": "array", "default": [],
-                     "items": {"type": "object"},
-                     "description": "Unsettled failed/missed runs, as "
-                                    "{name, due_at, status} objects."},
-    a2a_stale_tasks={"type": "array", "default": [],
-                     "items": {"type": "object"},
-                     "description": "Inbound A2A tasks orphaned by a restart "
-                                    "(never completable), as "
-                                    "{task_id, peer, since} objects."},
-    restarted={"type": "boolean", "default": False,
-               "description": "Set on the one turn that follows a restart."},
+    context_window={
+        "type": "integer",
+        "default": 0,
+        "description": "Context window size in tokens (0 = unknown).",
+    },
+    last_context_tokens={
+        "type": "integer",
+        "default": 0,
+        "description": "Prompt tokens of the previous turn's "
+        "last API call — the context size this "
+        "turn starts from (0 = unknown).",
+    },
+    model_name={
+        "type": "string",
+        "default": "",
+        "description": "Display name of the active model; omitted "
+        "while it is unchanged.",
+    },
+    input_modalities={
+        "type": "string",
+        "default": "",
+        "description": 'Input modalities of model_name, e.g. "text, image".',
+    },
+    cwd={
+        "type": "string",
+        "default": "",
+        "description": "Working directory; omitted while it is unchanged.",
+    },
+    shell={
+        "type": "string",
+        "default": "",
+        "description": "Active shell; omitted while it is unchanged.",
+    },
+    presence_events={
+        "type": "array",
+        "default": [],
+        "items": {"type": "array"},
+        "description": "Peer online/offline/timeout events since "
+        "the last turn, as [epoch_seconds, line] pairs.",
+    },
+    schedule_status={
+        "type": "array",
+        "default": [],
+        "items": {"type": "object"},
+        "description": "Unsettled failed/missed runs, as "
+        "{name, due_at, status} objects.",
+    },
+    a2a_stale_tasks={
+        "type": "array",
+        "default": [],
+        "items": {"type": "object"},
+        "description": "Inbound A2A tasks orphaned by a restart "
+        "(never completable), as "
+        "{task_id, peer, since} objects.",
+    },
+    restarted={
+        "type": "boolean",
+        "default": False,
+        "description": "Set on the one turn that follows a restart.",
+    },
 )
 
 
@@ -801,10 +853,12 @@ class TurnPromptTool(Tool):
 
     name = "_turn_prompt"
     category = "Models"
-    description = ("The per-turn prompt: current time, context usage, what "
-                   "changed since the last turn, peer presence events, "
-                   "unsettled scheduled runs, and inbound A2A tasks orphaned "
-                   "by a restart.")
+    description = (
+        "The per-turn prompt: current time, context usage, what "
+        "changed since the last turn, peer presence events, "
+        "unsettled scheduled runs, and inbound A2A tasks orphaned "
+        "by a restart."
+    )
     parameters = _TURN_PROMPT_PARAMS
 
     async def execute(self, **kwargs) -> str:
@@ -812,6 +866,7 @@ class TurnPromptTool(Tool):
         # _timeout/_async/_approve before dispatch, and the loop's own
         # auto-invoke passes only build_turn_prompt's kwargs.
         from slife.agent.system_prompt import build_turn_prompt
+
         return build_turn_prompt(**kwargs)
 
 
@@ -836,10 +891,7 @@ class CheckNewInputTool(Tool):
 
     async def execute(self, **kwargs) -> str:
         ctx = getattr(self, "_ctx", None)
-        extract = (
-            getattr(ctx, "extract_injectable", None)
-            if ctx is not None else None
-        )
+        extract = getattr(ctx, "extract_injectable", None) if ctx is not None else None
         if extract is None:
             return "No pending input — nothing to inject at this boundary."
         msg = extract()

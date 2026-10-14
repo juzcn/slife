@@ -32,8 +32,6 @@ def is_wsl() -> bool:
         return False
 
 
-
-
 def get_os_accessible_paths() -> list[str]:
     """Return paths the OS user can access, for use as MCP ``--allow-path`` args.
 

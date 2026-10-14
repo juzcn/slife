@@ -2,22 +2,18 @@
 
 import json
 import re
-import pytest; pytestmark = pytest.mark.unit
-
-
 import struct
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import aiosqlite
-
 import pytest
 
 from slife.plugins.memdb.store import (
-    SessionStore,
     INDEX_TEXT_VERSION,
     TOOL_ARG_CHARS,
+    SessionStore,
     _char_limit_for_tokens,
     _now,
     _serialize_f32,
@@ -27,6 +23,7 @@ from slife.plugins.memdb.store import (
     _turn_text_for_embedding,
 )
 
+pytestmark = pytest.mark.unit
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -76,8 +73,7 @@ async def _create_semantic_stub(conn) -> None:
     else, so a plain table with that column is the same table to them,
     wherever the tests run.
     """
-    await conn.execute(
-        "CREATE TABLE IF NOT EXISTS turn_semantic (turn_rowid INTEGER)")
+    await conn.execute("CREATE TABLE IF NOT EXISTS turn_semantic (turn_rowid INTEGER)")
 
 
 async def _unembedded_store(db_path: Path) -> SessionStore:
@@ -174,12 +170,17 @@ class TestTurnTextForEmbedding:
     """
 
     @staticmethod
-    def _turn(user_message="查一下首经贸新闻", assistant="查到了，首经贸 70 周年校庆在 10 月 18 日。",
-              tool_calls=None, tool_content="<html>…a fetched page, 40KB of markup…</html>"):
+    def _turn(
+        user_message="查一下首经贸新闻",
+        assistant="查到了，首经贸 70 周年校庆在 10 月 18 日。",
+        tool_calls=None,
+        tool_content="<html>…a fetched page, 40KB of markup…</html>",
+    ):
         messages = []
         if tool_calls:
-            messages.append({"role": "assistant", "content": "",
-                             "tool_calls": tool_calls})
+            messages.append(
+                {"role": "assistant", "content": "", "tool_calls": tool_calls}
+            )
         messages.append({"role": "assistant", "content": assistant})
         if tool_content is not None:
             messages.append({"role": "tool", "content": tool_content})
@@ -191,16 +192,23 @@ class TestTurnTextForEmbedding:
 
     def test_the_conversation_is_embedded(self):
         text = _turn_text_for_embedding(*self._turn())
-        assert "查一下首经贸新闻" in text       # what was asked
-        assert "70 周年校庆" in text            # what was answered
+        assert "查一下首经贸新闻" in text  # what was asked
+        assert "70 周年校庆" in text  # what was answered
 
     def test_tool_requests_are_embedded(self):
         """The request says what the turn was about — the search string, the
         URL, the command — so a tool-heavy turn keeps a topic even when its
         prose is one line (or "(Turn interrupted)")."""
-        calls = [{"id": "1", "type": "function",
-                  "function": {"name": "duckduckgo-search__search",
-                               "arguments": '{"query": "首经贸 校庆"}'}}]
+        calls = [
+            {
+                "id": "1",
+                "type": "function",
+                "function": {
+                    "name": "duckduckgo-search__search",
+                    "arguments": '{"query": "首经贸 校庆"}',
+                },
+            }
+        ]
         text = _turn_text_for_embedding(
             *self._turn(assistant="(Turn interrupted)", tool_calls=calls),
         )
@@ -210,18 +218,31 @@ class TestTurnTextForEmbedding:
     def test_tool_arguments_are_bounded(self):
         """One call's arguments cannot own the chunk: a rendered page or a
         file body is unbounded, and the request is what carries the topic."""
-        calls = [{"id": "1", "type": "function",
-                  "function": {"name": "fetch__fetch",
-                               "arguments": "x" * (TOOL_ARG_CHARS * 5)}}]
+        calls = [
+            {
+                "id": "1",
+                "type": "function",
+                "function": {
+                    "name": "fetch__fetch",
+                    "arguments": "x" * (TOOL_ARG_CHARS * 5),
+                },
+            }
+        ]
         text = _turn_text_for_embedding(*self._turn(tool_calls=calls))
         assert text.count("x") == TOOL_ARG_CHARS
 
     def test_a_turn_with_nothing_but_tool_results_has_no_text(self):
         """No user text, no request, no prose — nothing to embed, and the
         caller's empty-text skip is what keeps the drainer from stalling."""
-        assert _turn_text_for_embedding("", [
-            {"role": "tool", "content": "a result nobody asked for in prose"},
-        ]) == ""
+        assert (
+            _turn_text_for_embedding(
+                "",
+                [
+                    {"role": "tool", "content": "a result nobody asked for in prose"},
+                ],
+            )
+            == ""
+        )
 
 
 class TestToFts5Query:
@@ -404,7 +425,9 @@ class TestSessionStoreSetup:
     @pytest.mark.asyncio
     @patch("pathlib.Path.mkdir")
     @patch("slife.plugins.memdb.store.aiosqlite.connect")
-    async def test_reconfigure_for_embedding_reuses_connection(self, mock_connect, mock_mkdir):
+    async def test_reconfigure_for_embedding_reuses_connection(
+        self, mock_connect, mock_mkdir
+    ):
         """reconfigure_for_embedding must upgrade the live connection in
         place, not reconnect — a second connect leaked the old handle and
         opened a commit race (save_turn's execute/commit split across two
@@ -425,7 +448,8 @@ class TestSessionStoreSetup:
             await store.setup(embedding_dim=0)
             conn_before = store._conn
             await store.reconfigure_for_embedding(
-                embedding_dim=768, embedding_model="transformer:bge-m3",
+                embedding_dim=768,
+                embedding_model="transformer:bge-m3",
             )
 
         assert mock_connect.call_count == 1
@@ -494,7 +518,8 @@ class TestSessionStoreSaveTurn:
         await store.save_turn(user_message="Hello")
 
         writes = [
-            call[0] for call in mock_conn.execute.call_args_list
+            call[0]
+            for call in mock_conn.execute.call_args_list
             if "turn_meta" in call[0][0] and "INSERT OR REPLACE" in call[0][0]
         ]
         assert writes, "save_turn must append to the live-context list"
@@ -523,7 +548,8 @@ class TestSessionStoreSaveTurn:
         # The save writes several statements (turn INSERT, context-list
         # append) — pick the turn row's.
         insert = next(
-            call for call in mock_conn.execute.call_args_list
+            call
+            for call in mock_conn.execute.call_args_list
             if "INSERT INTO turn " in call[0][0]
         )
         args = insert[0][1]
@@ -533,6 +559,7 @@ class TestSessionStoreSaveTurn:
         assert args[3] == "2026-08-12T14:32:09+08:00"
         assert args[4] == "2026-08-12T14:35:40+08:00"
 
+
 class TestSessionStoreGetTurn:
     """Tests for get_turn."""
 
@@ -541,7 +568,9 @@ class TestSessionStoreGetTurn:
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(return_value={"rowid": 1, "user_message": "Hello"})
+        mock_cursor.fetchone = AsyncMock(
+            return_value={"rowid": 1, "user_message": "Hello"}
+        )
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
@@ -571,10 +600,12 @@ class TestSessionStoreGetTurnsByIds:
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[
-            {"rowid": 1, "user_message": "Turn 1"},
-            {"rowid": 2, "user_message": "Turn 2"},
-        ])
+        mock_cursor.fetchall = AsyncMock(
+            return_value=[
+                {"rowid": 1, "user_message": "Turn 1"},
+                {"rowid": 2, "user_message": "Turn 2"},
+            ]
+        )
         # A second query merges the turn_channel payload rows — no rows →
         # every turn falls back to "{}".
         channel_cursor = AsyncMock()
@@ -656,7 +687,9 @@ class TestSessionStoreGetTurnsByIds:
         # A contiguous slice, oldest-first as the list spells it.
         result = await store.get_turns_by_ids([3, 4, 5])
         assert [t["user_message"] for t in result] == [
-            "User message 3", "User message 4", "User message 5",
+            "User message 3",
+            "User message 4",
+            "User message 5",
         ]
 
         # All columns should be present in each row
@@ -677,12 +710,15 @@ class TestSessionStoreGetTurnsByIds:
         # never express this, and the order is the caller's, not rowid's.
         sparse = await store.get_turns_by_ids([5, 1, 3])
         assert [t["user_message"] for t in sparse] == [
-            "User message 5", "User message 1", "User message 3",
+            "User message 5",
+            "User message 1",
+            "User message 3",
         ]
 
         # Unknown ids are skipped, the rest keep their given order.
-        assert [t["user_message"] for t in await store.get_turns_by_ids([2, 999])] \
-            == ["User message 2"]
+        assert [t["user_message"] for t in await store.get_turns_by_ids([2, 999])] == [
+            "User message 2"
+        ]
         assert await store.get_turns_by_ids([]) == []
 
         await store._conn.close()
@@ -876,7 +912,6 @@ class TestSessionStoreContextTurns:
 
         await store._conn.close()
 
-    
 
 class TestSessionStoreCountTurns:
     """Tests for count_turns."""
@@ -937,8 +972,10 @@ class TestSessionStoreCountTurns:
         store._conn = mock_conn
 
         await store.count_turns(
-            query="hello", mode="fts5",
-            since="2026-01-01", until="2026-02-01",
+            query="hello",
+            mode="fts5",
+            since="2026-01-01",
+            until="2026-02-01",
         )
 
         # Second execute = the fts5 count — must JOIN turn and carry the
@@ -1034,9 +1071,11 @@ class TestSessionStoreCountTurns:
             )""")
         await conn.execute(
             "INSERT INTO turn (user_message, messages, created_at) VALUES (?, ?, ?)",
-            ("让子agent 去处理这个任务",
-             '[{"role": "assistant", "content": "已经委托给子进程了"}]',
-             "2026-07-22T10:00:00"),
+            (
+                "让子agent 去处理这个任务",
+                '[{"role": "assistant", "content": "已经委托给子进程了"}]',
+                "2026-07-22T10:00:00",
+            ),
         )
         await conn.execute(
             "INSERT INTO turn (user_message, messages, tags, created_at)"
@@ -1087,8 +1126,11 @@ class TestSessionStoreCountTurns:
                 content='turn', content_rowid='rowid')""")
         await conn.execute(
             "INSERT INTO turn (user_message, messages, created_at) VALUES (?, ?, ?)",
-            ("asyncio 并发笔记", '[{"role": "assistant", "content": "关于 asyncio"}]',
-             "2026-09-21T10:00:00+08:00"),
+            (
+                "asyncio 并发笔记",
+                '[{"role": "assistant", "content": "关于 asyncio"}]',
+                "2026-09-21T10:00:00+08:00",
+            ),
         )
         await conn.execute("INSERT INTO turn_fts(turn_fts) VALUES('rebuild')")
         await conn.commit()
@@ -1098,16 +1140,25 @@ class TestSessionStoreCountTurns:
         try:
             # "asyncio" is ASCII → FTS5 MATCH; "并发" is CJK → the LIKE fallback.
             for query in ("asyncio", "并发"):
-                assert len(await store.search_keyword(
-                    query, since="2026-09-01")) == 1, query
+                assert (
+                    len(await store.search_keyword(query, since="2026-09-01")) == 1
+                ), query
                 # Closed before the row, and open after it — both exclude it.
-                assert await store.search_keyword(
-                    query, until="2026-09-01") == [], query
-                assert await store.search_keyword(
-                    query, since="2026-10-01") == [], query
+                assert await store.search_keyword(query, until="2026-09-01") == [], (
+                    query
+                )
+                assert await store.search_keyword(query, since="2026-10-01") == [], (
+                    query
+                )
                 # A window on both sides keeps it.
-                assert len(await store.search_keyword(
-                    query, since="2026-09-01", until="2026-09-30")) == 1, query
+                assert (
+                    len(
+                        await store.search_keyword(
+                            query, since="2026-09-01", until="2026-09-30"
+                        )
+                    )
+                    == 1
+                ), query
         finally:
             await conn.close()
 
@@ -1161,7 +1212,9 @@ class TestSessionStoreCountTurns:
             await store.close()
 
     @pytest.mark.asyncio
-    async def test_a_turn_with_unparseable_messages_still_yields_its_user_text(self, tmp_path):
+    async def test_a_turn_with_unparseable_messages_still_yields_its_user_text(
+        self, tmp_path
+    ):
         """A malformed ``messages`` column must not strand the drainer.
 
         The column is on the embedding path; a raise there froze the pending
@@ -1189,10 +1242,12 @@ class TestSessionStoreTokenUsage:
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[
-            {"rowid": 2, "token_count": 300, "context_tokens": 200},
-            {"rowid": 1, "token_count": 100, "context_tokens": 80},
-        ])
+        mock_cursor.fetchall = AsyncMock(
+            return_value=[
+                {"rowid": 2, "token_count": 300, "context_tokens": 200},
+                {"rowid": 1, "token_count": 100, "context_tokens": 80},
+            ]
+        )
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
@@ -1295,10 +1350,14 @@ class TestSessionStoreUpdateSummary:
         # 0 is how a caller tells "no such turn" from "updated" (the two used
         # to be the same None, so a summarize call announced success while
         # writing nothing).
-        assert await store.update_summary(
-            rowid=1,
-            summary="Great conversation", tags="ai,chat",
-        ) == 1
+        assert (
+            await store.update_summary(
+                rowid=1,
+                summary="Great conversation",
+                tags="ai,chat",
+            )
+            == 1
+        )
         mock_conn.commit.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1319,9 +1378,16 @@ class TestSessionStoreSearchKeyword:
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[
-            {"rowid": 1, "user_message": "Hello world", "snippet": "Hello…", "rank": 0.1},
-        ])
+        mock_cursor.fetchall = AsyncMock(
+            return_value=[
+                {
+                    "rowid": 1,
+                    "user_message": "Hello world",
+                    "snippet": "Hello…",
+                    "rank": 0.1,
+                },
+            ]
+        )
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
@@ -1350,9 +1416,16 @@ class TestSessionStoreSearchKeyword:
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[
-            {"turn_id": 1, "user_message": "今天北京天气怎么样？", "snippet": "…", "rank": 0},
-        ])
+        mock_cursor.fetchall = AsyncMock(
+            return_value=[
+                {
+                    "turn_id": 1,
+                    "user_message": "今天北京天气怎么样？",
+                    "snippet": "…",
+                    "rank": 0,
+                },
+            ]
+        )
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
@@ -1420,13 +1493,18 @@ class TestSessionStoreTurnList:
 
     @pytest.mark.asyncio
     async def test_envelope_windows_the_page_and_the_count_alike(self):
-        store, conn = self._store(7, [
-            {"rowid": 2, "user_message": "newer"},
-            {"rowid": 1, "user_message": "older"},
-        ])
+        store, conn = self._store(
+            7,
+            [
+                {"rowid": 2, "user_message": "newer"},
+                {"rowid": 1, "user_message": "older"},
+            ],
+        )
 
         out = await store.turn_list(
-            since="2026-08-01", until="2026-08-02", limit=2,
+            since="2026-08-01",
+            until="2026-08-02",
+            limit=2,
         )
 
         assert out["total"] == 7
@@ -1488,8 +1566,10 @@ class TestSessionStoreSearchTime:
     @pytest.mark.asyncio
     async def test_it_returns_turn_list_entries(self):
         store = SessionStore(Path("/tmp/test.db"))
-        rows = [{"rowid": 2, "user_message": "Newer"},
-                {"rowid": 1, "user_message": "Older"}]
+        rows = [
+            {"rowid": 2, "user_message": "Newer"},
+            {"rowid": 1, "user_message": "Older"},
+        ]
         count_cursor = AsyncMock()
         count_cursor.fetchone = AsyncMock(return_value=(2,))
         rows_cursor = AsyncMock()
@@ -1516,9 +1596,11 @@ class TestSessionStoreSearchGrep:
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[
-            {"turn_id": 1, "user_message": "Hello", "context": "Hello world"},
-        ])
+        mock_cursor.fetchall = AsyncMock(
+            return_value=[
+                {"turn_id": 1, "user_message": "Hello", "context": "Hello world"},
+            ]
+        )
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
@@ -1533,18 +1615,35 @@ class TestSessionStoreSearchGrep:
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[
-            {"rowid": 1, "user_message": "please summarize this",
-             "summary": "", "tags": "", "created_at": "x", "messages": ""},
-            {"rowid": 2, "user_message": "unrelated turn",
-             "summary": "", "tags": "", "created_at": "x", "messages": ""},
-        ])
+        mock_cursor.fetchall = AsyncMock(
+            return_value=[
+                {
+                    "rowid": 1,
+                    "user_message": "please summarize this",
+                    "summary": "",
+                    "tags": "",
+                    "created_at": "x",
+                    "messages": "",
+                },
+                {
+                    "rowid": 2,
+                    "user_message": "unrelated turn",
+                    "summary": "",
+                    "tags": "",
+                    "created_at": "x",
+                    "messages": "",
+                },
+            ]
+        )
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
         # `summ.rize` and alternation — the two things LIKE could not do.
         assert [r["rowid"] for r in await store.search_grep("summ.rize")] == [1]
-        assert {r["rowid"] for r in await store.search_grep("summarize|unrelated")} == {1, 2}
+        assert {r["rowid"] for r in await store.search_grep("summarize|unrelated")} == {
+            1,
+            2,
+        }
         # `%` and `_` are ordinary characters in a regex, not wildcards — the
         # LIKE predicate and its ESCAPE clause are gone.
         sql, _ = mock_conn.execute.call_args[0]
@@ -1559,11 +1658,18 @@ class TestSessionStoreSearchGrep:
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[
-            {"rowid": 1, "user_message": "please summarize this", "summary": "",
-             "tags": "", "created_at": "x",
-             "messages": '[{"role": "tool", "content": "summarize the file"}]'},
-        ])
+        mock_cursor.fetchall = AsyncMock(
+            return_value=[
+                {
+                    "rowid": 1,
+                    "user_message": "please summarize this",
+                    "summary": "",
+                    "tags": "",
+                    "created_at": "x",
+                    "messages": '[{"role": "tool", "content": "summarize the file"}]',
+                },
+            ]
+        )
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
@@ -1585,10 +1691,19 @@ class TestSessionStoreSearchGrep:
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[
-            {"rowid": i, "user_message": "hit", "summary": "", "tags": "",
-             "created_at": "x", "messages": ""} for i in range(30)
-        ])
+        mock_cursor.fetchall = AsyncMock(
+            return_value=[
+                {
+                    "rowid": i,
+                    "user_message": "hit",
+                    "summary": "",
+                    "tags": "",
+                    "created_at": "x",
+                    "messages": "",
+                }
+                for i in range(30)
+            ]
+        )
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
@@ -1652,9 +1767,11 @@ class TestVecStoreMetric:
 
         store = SessionStore(tmp_path / "t.db")
         store._conn = None
-        conn = MagicMock(spec=[])          # no attributes at all, as on macOS
+        conn = MagicMock(spec=[])  # no attributes at all, as on macOS
         with patch.object(
-            SessionStore, "_c", new_callable=lambda: property(lambda self: conn),
+            SessionStore,
+            "_c",
+            new_callable=lambda: property(lambda self: conn),
         ):
             store._vec_available = True
             await store._load_vec_extension()
@@ -1680,7 +1797,7 @@ class TestVecStoreMetric:
         await store._c.commit()
         await store.close()
 
-        store = SessionStore(db)          # the fresh start that must rebuild
+        store = SessionStore(db)  # the fresh start that must rebuild
         await store.setup(embedding_dim=8)
         try:
             assert store._vec_available, "skip guard should have caught this"
@@ -1784,10 +1901,9 @@ class TestIndexTextContract:
         await store.setup(embedding_dim=8)
         try:
             assert store._vec_available, "skip guard should have caught this"
-            assert await self._indexed_rows(store) == 0       # dropped
+            assert await self._indexed_rows(store) == 0  # dropped
             cursor = await store._c.execute(
-                "SELECT value FROM turn_meta "
-                "WHERE key = 'embedding_text_version'",
+                "SELECT value FROM turn_meta WHERE key = 'embedding_text_version'",
             )
             assert (await cursor.fetchone())[0] == INDEX_TEXT_VERSION
         finally:
@@ -1825,11 +1941,21 @@ class TestSessionStoreSearchSemantic:
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         # First fetchall = KNN rows, second = turn lookup rows.
-        mock_cursor.fetchall = AsyncMock(side_effect=[
-            [{"rowid": 1, "turn_rowid": 7, "summary": "A chat", "distance": 0.5,
-              "tags": "", "created_at": "2026-01-01"}],
-            [{"rowid": 7, "user_message": "北京天气怎么样"}],
-        ])
+        mock_cursor.fetchall = AsyncMock(
+            side_effect=[
+                [
+                    {
+                        "rowid": 1,
+                        "turn_rowid": 7,
+                        "summary": "A chat",
+                        "distance": 0.5,
+                        "tags": "",
+                        "created_at": "2026-01-01",
+                    }
+                ],
+                [{"rowid": 7, "user_message": "北京天气怎么样"}],
+            ]
+        )
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
@@ -1848,11 +1974,21 @@ class TestSessionStoreSearchSemantic:
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(side_effect=[
-            [{"rowid": 1, "turn_rowid": 7, "summary": "s", "tags": "",
-              "created_at": "2026-01-01", "distance": 0.1}],
-            [{"rowid": 7, "user_message": "北京天气怎么样"}],
-        ])
+        mock_cursor.fetchall = AsyncMock(
+            side_effect=[
+                [
+                    {
+                        "rowid": 1,
+                        "turn_rowid": 7,
+                        "summary": "s",
+                        "tags": "",
+                        "created_at": "2026-01-01",
+                        "distance": 0.1,
+                    }
+                ],
+                [{"rowid": 7, "user_message": "北京天气怎么样"}],
+            ]
+        )
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         store._conn = mock_conn
 
@@ -1887,8 +2023,12 @@ class TestSessionStoreReplaceEmbeddingChunks:
         store._conn = mock_conn
 
         await store.replace_embedding_chunks(
-            {"doc_id": 7, "summary": "s", "tags": "t",
-             "created_at": "2024-01-01T00:00:00"},
+            {
+                "doc_id": 7,
+                "summary": "s",
+                "tags": "t",
+                "created_at": "2024-01-01T00:00:00",
+            },
             [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
         )
         # DELETE (1) + 3 INSERTs = 4 executes, exactly one commit, no rollback
@@ -1900,20 +2040,26 @@ class TestSessionStoreReplaceEmbeddingChunks:
     async def test_rolls_back_on_mid_insert_failure(self):
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock(side_effect=[
-            AsyncMock(),              # DELETE
-            AsyncMock(),              # INSERT chunk 0
-            RuntimeError("boom"),     # INSERT chunk 1 → fails mid-way
-            AsyncMock(),              # INSERT chunk 2 (not reached)
-        ])
+        mock_conn.execute = AsyncMock(
+            side_effect=[
+                AsyncMock(),  # DELETE
+                AsyncMock(),  # INSERT chunk 0
+                RuntimeError("boom"),  # INSERT chunk 1 → fails mid-way
+                AsyncMock(),  # INSERT chunk 2 (not reached)
+            ]
+        )
         mock_conn.commit = AsyncMock()
         mock_conn.rollback = AsyncMock()
         store._conn = mock_conn
 
         with pytest.raises(RuntimeError):
             await store.replace_embedding_chunks(
-                {"doc_id": 7, "summary": "", "tags": "",
-                 "created_at": "2024-01-01T00:00:00"},
+                {
+                    "doc_id": 7,
+                    "summary": "",
+                    "tags": "",
+                    "created_at": "2024-01-01T00:00:00",
+                },
                 [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
             )
         mock_conn.rollback.assert_awaited_once()
@@ -1929,8 +2075,12 @@ class TestSessionStoreGetUnembeddedDocs:
         store = SessionStore(Path("/tmp/test.db"))
         mock_conn = AsyncMock()
         row = {
-            "doc_id": 3, "user_message": "hi", "messages": "[]",
-            "summary": "sum", "tags": "tag", "created_at": "2026-01-01T00:00:00+00:00",
+            "doc_id": 3,
+            "user_message": "hi",
+            "messages": "[]",
+            "summary": "sum",
+            "tags": "tag",
+            "created_at": "2026-01-01T00:00:00+00:00",
         }
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[row])

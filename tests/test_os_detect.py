@@ -1,11 +1,12 @@
 """Tests for slife.os_detect — OS detection helpers."""
 
-import pytest; pytestmark = pytest.mark.unit
+from unittest.mock import mock_open, patch
 
-from unittest.mock import patch, mock_open
+import pytest
 
 from slife.os_detect import is_wsl
 
+pytestmark = pytest.mark.unit
 
 # ── is_wsl ─────────────────────────────────────────────────────────────────
 

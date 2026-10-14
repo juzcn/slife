@@ -25,6 +25,7 @@ import time as _time
 from dataclasses import dataclass
 
 import httpx2
+
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ def set_credential(key: str, value: str) -> None:
 def delete_credential(key: str) -> None:
     _require_credstore().delete_credential(key)
 
+
 # ── User-facing output channel ─────────────────────────────────────────
 # The device flow runs inside the slife-mcp gateway child, whose stdout is
 # CLOSED right after the port signal (server_utils.signal_port) — printing
@@ -79,6 +81,7 @@ def _emit_user_message(text: str, marker: str = _OAUTH_MARKER) -> None:
     """
     for line in text.splitlines():
         print(f"{marker} {line}", file=sys.stderr, flush=True)
+
 
 # credstore key prefix for OAuth tokens
 _TOKEN_KEY_PREFIX = "mcp_oauth_"
@@ -106,12 +109,15 @@ def _credstore_key(server_name: str) -> str:
 
 def _serialize(t: OAuthTokens) -> str:
     """Serialize tokens to JSON for credstore storage."""
-    return json.dumps({
-        "access_token": t.access_token,
-        "refresh_token": t.refresh_token,
-        "expires_at": t.expires_at,
-        "token_type": t.token_type,
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "access_token": t.access_token,
+            "refresh_token": t.refresh_token,
+            "expires_at": t.expires_at,
+            "token_type": t.token_type,
+        },
+        ensure_ascii=False,
+    )
 
 
 def _deserialize(raw: str) -> OAuthTokens | None:
@@ -146,9 +152,11 @@ def get_valid_token(server_name: str) -> OAuthTokens | None:
     # Consider tokens expiring within the registry skew as expired — refreshing
     # after the wire deadline is a guaranteed 401.  expires_at <= 0 means the
     # expiry is unknown/missing — treat it as expired, not valid forever.
-    if tokens.expires_at <= 0 \
-            or _time.time() + _timeouts.timeouts.transport.oauth_refresh_skew \
-            >= tokens.expires_at:
+    if (
+        tokens.expires_at <= 0
+        or _time.time() + _timeouts.timeouts.transport.oauth_refresh_skew
+        >= tokens.expires_at
+    ):
         logger.debug("oauth_token_expired server=%s", server_name)
         return None
 
@@ -170,7 +178,7 @@ def _delete_tokens(server_name: str) -> None:
     """Remove stored tokens (best-effort)."""
     try:
         delete_credential(_credstore_key(server_name))
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — best-effort delete; credstore raises keyring/RuntimeError
         pass
 
 
@@ -217,7 +225,9 @@ async def run_device_code_flow(auth: dict, server_name: str) -> OAuthTokens:
     if client_secret:
         body["client_secret"] = client_secret
 
-    async with httpx2.AsyncClient(timeout=httpx2.Timeout(_timeouts.timeouts.transport.oauth)) as http:
+    async with httpx2.AsyncClient(
+        timeout=httpx2.Timeout(_timeouts.timeouts.transport.oauth)
+    ) as http:
         try:
             resp = await http.post(
                 device_auth_url,
@@ -236,9 +246,12 @@ async def run_device_code_flow(auth: dict, server_name: str) -> OAuthTokens:
     verification_uri = device_data.get("verification_uri", "")
     expires_in = int(device_data.get("expires_in", 300))
     try:
-        poll_interval = float(device_data.get(
-            "interval", _timeouts.timeouts.pacing.oauth_poll,
-        ))
+        poll_interval = float(
+            device_data.get(
+                "interval",
+                _timeouts.timeouts.pacing.oauth_poll,
+            )
+        )
     except (TypeError, ValueError):
         poll_interval = _timeouts.timeouts.pacing.oauth_poll
     # A server returning interval=0 (or negative) must not produce a tight
@@ -246,9 +259,7 @@ async def run_device_code_flow(auth: dict, server_name: str) -> OAuthTokens:
     poll_interval = max(poll_interval, _timeouts.timeouts.pacing.oauth_poll_min)
 
     if not device_code:
-        raise RuntimeError(
-            f"Device auth response missing device_code: {device_data}"
-        )
+        raise RuntimeError(f"Device auth response missing device_code: {device_data}")
 
     # ── Step 2: Show user instructions ──────────────────────────────
     msg_parts = [
@@ -282,16 +293,24 @@ async def run_device_code_flow(auth: dict, server_name: str) -> OAuthTokens:
         poll_body["client_secret"] = client_secret
 
     deadline = _time.monotonic() + min(
-        expires_in, _timeouts.timeouts.transport.poll_oauth,
+        expires_in,
+        _timeouts.timeouts.transport.poll_oauth,
     )
 
     # The device-code POST above used its own short-lived client (now closed).
     # Polling must run on a fresh client owned by this function — reusing the
     # closed one raises RuntimeError on the first poll and wedges connect().
-    http = httpx2.AsyncClient(timeout=httpx2.Timeout(_timeouts.timeouts.transport.oauth))
+    http = httpx2.AsyncClient(
+        timeout=httpx2.Timeout(_timeouts.timeouts.transport.oauth)
+    )
     try:
         return await _poll_token(
-            http, server_name, token_url, poll_body, deadline, poll_interval,
+            http,
+            server_name,
+            token_url,
+            poll_body,
+            deadline,
+            poll_interval,
         )
     finally:
         await http.aclose()
@@ -363,7 +382,9 @@ async def _poll_token(
                 f"Please restart the authorization."
             )
         elif error in (
-            "access_denied", "invalid_client", "invalid_grant",
+            "access_denied",
+            "invalid_client",
+            "invalid_grant",
             "unsupported_grant_type",
         ):
             # RFC 8628 §3.5 terminal errors — the user denied, or the grant
@@ -379,15 +400,14 @@ async def _poll_token(
         elif error:
             logger.warning(
                 "oauth_poll_error server=%s error=%s desc=%s",
-                server_name, error, token_data.get("error_description", ""),
+                server_name,
+                error,
+                token_data.get("error_description", ""),
             )
             continue
 
     _delete_tokens(server_name)
-    raise RuntimeError(
-        f"Authorization timed out for {server_name}. "
-        f"Please try again."
-    )
+    raise RuntimeError(f"Authorization timed out for {server_name}. Please try again.")
 
 
 async def refresh_access_token(auth: dict, server_name: str) -> OAuthTokens:
@@ -412,8 +432,11 @@ async def refresh_access_token(auth: dict, server_name: str) -> OAuthTokens:
     # Off the loop: this is a sync keyring read on the connect path, where a
     # blocked loop is a deadline that cannot fire (see ``_ensure_oauth_token``).
     from slife.threads import run_daemon
+
     raw = await run_daemon(
-        get_credential, _credstore_key(server_name), name="mcp-oauth-token",
+        get_credential,
+        _credstore_key(server_name),
+        name="mcp-oauth-token",
     )
     if not raw:
         raise RuntimeError(
@@ -423,8 +446,7 @@ async def refresh_access_token(auth: dict, server_name: str) -> OAuthTokens:
     stored = _deserialize(raw)
     if stored is None or not stored.refresh_token:
         raise RuntimeError(
-            f"No refresh token available for '{server_name}'. "
-            f"Re-run device code flow."
+            f"No refresh token available for '{server_name}'. Re-run device code flow."
         )
 
     logger.info("oauth_refresh server=%s", server_name)
@@ -437,7 +459,9 @@ async def refresh_access_token(auth: dict, server_name: str) -> OAuthTokens:
     if client_secret:
         body["client_secret"] = client_secret
 
-    async with httpx2.AsyncClient(timeout=httpx2.Timeout(_timeouts.timeouts.transport.oauth)) as http:
+    async with httpx2.AsyncClient(
+        timeout=httpx2.Timeout(_timeouts.timeouts.transport.oauth)
+    ) as http:
         try:
             resp = await http.post(
                 token_url,
@@ -459,9 +483,7 @@ async def refresh_access_token(auth: dict, server_name: str) -> OAuthTokens:
         except httpx2.HTTPError as e:
             # Transient transport failure (connection reset, timeout) — keep
             # the stored refresh token so the next refresh can succeed.
-            raise RuntimeError(
-                f"Token refresh failed for '{server_name}': {e}."
-            ) from e
+            raise RuntimeError(f"Token refresh failed for '{server_name}': {e}.") from e
 
     tokens = OAuthTokens(
         access_token=data["access_token"],

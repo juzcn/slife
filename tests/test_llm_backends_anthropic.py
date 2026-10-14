@@ -1,13 +1,13 @@
 """Tests for AnthropicBackend — message/tool adaptation, build_kwargs, streaming."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from slife.config import ModelConfig
-from slife.agent.llm_backends.anthropic import AnthropicBackend
+import pytest
 
+from slife.agent.llm_backends.anthropic import AnthropicBackend
+from slife.config import ModelConfig
+
+pytestmark = pytest.mark.unit
 
 # ── Fixtures ──────────────────────────────────────────────────────────
 
@@ -62,8 +62,11 @@ class TestOaMsgsToAnthropic:
         ]
         system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
         assert system == [
-            {"type": "text", "text": "You are helpful.",
-             "cache_control": {"type": "ephemeral"}},
+            {
+                "type": "text",
+                "text": "You are helpful.",
+                "cache_control": {"type": "ephemeral"},
+            },
         ]
         assert len(converted) == 1
         assert converted[0]["role"] == "user"
@@ -78,8 +81,11 @@ class TestOaMsgsToAnthropic:
         system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
         assert system == [
             {"type": "text", "text": "Be helpful."},
-            {"type": "text", "text": "Be concise.",
-             "cache_control": {"type": "ephemeral"}},
+            {
+                "type": "text",
+                "text": "Be concise.",
+                "cache_control": {"type": "ephemeral"},
+            },
         ]
         assert len(converted) == 1
 
@@ -88,8 +94,9 @@ class TestOaMsgsToAnthropic:
             {"role": "system", "content": "Be helpful."},
             {"role": "user", "content": "OK"},
         ]
-        system, converted = AnthropicBackend._oa_msgs_to_anthropic(
-            messages, cache_control=False,
+        system, _converted = AnthropicBackend._oa_msgs_to_anthropic(
+            messages,
+            cache_control=False,
         )
         assert system == [{"type": "text", "text": "Be helpful."}]
 
@@ -101,14 +108,19 @@ class TestOaMsgsToAnthropic:
         assert converted[0]["content"] == "Hello world"
 
     def test_user_multimodal_image_conversion(self):
-        messages = [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "What is this?"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
-            ],
-        }]
-        system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is this?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,abc123"},
+                    },
+                ],
+            }
+        ]
+        _system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
         blocks = converted[0]["content"]
         assert blocks[0] == {"type": "text", "text": "What is this?"}
         assert blocks[1]["type"] == "image"
@@ -121,7 +133,7 @@ class TestOaMsgsToAnthropic:
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "Hello!", "tool_calls": None},
         ]
-        system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
+        _system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
         assistant = converted[1]
         assert assistant["role"] == "assistant"
         assert isinstance(assistant["content"], list)
@@ -130,14 +142,30 @@ class TestOaMsgsToAnthropic:
     def test_assistant_tool_calls_to_tool_use(self):
         messages = [
             {"role": "user", "content": "search cats"},
-            {"role": "assistant", "content": "Searching...", "tool_calls": [
-                {"id": "tc_1", "type": "function",
-                 "function": {"name": "web_search", "arguments": '{"query":"cats"}'}},
-                {"id": "tc_2", "type": "function",
-                 "function": {"name": "fetch", "arguments": '{"url":"http://x"}'}},
-            ]},
+            {
+                "role": "assistant",
+                "content": "Searching...",
+                "tool_calls": [
+                    {
+                        "id": "tc_1",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"query":"cats"}',
+                        },
+                    },
+                    {
+                        "id": "tc_2",
+                        "type": "function",
+                        "function": {
+                            "name": "fetch",
+                            "arguments": '{"url":"http://x"}',
+                        },
+                    },
+                ],
+            },
         ]
-        system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
+        _system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
         blocks = converted[1]["content"]
         # text block
         assert blocks[0]["type"] == "text"
@@ -154,12 +182,19 @@ class TestOaMsgsToAnthropic:
     def test_assistant_none_content_with_tool_calls(self):
         messages = [
             {"role": "user", "content": "search"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "tc", "type": "function",
-                 "function": {"name": "echo", "arguments": '{}'}},
-            ]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc",
+                        "type": "function",
+                        "function": {"name": "echo", "arguments": "{}"},
+                    },
+                ],
+            },
         ]
-        system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
+        _system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
         blocks = converted[1]["content"]
         # No text block when content is None
         assert blocks[0]["type"] == "tool_use"
@@ -167,13 +202,20 @@ class TestOaMsgsToAnthropic:
     def test_tool_result_conversion(self):
         messages = [
             {"role": "user", "content": "search"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "call_1", "type": "function",
-                 "function": {"name": "search", "arguments": '{"q":"test"}'}},
-            ]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": '{"q":"test"}'},
+                    },
+                ],
+            },
             {"role": "tool", "tool_call_id": "call_1", "content": "Results found."},
         ]
-        system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
+        _system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
         tool_msg = converted[2]
         assert tool_msg["role"] == "user"
         assert tool_msg["content"][0]["type"] == "tool_result"
@@ -188,12 +230,23 @@ class TestOaMsgsToAnthropic:
         success whose text happens to start with "Error:"."""
         messages = [
             {"role": "user", "content": "search"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "call_1", "type": "function",
-                 "function": {"name": "search", "arguments": '{"q":"x"}'}},
-            ]},
-            {"role": "tool", "tool_call_id": "call_1",
-             "content": "Error: timeout", "is_error": True},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": '{"q":"x"}'},
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "Error: timeout",
+                "is_error": True,
+            },
         ]
         _, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
         result = converted[2]["content"][0]
@@ -206,10 +259,20 @@ class TestOaMsgsToAnthropic:
         {} — an emptied call would be executed with no arguments."""
         messages = [
             {"role": "user", "content": "do it"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "tc", "type": "function",
-                 "function": {"name": "run", "arguments": '{"query": "unterminated'}},
-            ]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc",
+                        "type": "function",
+                        "function": {
+                            "name": "run",
+                            "arguments": '{"query": "unterminated',
+                        },
+                    },
+                ],
+            },
         ]
         _, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
         block = converted[1]["content"][0]
@@ -220,16 +283,29 @@ class TestOaMsgsToAnthropic:
         messages = [
             {"role": "system", "content": "Be helpful."},
             {"role": "user", "content": "What is 2+2?"},
-            {"role": "assistant", "content": "Let me calculate.", "tool_calls": [
-                {"id": "tc1", "type": "function",
-                 "function": {"name": "calculator", "arguments": '{"expr":"2+2"}'}},
-            ]},
+            {
+                "role": "assistant",
+                "content": "Let me calculate.",
+                "tool_calls": [
+                    {
+                        "id": "tc1",
+                        "type": "function",
+                        "function": {
+                            "name": "calculator",
+                            "arguments": '{"expr":"2+2"}',
+                        },
+                    },
+                ],
+            },
             {"role": "tool", "tool_call_id": "tc1", "content": "4"},
         ]
         system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
         assert system == [
-            {"type": "text", "text": "Be helpful.",
-             "cache_control": {"type": "ephemeral"}},
+            {
+                "type": "text",
+                "text": "Be helpful.",
+                "cache_control": {"type": "ephemeral"},
+            },
         ]
         assert len(converted) == 3
         assert converted[0]["role"] == "user"
@@ -241,16 +317,26 @@ class TestOaMsgsToAnthropic:
         consecutive ``user`` messages (strict-alternation endpoints 400)."""
         messages = [
             {"role": "user", "content": "run both"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "tc1", "type": "function",
-                 "function": {"name": "a", "arguments": "{}"}},
-                {"id": "tc2", "type": "function",
-                 "function": {"name": "b", "arguments": "{}"}},
-            ]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc1",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{}"},
+                    },
+                    {
+                        "id": "tc2",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": "{}"},
+                    },
+                ],
+            },
             {"role": "tool", "tool_call_id": "tc1", "content": "result 1"},
             {"role": "tool", "tool_call_id": "tc2", "content": "result 2"},
         ]
-        system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
+        _system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
         roles = [m["role"] for m in converted]
         assert roles == ["user", "assistant", "user"]  # strict alternation
         tool_user = converted[2]
@@ -267,14 +353,21 @@ class TestOaMsgsToAnthropic:
         merged into the same user block (still one user message)."""
         messages = [
             {"role": "user", "content": "go"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "tc1", "type": "function",
-                 "function": {"name": "a", "arguments": "{}"}},
-            ]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc1",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{}"},
+                    },
+                ],
+            },
             {"role": "tool", "tool_call_id": "tc1", "content": "done"},
             {"role": "user", "content": "then what?"},
         ]
-        system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
+        _system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
         roles = [m["role"] for m in converted]
         assert roles == ["user", "assistant", "user"]  # 3, not 4 — merged
         blocks = converted[2]["content"]
@@ -286,14 +379,21 @@ class TestOaMsgsToAnthropic:
         message keep user/assistant alternation."""
         messages = [
             {"role": "user", "content": "q"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "tc1", "type": "function",
-                 "function": {"name": "a", "arguments": "{}"}},
-            ]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc1",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{}"},
+                    },
+                ],
+            },
             {"role": "tool", "tool_call_id": "tc1", "content": "r"},
             {"role": "assistant", "content": "done."},
         ]
-        system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
+        _system, converted = AnthropicBackend._oa_msgs_to_anthropic(messages)
         roles = [m["role"] for m in converted]
         assert roles == ["user", "assistant", "user", "assistant"]
         assert converted[2]["content"][0]["type"] == "tool_result"
@@ -307,36 +407,53 @@ class TestOaToolsToAnthropic:
 
     def test_basic_conversion(self):
         tools = [
-            {"type": "function", "function": {
-                "name": "echo",
-                "description": "Echoes input.",
-                "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
-            }},
+            {
+                "type": "function",
+                "function": {
+                    "name": "echo",
+                    "description": "Echoes input.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                },
+            },
         ]
         result = AnthropicBackend._oa_tools_to_anthropic(tools)
         assert len(result) == 1
         assert result[0]["name"] == "echo"
         assert result[0]["description"] == "Echoes input."
-        assert result[0]["input_schema"] == {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
+        assert result[0]["input_schema"] == {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        }
 
     def test_keeps_meta_params(self):
         """Harness meta-params are visible to the model on every backend
         (three-backend consistency: _timeout/_async/_approve work the same
         on Anthropic, Responses, and OpenAI-completions)."""
         tools = [
-            {"type": "function", "function": {
-                "name": "run",
-                "description": "Runs something.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "arg1": {"type": "string"},
-                        "_timeout": {"type": "integer", "description": "Harness-injected"},
-                        "_async": {"type": "boolean"},
+            {
+                "type": "function",
+                "function": {
+                    "name": "run",
+                    "description": "Runs something.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "arg1": {"type": "string"},
+                            "_timeout": {
+                                "type": "integer",
+                                "description": "Harness-injected",
+                            },
+                            "_async": {"type": "boolean"},
+                        },
+                        "required": ["arg1"],
                     },
-                    "required": ["arg1"],
                 },
-            }},
+            },
         ]
         result = AnthropicBackend._oa_tools_to_anthropic(tools)
         props = result[0]["input_schema"]["properties"]
@@ -349,8 +466,14 @@ class TestOaToolsToAnthropic:
 
     def test_multiple_tools(self):
         tools = [
-            {"type": "function", "function": {"name": "a", "description": "A", "parameters": {}}},
-            {"type": "function", "function": {"name": "b", "description": "B", "parameters": {}}},
+            {
+                "type": "function",
+                "function": {"name": "a", "description": "A", "parameters": {}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "b", "description": "B", "parameters": {}},
+            },
         ]
         result = AnthropicBackend._oa_tools_to_anthropic(tools)
         assert len(result) == 2
@@ -380,12 +503,18 @@ class TestAnthropicBuildKwargs:
         """Official Anthropic endpoint → system block list with cache_control."""
         backend = AnthropicBackend(anthropic_cfg)
         kw = backend._build_kwargs(
-            [{"role": "system", "content": "Be helpful."}, {"role": "user", "content": "hi"}],
+            [
+                {"role": "system", "content": "Be helpful."},
+                {"role": "user", "content": "hi"},
+            ],
             None,
         )
         assert kw["system"] == [
-            {"type": "text", "text": "Be helpful.",
-             "cache_control": {"type": "ephemeral"}},
+            {
+                "type": "text",
+                "text": "Be helpful.",
+                "cache_control": {"type": "ephemeral"},
+            },
         ]
         assert len(kw["messages"]) == 1  # system stripped from messages
 
@@ -393,14 +522,22 @@ class TestAnthropicBuildKwargs:
         """Bailian/Qwen Anthropic-compatible endpoint → no cache_control."""
         backend = AnthropicBackend(anthropic_thinking_cfg)
         kw = backend._build_kwargs(
-            [{"role": "system", "content": "Be helpful."}, {"role": "user", "content": "hi"}],
+            [
+                {"role": "system", "content": "Be helpful."},
+                {"role": "user", "content": "hi"},
+            ],
             None,
         )
         assert kw["system"] == [{"type": "text", "text": "Be helpful."}]
 
     def test_with_tools(self, anthropic_cfg):
         backend = AnthropicBackend(anthropic_cfg)
-        tools = [{"type": "function", "function": {"name": "echo", "description": "E", "parameters": {}}}]
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "echo", "description": "E", "parameters": {}},
+            }
+        ]
         kw = backend._build_kwargs([{"role": "user", "content": "hi"}], tools)
         assert "tools" in kw
         assert kw["tools"][0]["name"] == "echo"
@@ -537,8 +674,13 @@ class TestAnthropicBuildKwargs:
     def test_temperature_zero_not_sent(self, anthropic_cfg):
         # Anthropic doesn't accept temperature=0; should omit it
         cfg = ModelConfig(
-            ref="test/m", provider="test", api_model="m", display_name="M",
-            api_key="k", api="anthropic-messages", temperature=0.0,
+            ref="test/m",
+            provider="test",
+            api_model="m",
+            display_name="M",
+            api_key="k",
+            api="anthropic-messages",
+            temperature=0.0,
         )
         backend = AnthropicBackend(cfg)
         kw = backend._build_kwargs([{"role": "user", "content": "hi"}], None)
@@ -555,8 +697,13 @@ class TestUseSystemCacheControl:
 
     def _backend(self, **kw):
         cfg = ModelConfig(
-            ref="test/m", provider="anthropic", api_model="m", display_name="M",
-            api_key="k", api="anthropic-messages", **kw,
+            ref="test/m",
+            provider="anthropic",
+            api_model="m",
+            display_name="M",
+            api_key="k",
+            api="anthropic-messages",
+            **kw,
         )
         return AnthropicBackend(cfg)
 
@@ -598,20 +745,31 @@ class TestAnthropicChatStream:
         mock_stream.__aenter__ = AsyncMock(return_value=mock_stream)
         mock_stream.__aexit__ = AsyncMock(return_value=None)
 
-        events = _make_async_iter([
-            _AE("message_start", message=_AMessage(input_tokens=10)),
-            _AE("content_block_start", index=0, content_block=_ABlock("text")),
-            _AE("content_block_delta", index=0, delta=_ADelta("text_delta", text="Hello")),
-            _AE("content_block_delta", index=0, delta=_ADelta("text_delta", text=" world")),
-            _AE("content_block_stop", index=0),
-            _AE("message_delta", usage=_AUsage(0, 5)),
-        ])
+        events = _make_async_iter(
+            [
+                _AE("message_start", message=_AMessage(input_tokens=10)),
+                _AE("content_block_start", index=0, content_block=_ABlock("text")),
+                _AE(
+                    "content_block_delta",
+                    index=0,
+                    delta=_ADelta("text_delta", text="Hello"),
+                ),
+                _AE(
+                    "content_block_delta",
+                    index=0,
+                    delta=_ADelta("text_delta", text=" world"),
+                ),
+                _AE("content_block_stop", index=0),
+                _AE("message_delta", usage=_AUsage(0, 5)),
+            ]
+        )
         mock_stream.__aiter__ = lambda s: events
 
         with patch.object(backend.client.messages, "stream", return_value=mock_stream):
-            chunks = [c async for c in backend.chat_stream(
-                [{"role": "user", "content": "hi"}]
-            )]
+            chunks = [
+                c
+                async for c in backend.chat_stream([{"role": "user", "content": "hi"}])
+            ]
 
         contents = [c.content for c in chunks if c.content]
         assert "".join(contents) == "Hello world"
@@ -628,20 +786,31 @@ class TestAnthropicChatStream:
         mock_stream.__aenter__ = AsyncMock(return_value=mock_stream)
         mock_stream.__aexit__ = AsyncMock(return_value=None)
 
-        events = _make_async_iter([
-            _AE("message_start", message=_AMessage(input_tokens=20)),
-            _AE("content_block_start", index=0, content_block=_ABlock("thinking")),
-            _AE("content_block_delta", index=0, delta=_ADelta("thinking_delta", thinking="Let me think...")),
-            _AE("content_block_delta", index=0, delta=_ADelta("thinking_delta", thinking=" about this.")),
-            _AE("content_block_stop", index=0),
-            _AE("message_delta", usage=_AUsage(0, 10)),
-        ])
+        events = _make_async_iter(
+            [
+                _AE("message_start", message=_AMessage(input_tokens=20)),
+                _AE("content_block_start", index=0, content_block=_ABlock("thinking")),
+                _AE(
+                    "content_block_delta",
+                    index=0,
+                    delta=_ADelta("thinking_delta", thinking="Let me think..."),
+                ),
+                _AE(
+                    "content_block_delta",
+                    index=0,
+                    delta=_ADelta("thinking_delta", thinking=" about this."),
+                ),
+                _AE("content_block_stop", index=0),
+                _AE("message_delta", usage=_AUsage(0, 10)),
+            ]
+        )
         mock_stream.__aiter__ = lambda s: events
 
         with patch.object(backend.client.messages, "stream", return_value=mock_stream):
-            chunks = [c async for c in backend.chat_stream(
-                [{"role": "user", "content": "hi"}]
-            )]
+            chunks = [
+                c
+                async for c in backend.chat_stream([{"role": "user", "content": "hi"}])
+            ]
 
         thinkings = [c.thinking for c in chunks if c.thinking]
         assert "".join(thinkings) == "Let me think... about this."
@@ -653,20 +822,37 @@ class TestAnthropicChatStream:
         mock_stream.__aenter__ = AsyncMock(return_value=mock_stream)
         mock_stream.__aexit__ = AsyncMock(return_value=None)
 
-        events = _make_async_iter([
-            _AE("message_start", message=_AMessage(input_tokens=5)),
-            _AE("content_block_start", index=0, content_block=_ABlock("tool_use", id="call_1", name="web_search")),
-            _AE("content_block_delta", index=0, delta=_ADelta("input_json_delta", partial_json='{"query"')),
-            _AE("content_block_delta", index=0, delta=_ADelta("input_json_delta", partial_json=': "cats"}')),
-            _AE("content_block_stop", index=0),
-            _AE("message_delta", usage=_AUsage(0, 3)),
-        ])
+        events = _make_async_iter(
+            [
+                _AE("message_start", message=_AMessage(input_tokens=5)),
+                _AE(
+                    "content_block_start",
+                    index=0,
+                    content_block=_ABlock("tool_use", id="call_1", name="web_search"),
+                ),
+                _AE(
+                    "content_block_delta",
+                    index=0,
+                    delta=_ADelta("input_json_delta", partial_json='{"query"'),
+                ),
+                _AE(
+                    "content_block_delta",
+                    index=0,
+                    delta=_ADelta("input_json_delta", partial_json=': "cats"}'),
+                ),
+                _AE("content_block_stop", index=0),
+                _AE("message_delta", usage=_AUsage(0, 3)),
+            ]
+        )
         mock_stream.__aiter__ = lambda s: events
 
         with patch.object(backend.client.messages, "stream", return_value=mock_stream):
-            chunks = [c async for c in backend.chat_stream(
-                [{"role": "user", "content": "search cats"}]
-            )]
+            chunks = [
+                c
+                async for c in backend.chat_stream(
+                    [{"role": "user", "content": "search cats"}]
+                )
+            ]
 
         tool_chunks = [c for c in chunks if c.tool_deltas]
         assert len(tool_chunks) == 2
@@ -677,6 +863,7 @@ class TestAnthropicChatStream:
     @pytest.mark.asyncio
     async def test_stream_cancellation(self, anthropic_cfg):
         import asyncio
+
         backend = AnthropicBackend(anthropic_cfg)
         mock_stream = MagicMock()
         mock_stream.__aenter__ = AsyncMock(return_value=mock_stream)
@@ -684,15 +871,20 @@ class TestAnthropicChatStream:
         cancel = asyncio.Event()
         cancel.set()  # cancel immediately
 
-        events = _make_async_iter([
-            _AE("message_start", message=_AMessage(input_tokens=1)),
-        ])
+        events = _make_async_iter(
+            [
+                _AE("message_start", message=_AMessage(input_tokens=1)),
+            ]
+        )
         mock_stream.__aiter__ = lambda s: events
 
         with patch.object(backend.client.messages, "stream", return_value=mock_stream):
-            chunks = [c async for c in backend.chat_stream(
-                [{"role": "user", "content": "hi"}], cancel_event=cancel
-            )]
+            chunks = [
+                c
+                async for c in backend.chat_stream(
+                    [{"role": "user", "content": "hi"}], cancel_event=cancel
+                )
+            ]
         # Should yield nothing after cancellation check
         assert len(chunks) == 0  # cancelled before first event
 
@@ -704,13 +896,18 @@ def _make_async_iter(items):
     async def gen():
         for item in items:
             yield item
+
     return gen()
 
 
 class _AE:
     """Mock Anthropic streaming event."""
-    __slots__ = ("type", "index", "content_block", "delta", "message", "usage")
-    def __init__(self, type, index=0, content_block=None, delta=None, message=None, usage=None):
+
+    __slots__ = ("content_block", "delta", "index", "message", "type", "usage")
+
+    def __init__(
+        self, type, index=0, content_block=None, delta=None, message=None, usage=None
+    ):
         self.type = type
         self.index = index
         self.content_block = content_block
@@ -720,7 +917,8 @@ class _AE:
 
 
 class _ABlock:
-    __slots__ = ("type", "id", "name")
+    __slots__ = ("id", "name", "type")
+
     def __init__(self, type, id=None, name=None):
         self.type = type
         self.id = id
@@ -728,7 +926,8 @@ class _ABlock:
 
 
 class _ADelta:
-    __slots__ = ("type", "text", "thinking", "partial_json")
+    __slots__ = ("partial_json", "text", "thinking", "type")
+
     def __init__(self, type, text=None, thinking=None, partial_json=None):
         self.type = type
         self.text = text
@@ -738,6 +937,7 @@ class _ADelta:
 
 class _AUsage:
     __slots__ = ("input_tokens", "output_tokens")
+
     def __init__(self, input_tokens=0, output_tokens=0):
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
@@ -745,6 +945,8 @@ class _AUsage:
 
 class _AMessage:
     """Wrapper for message_start event's .message attribute."""
+
     __slots__ = ("usage",)
+
     def __init__(self, input_tokens=0):
         self.usage = _AUsage(input_tokens=input_tokens)

@@ -1,8 +1,5 @@
 """Tests for slife.agent.message_history — live message-history management."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import json
 
 import pytest
@@ -18,6 +15,7 @@ from slife.agent.message_history import (
     wechat_marker,
 )
 
+pytestmark = pytest.mark.unit
 
 # ── A2A marker type ───────────────────────────────────────────────────
 
@@ -32,8 +30,11 @@ class TestA2AMessageType:
 
     def test_reads_every_type(self):
         for mtype in (
-            "task_request", "task_response", "cancel_task",
-            "message", "broadcast",
+            "task_request",
+            "task_response",
+            "cancel_task",
+            "message",
+            "broadcast",
         ):
             text = f"{a2a_marker('Jack', 'cid-1', type=mtype)}do X"
             assert a2a_message_type(text) == mtype
@@ -73,24 +74,32 @@ class TestUnwrapInfoEnvelope:
     def test_wechat_literal_in_body_left_alone(self):
         # Only the injected leading marker is stripped — a literal
         # "keep looking at [WECHAT]" in the message body is user text.
-        assert unwrap_info_envelope("[WECHAT] keep [WECHAT] in text") == "keep [WECHAT] in text"
+        assert (
+            unwrap_info_envelope("[WECHAT] keep [WECHAT] in text")
+            == "keep [WECHAT] in text"
+        )
 
     def test_unwraps_trailing_info_envelope(self):
-        assert unwrap_info_envelope(
-            'hello [INFO: {"turn_id": 5}]'
-        ) == 'hello {"turn_id": 5}'
+        assert (
+            unwrap_info_envelope('hello [INFO: {"turn_id": 5}]')
+            == 'hello {"turn_id": 5}'
+        )
 
     def test_wechat_marker_then_info_envelope(self):
-        assert unwrap_info_envelope(
-            '[WECHAT] hello [INFO: {"turn_id": 5}]'
-        ) == 'hello {"turn_id": 5}'
+        assert (
+            unwrap_info_envelope('[WECHAT] hello [INFO: {"turn_id": 5}]')
+            == 'hello {"turn_id": 5}'
+        )
 
     def test_strips_leading_wechat_json_marker(self):
         # The [Wechat:…] envelope names the peer+thread for the LLM; the
         # TUI drops it (the channel already shows as Wechat>).
-        assert unwrap_info_envelope(
-            '[Wechat:{"peer_wechat_id": "wx_1", "context_token": "c1"}] 你好'
-        ) == "你好"
+        assert (
+            unwrap_info_envelope(
+                '[Wechat:{"peer_wechat_id": "wx_1", "context_token": "c1"}] 你好'
+            )
+            == "你好"
+        )
         # The legacy prose marker on old stored rows is stripped too.
         assert unwrap_info_envelope("[WECHAT] old row") == "old row"
         # Strips exactly what the builder emits.
@@ -101,14 +110,15 @@ class TestUnwrapInfoEnvelope:
         assert wechat_marker("wx_1", "c1") == (
             '[Wechat:{"peer_wechat_id": "wx_1", "context_token": "c1"}] '
         )
-        assert wechat_marker("wx_1") == (
-            '[Wechat:{"peer_wechat_id": "wx_1"}] '
-        )
+        assert wechat_marker("wx_1") == ('[Wechat:{"peer_wechat_id": "wx_1"}] ')
 
     def test_wechat_json_marker_then_info_envelope(self):
-        assert unwrap_info_envelope(
-            '[Wechat:{"peer_wechat_id": "wx_1"}] hello [INFO: {"turn_id": 5}]'
-        ) == 'hello {"turn_id": 5}'
+        assert (
+            unwrap_info_envelope(
+                '[Wechat:{"peer_wechat_id": "wx_1"}] hello [INFO: {"turn_id": 5}]'
+            )
+            == 'hello {"turn_id": 5}'
+        )
 
     def test_info_footnote_span_is_display_relative(self):
         """The footnote span is measured against the DISPLAY string, so a
@@ -118,8 +128,10 @@ class TestUnwrapInfoEnvelope:
         display = unwrap_info_envelope(text)
         span = info_footnote_span(text)
         assert display == 'done {"turn_id": 5}'
-        assert span == (display.index('{"turn_id": 5}'),
-                        display.index('{"turn_id": 5}') + len('{"turn_id": 5}'))
+        assert span == (
+            display.index('{"turn_id": 5}'),
+            display.index('{"turn_id": 5}') + len('{"turn_id": 5}'),
+        )
         # Styling with this span stays inside the display bounds — the old
         # raw-text index would have overshot after the stripped envelope.
         start, end = span
@@ -148,26 +160,39 @@ class TestUnwrapInfoEnvelope:
     def test_strips_leading_a2a_markers(self):
         # Every A2A envelope is the single [A2A:…] prefix, dropped for display
         # (the channel already shows as A2A(<name>)>).
-        assert unwrap_info_envelope(
-            '[A2A:{"from": "Jack", "type": "task_request", "task_id": "cid-1"}] do X'
-        ) == "do X"
-        assert unwrap_info_envelope(
-            '[A2A:{"from": "Jack", "type": "task_response", "task_id": "cid-1"}] the answer'
-        ) == "the answer"
-        assert unwrap_info_envelope(
-            '[A2A:{"from": "Jack", "type": "broadcast"}] all hands on deck'
-        ) == "all hands on deck"
+        assert (
+            unwrap_info_envelope(
+                '[A2A:{"from": "Jack", "type": "task_request", "task_id": "cid-1"}] do X'
+            )
+            == "do X"
+        )
+        assert (
+            unwrap_info_envelope(
+                '[A2A:{"from": "Jack", "type": "task_response", "task_id": "cid-1"}] the answer'
+            )
+            == "the answer"
+        )
+        assert (
+            unwrap_info_envelope(
+                '[A2A:{"from": "Jack", "type": "broadcast"}] all hands on deck'
+            )
+            == "all hands on deck"
+        )
         # A literal [A2A: bracket in the body survives.
-        assert unwrap_info_envelope(
-            '[A2A:{"from": "Jack"}] see [A2A: literally]'
-        ) == "see [A2A: literally]"
+        assert (
+            unwrap_info_envelope('[A2A:{"from": "Jack"}] see [A2A: literally]')
+            == "see [A2A: literally]"
+        )
 
     def test_strips_leading_subagent_marker(self):
         # The [Subagent:…] envelope names the worker+task for the LLM; the
         # TUI drops it (the channel already shows as Subagent(<name>)>).
-        assert unwrap_info_envelope(
-            '[Subagent:{"subagent_name": "researcher", "task_id": "t-3"}] done'
-        ) == "done"
+        assert (
+            unwrap_info_envelope(
+                '[Subagent:{"subagent_name": "researcher", "task_id": "t-3"}] done'
+            )
+            == "done"
+        )
 
     def test_subagent_marker_builds_json_payload(self):
         # Keys mirror the LLM-facing tool arguments (subagent_name / task_id).
@@ -180,18 +205,24 @@ class TestUnwrapInfoEnvelope:
 
     def test_subagent_literal_in_body_left_alone(self):
         # Only the injected leading envelope is stripped.
-        assert unwrap_info_envelope(
-            '[Subagent:{"subagent_name": "researcher", "task_id": "t-3"}] '
-            "read [Subagent: literally]"
-        ) == "read [Subagent: literally]"
+        assert (
+            unwrap_info_envelope(
+                '[Subagent:{"subagent_name": "researcher", "task_id": "t-3"}] '
+                "read [Subagent: literally]"
+            )
+            == "read [Subagent: literally]"
+        )
 
     def test_restored_subagent_turn_renders_clean(self):
         # A restored subagent turn carries the marker AND the trailing INFO
         # footnote — neither reaches the human; the bubble reads clean.
-        assert unwrap_info_envelope(
-            '[Subagent:{"subagent_name": "researcher", "task_id": "t-3"}] '
-            "the result [INFO: {\"turn_id\": 5}]"
-        ) == "the result {\"turn_id\": 5}"
+        assert (
+            unwrap_info_envelope(
+                '[Subagent:{"subagent_name": "researcher", "task_id": "t-3"}] '
+                'the result [INFO: {"turn_id": 5}]'
+            )
+            == 'the result {"turn_id": 5}'
+        )
 
 
 # ── Construction ─────────────────────────────────────────────────────
@@ -238,15 +269,26 @@ class TestMessageHistoryConstruction:
         """
         source = [
             {"role": "user", "content": "go"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "c1", "type": "function",
-                 "function": {"name": "subagent_send_task", "arguments": "{}"}},
-            ]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "subagent_send_task", "arguments": "{}"},
+                    },
+                ],
+            },
         ]
         conv = MessageHistory.from_history("SUB_SYS", source)
 
         assert [m["role"] for m in conv.messages] == [
-            "system", "user", "assistant", "tool", "assistant",
+            "system",
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
         ]
         assert conv.messages[3]["tool_call_id"] == "c1"
         assert conv.messages[3]["is_error"] is True
@@ -278,8 +320,10 @@ class TestRebuildCarried:
     @staticmethod
     def _turn(rowid: int, text: str) -> dict:
         return {
-            "rowid": rowid, "user_message": f"{text} [INFO: {{}}]",
-            "messages": '[]', "created_at": "2026-01-01T00:00:00",
+            "rowid": rowid,
+            "user_message": f"{text} [INFO: {{}}]",
+            "messages": "[]",
+            "created_at": "2026-01-01T00:00:00",
         }
 
     def test_carried_messages_follow_the_restored_turns(self):
@@ -289,13 +333,18 @@ class TestRebuildCarried:
         conv.add_assistant_message("old reply")
         conv.rebuild_messages(
             [self._turn(1, "stored")],
-            carried=[{"role": "user", "content": "in flight"},
-                     {"role": "assistant", "content": "working"}],
+            carried=[
+                {"role": "user", "content": "in flight"},
+                {"role": "assistant", "content": "working"},
+            ],
         )
         # The stored turn contributes its user message (its ``messages`` slice
         # is empty in this fixture); the carried pair follows it verbatim.
         assert [m["role"] for m in conv.messages] == [
-            "system", "user", "user", "assistant",
+            "system",
+            "user",
+            "user",
+            "assistant",
         ]
         assert conv.messages[1]["content"].startswith("stored")
         assert conv.messages[2]["content"] == "in flight"
@@ -308,15 +357,32 @@ class TestRebuildCarried:
         cannot be the one hole in it — a worker's clone ends exactly this way.
         """
         conv = MessageHistory(system_prompt="SYS")
-        conv.rebuild_messages([], carried=[
-            {"role": "user", "content": "go"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "c1", "type": "function",
-                 "function": {"name": "subagent_send_task", "arguments": "{}"}},
-            ]},
-        ])
+        conv.rebuild_messages(
+            [],
+            carried=[
+                {"role": "user", "content": "go"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {
+                                "name": "subagent_send_task",
+                                "arguments": "{}",
+                            },
+                        },
+                    ],
+                },
+            ],
+        )
         assert [m["role"] for m in conv.messages] == [
-            "system", "user", "assistant", "tool", "assistant",
+            "system",
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
         ]
         assert conv.messages[3]["tool_call_id"] == "c1"
 
@@ -328,7 +394,9 @@ class TestRebuildCarried:
         # The rebuilt history ends on a user message, so the invariant's
         # closing assistant line is added — carried or not.
         assert [m["role"] for m in conv.messages] == [
-            "system", "user", "assistant",
+            "system",
+            "user",
+            "assistant",
         ]
 
     def test_none_system_prompt(self):
@@ -366,9 +434,14 @@ class TestAddUserMessage:
         multimodal list and appends the image block — the text survives."""
         conv = MessageHistory()
         conv.add_user_message("look at this")
-        conv.inject_images_to_last_user([
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-        ])
+        conv.inject_images_to_last_user(
+            [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                },
+            ]
+        )
         assert conv.messages[0]["content"] == [
             {"type": "text", "text": "look at this"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
@@ -413,9 +486,14 @@ class TestStripImages:
         without images, so an evicted turn costs no prompt-cache miss."""
         conv = MessageHistory()
         conv.add_user_message("look at this")
-        conv.inject_images_to_last_user([
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-        ])
+        conv.inject_images_to_last_user(
+            [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                },
+            ]
+        )
         assert conv.strip_images() == 1
         assert conv.messages[0]["content"] == "look at this"
 
@@ -424,10 +502,15 @@ class TestStripImages:
         concatenating the text parts reproduces the text-only render."""
         conv = MessageHistory()
         conv.add_user_message("what is this")
-        conv.inject_images_to_last_user([
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-            {"type": "text", "text": " [2026-09-23 17:17]"},
-        ])
+        conv.inject_images_to_last_user(
+            [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                },
+                {"type": "text", "text": " [2026-09-23 17:17]"},
+            ]
+        )
         assert conv.strip_images() == 1
         assert conv.messages[0]["content"] == "what is this [2026-09-23 17:17]"
 
@@ -435,7 +518,10 @@ class TestStripImages:
         """A rebuild re-attaches blocks per turn, so more than one turn can
         carry them — this is not only the last user message."""
         conv = MessageHistory()
-        block = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        block = {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AAAA"},
+        }
         conv.add_user_message("one")
         conv.inject_images_to_last_user([block])
         conv.add_assistant_message("seen")
@@ -470,26 +556,30 @@ class TestMessagesFromTurns:
             "created_at": "2026-09-23 10:00:00",
             "completed_at": "2026-09-23 10:01:00",
             "user_message": "what is in @shot.png",
-            "messages": json.dumps([
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "id": "_harness_attach_image_1",
-                        "type": "function",
-                        "function": {
-                            "name": "attach_image",
-                            "arguments": json.dumps({"sources": ["shot.png"]}),
-                        },
-                    }],
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "_harness_attach_image_1",
-                    "content": "Image included: shot.png",
-                },
-                {"role": "assistant", "content": "a red square"},
-            ]),
+            "messages": json.dumps(
+                [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "_harness_attach_image_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "attach_image",
+                                    "arguments": json.dumps({"sources": ["shot.png"]}),
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "_harness_attach_image_1",
+                        "content": "Image included: shot.png",
+                    },
+                    {"role": "assistant", "content": "a red square"},
+                ]
+            ),
         }
 
         messages = messages_from_turns([turn])
@@ -605,7 +695,13 @@ class TestToOpenAIMessages:
         conv.add_user_message("Search for cats")
         conv.add_assistant_message(
             None,
-            tool_calls=[{"id": "c1", "type": "function", "function": {"name": "web_search", "arguments": '{"query":"cats"}'}}]
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"cats"}'},
+                }
+            ],
         )
         conv.add_tool_result("c1", "Cat results...")
         conv.add_assistant_message("Here are the results.")
@@ -625,7 +721,13 @@ class TestToOpenAIMessages:
         conv.add_user_message("run it")
         conv.add_assistant_message(
             None,
-            tool_calls=[{"id": "c1", "type": "function", "function": {"name": "x", "arguments": "{}"}}],
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "x", "arguments": "{}"},
+                }
+            ],
         )
         conv.add_tool_result("c1", "Error: failed.", is_error=True)
         conv.add_assistant_message("done")
@@ -695,7 +797,13 @@ class TestRepairOrphanedToolCalls:
         conv.add_user_message("search")
         conv.add_assistant_message(
             None,
-            tool_calls=[{"id": "c1", "type": "function", "function": {"name": "search", "arguments": "{}"}}]
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": "{}"},
+                }
+            ],
         )
         conv.add_tool_result("c1", "results")
         # Ensure still inserts a closing assistant after the trailing tool
@@ -716,7 +824,13 @@ class TestRepairOrphanedToolCalls:
         conv.add_user_message("search")
         conv.add_assistant_message(
             None,
-            tool_calls=[{"id": "orphan1", "type": "function", "function": {"name": "search", "arguments": "{}"}}]
+            tool_calls=[
+                {
+                    "id": "orphan1",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": "{}"},
+                }
+            ],
         )
         # No tool result added — orphaned tool call
         conv._ensure_turn_consistent()
@@ -740,9 +854,17 @@ class TestRepairOrphanedToolCalls:
         conv.add_assistant_message(
             None,
             tool_calls=[
-                {"id": "o1", "type": "function", "function": {"name": "a", "arguments": "{}"}},
-                {"id": "o2", "type": "function", "function": {"name": "b", "arguments": "{}"}},
-            ]
+                {
+                    "id": "o1",
+                    "type": "function",
+                    "function": {"name": "a", "arguments": "{}"},
+                },
+                {
+                    "id": "o2",
+                    "type": "function",
+                    "function": {"name": "b", "arguments": "{}"},
+                },
+            ],
         )
         # No tool results for either — both orphaned
         conv._ensure_turn_consistent()
@@ -759,9 +881,17 @@ class TestRepairOrphanedToolCalls:
         conv.add_assistant_message(
             None,
             tool_calls=[
-                {"id": "c1", "type": "function", "function": {"name": "a", "arguments": "{}"}},
-                {"id": "c2", "type": "function", "function": {"name": "b", "arguments": "{}"}},
-            ]
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "a", "arguments": "{}"},
+                },
+                {
+                    "id": "c2",
+                    "type": "function",
+                    "function": {"name": "b", "arguments": "{}"},
+                },
+            ],
         )
         conv.add_tool_result("c1", "result for c1")
         # c2 is orphaned
@@ -771,7 +901,9 @@ class TestRepairOrphanedToolCalls:
         # Should have c1's real result plus c2's synthetic error
         assert len(tool_msgs) == 2
         real = [m for m in tool_msgs if "result for c1" in str(m.get("content", ""))]
-        synthetic = [m for m in tool_msgs if "interrupted" in str(m.get("content", "")).lower()]
+        synthetic = [
+            m for m in tool_msgs if "interrupted" in str(m.get("content", "")).lower()
+        ]
         assert len(real) == 1
         assert len(synthetic) == 1
 
@@ -781,13 +913,25 @@ class TestRepairOrphanedToolCalls:
         conv.add_user_message("q1")
         conv.add_assistant_message(
             None,
-            tool_calls=[{"id": "a1", "type": "function", "function": {"name": "x", "arguments": "{}"}}]
+            tool_calls=[
+                {
+                    "id": "a1",
+                    "type": "function",
+                    "function": {"name": "x", "arguments": "{}"},
+                }
+            ],
         )
         # Orphan a1 (add_user_message no longer auto-repairs)
         conv.add_user_message("q2")
         conv.add_assistant_message(
             None,
-            tool_calls=[{"id": "a2", "type": "function", "function": {"name": "y", "arguments": "{}"}}]
+            tool_calls=[
+                {
+                    "id": "a2",
+                    "type": "function",
+                    "function": {"name": "y", "arguments": "{}"},
+                }
+            ],
         )
         # Orphan a2
         conv.add_user_message("q3")
@@ -830,7 +974,13 @@ class TestTrimMarker:
         conv.add_user_message("hi")
         conv.add_assistant_message(
             None,
-            tool_calls=[{"id": "c1", "type": "function", "function": {"name": "x", "arguments": "{}"}}],
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "x", "arguments": "{}"},
+                }
+            ],
         )
         conv.add_tool_result("c1", "ok")
         conv.append_trim_marker(1)
@@ -852,7 +1002,9 @@ class TestStripTrimMarkers:
     def test_strips_marker_from_assistant_content(self):
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
-        conv.add_assistant_message("reply [INFO: 3 oldest turns have been removed from context]")
+        conv.add_assistant_message(
+            "reply [INFO: 3 oldest turns have been removed from context]"
+        )
         cleaned = MessageHistory.strip_trim_markers(conv.messages)
         # The note is removed from the returned copy...
         assert cleaned[-1]["content"] == "reply"
@@ -864,7 +1016,9 @@ class TestStripTrimMarkers:
     def test_marker_only_message_becomes_empty(self):
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
-        conv.add_assistant_message("[INFO: 2 oldest turns have been removed from context]")
+        conv.add_assistant_message(
+            "[INFO: 2 oldest turns have been removed from context]"
+        )
         cleaned = MessageHistory.strip_trim_markers(conv.messages)
         assert cleaned[-1]["content"] == ""
 
@@ -872,10 +1026,15 @@ class TestStripTrimMarkers:
         conv = MessageHistory(system_prompt="SYS")
         # User content is never touched — the turn footnote shares the
         # [INFO: ] envelope but lives on user messages.
-        conv.add_user_message("hi [INFO: 1 oldest turns have been removed from context]")
+        conv.add_user_message(
+            "hi [INFO: 1 oldest turns have been removed from context]"
+        )
         conv.add_assistant_message("reply")
         cleaned = MessageHistory.strip_trim_markers(conv.messages)
-        assert cleaned[1]["content"] == "hi [INFO: 1 oldest turns have been removed from context]"
+        assert (
+            cleaned[1]["content"]
+            == "hi [INFO: 1 oldest turns have been removed from context]"
+        )
         assert cleaned[-1]["content"] == "reply"
 
 
@@ -919,7 +1078,9 @@ class TestRuntimeTurnIds:
         """The trim learns which turns it evicted from the turn dict."""
         conv = MessageHistory(system_prompt="SYS")
         for i in (11, 22):
-            conv.add_user_message(f"第{i}轮：一段比较长的用户输入内容，用来撑大估算。" * 3)
+            conv.add_user_message(
+                f"第{i}轮：一段比较长的用户输入内容，用来撑大估算。" * 3
+            )
             conv.messages[-1]["_turn_id"] = i
             conv.add_assistant_message("回复" * 40)
 
@@ -927,7 +1088,12 @@ class TestRuntimeTurnIds:
 
         assert [t["turn_id"] for t in turns] == [11, 22]
         # A turn with no stamp reports None rather than a bogus id.
-        assert MessageHistory.extract_turns([{"role": "user", "content": "x"}])[0]["turn_id"] is None
+        assert (
+            MessageHistory.extract_turns([{"role": "user", "content": "x"}])[0][
+                "turn_id"
+            ]
+            is None
+        )
 
 
 # ── add_assistant_message with thinking ───────────────────────────────
@@ -988,12 +1154,20 @@ class TestThinkingEnabledRoundtrip:
         conv = MessageHistory(system_prompt="test")
         conv.add_user_message("hello")
         conv.add_assistant_message("reply")
-        conv.messages.insert(1, {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{"id": "_trim_abc", "type": "function",
-                            "function": {"name": "_trim_context", "arguments": "{}"}}],
-        })
+        conv.messages.insert(
+            1,
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "_trim_abc",
+                        "type": "function",
+                        "function": {"name": "_trim_context", "arguments": "{}"},
+                    }
+                ],
+            },
+        )
         msgs = conv.to_openai_messages(thinking_enabled=True)
         trim_msg = msgs[1]
         assert trim_msg["reasoning_content"] == ""
@@ -1002,12 +1176,19 @@ class TestThinkingEnabledRoundtrip:
         """_turn_prompt harness messages get empty reasoning_content."""
         conv = MessageHistory(system_prompt="test")
         conv.add_user_message("hello")
-        conv.messages.append({
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{"id": "_ctx_abc12345", "type": "function",
-                            "function": {"name": "_turn_prompt", "arguments": "{}"}}],
-        })
+        conv.messages.append(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "_ctx_abc12345",
+                        "type": "function",
+                        "function": {"name": "_turn_prompt", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
         msgs = conv.to_openai_messages(thinking_enabled=True)
         ctx_msg = msgs[-1]
         assert ctx_msg["reasoning_content"] == ""
@@ -1043,11 +1224,16 @@ class TestCountTokens:
         conv = MessageHistory()
         conv.add_assistant_message(
             None,
-            tool_calls=[{
-                "id": "c1",
-                "type": "function",
-                "function": {"name": "search", "arguments": '{"query": "hello" * 100}'}
-            }]
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "arguments": '{"query": "hello" * 100}',
+                    },
+                }
+            ],
         )
         count = conv.count_tokens()
         assert count > 5  # tool call arguments contribute
@@ -1064,10 +1250,12 @@ class TestTokenEstimate:
 
     def test_empty_is_zero(self):
         from slife.agent.message_history import estimate_text_tokens
+
         assert estimate_text_tokens("") == 0
 
     def test_cjk_costs_more_per_char_than_latin(self):
         from slife.agent.message_history import estimate_text_tokens
+
         cjk = "这是一段比较长的中文用户输入内容，用来测试分词器估算。"
         latin = "the quick brown fox jumps over the lazy dog"
         cjk_per_char = estimate_text_tokens(cjk) / len(cjk)
@@ -1078,6 +1266,7 @@ class TestTokenEstimate:
 
     def test_wide_chars_never_undercounted(self):
         from slife.agent.message_history import estimate_text_tokens
+
         # A Han char is at least a whole token — the old blanket estimate
         # reported ~0.33 and undercounted Chinese-heavy sessions ~2-3x.
         assert estimate_text_tokens("汉" * 100) >= 100
@@ -1085,6 +1274,7 @@ class TestTokenEstimate:
 
     def test_mixed_text_costs_at_least_each_part(self):
         from slife.agent.message_history import estimate_text_tokens
+
         mixed = estimate_text_tokens("abcdef" + "汉" * 6)
         assert mixed >= estimate_text_tokens("汉" * 6)
         assert mixed >= 6
@@ -1098,6 +1288,7 @@ class TestTokenEstimate:
 
     def test_tokens_freed_uses_same_estimator(self):
         from slife.agent.message_history import estimate_text_tokens
+
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("汉" * 90)
         conv.add_assistant_message("中" * 90)
@@ -1106,5 +1297,3 @@ class TestTokenEstimate:
         _, freed = conv.extract_oldest_turns(target=estimate_text_tokens("keep"))
         # Removing the 180-char CJK turn freed ~180, matching count_tokens.
         assert freed >= 180
-
-

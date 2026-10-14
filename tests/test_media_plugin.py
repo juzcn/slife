@@ -5,15 +5,15 @@ directly, following the a2a plugin test pattern.
 """
 
 import json
-import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 pytestmark = pytest.mark.unit
 
 import slife.plugins.media.server as plugin
 from slife.plugins.media import config as config_mod
-from tests.conftest import dump_config
 from slife.plugins.media.adapters import dashscope_aigc
 from slife.plugins.media.adapters.base import ArtifactSaver, MediaAdapterError
 from slife.plugins.media.adapters.dashscope_aigc import DashScopeAIGCAdapter
@@ -25,20 +25,22 @@ from slife.plugins.media.config import (
     ProviderConfig,
     load_media_config,
 )
-
+from tests.conftest import dump_config
 
 # ── helpers ────────────────────────────────────────────────────────────
 
 
 def _provider(**overrides):
-    base = dict(
-        api="dashscope-aigc",
-        base_url="https://example.com/api/v1",
-        api_key="sk-test",
-    )
+    base = {
+        "api": "dashscope-aigc",
+        "base_url": "https://example.com/api/v1",
+        "api_key": "sk-test",
+    }
     base.update(overrides)
     return ProviderConfig(
-        api=base["api"], base_url=base["base_url"], api_key=base["api_key"],
+        api=base["api"],
+        base_url=base["base_url"],
+        api_key=base["api_key"],
         models=base.get("models", []),
     )
 
@@ -47,15 +49,18 @@ def _full_config():
     return MediaConfig(
         defaults={"image": "test/img", "video": "test/vid"},
         providers={
-            "test": _provider(models=[
-                ModelEntry(model="img", kind="image"),
-                ModelEntry(
-                    model="vid", kind="video",
-                    params={"resolution": "720P", "duration": 5},
-                ),
-                ModelEntry(model="say", kind="tts", voice="v1"),
-                ModelEntry(model="hear", kind="asr"),
-            ]),
+            "test": _provider(
+                models=[
+                    ModelEntry(model="img", kind="image"),
+                    ModelEntry(
+                        model="vid",
+                        kind="video",
+                        params={"resolution": "720P", "duration": 5},
+                    ),
+                    ModelEntry(model="say", kind="tts", voice="v1"),
+                    ModelEntry(model="hear", kind="asr"),
+                ]
+            ),
         },
     )
 
@@ -82,13 +87,13 @@ def fresh_plugin():
 def _fake_adapter(**results):
     adapter = MagicMock()
     adapter.generate_image = AsyncMock(
-        return_value=results.get("image", "/tmp/img.png"))
+        return_value=results.get("image", "/tmp/img.png")
+    )
     adapter.generate_video = AsyncMock(
-        return_value=results.get("video", "/tmp/vid.mp4"))
-    adapter.text_to_speech = AsyncMock(
-        return_value=results.get("tts", "/tmp/say.wav"))
-    adapter.transcribe_audio = AsyncMock(
-        return_value=results.get("asr", "hello world"))
+        return_value=results.get("video", "/tmp/vid.mp4")
+    )
+    adapter.text_to_speech = AsyncMock(return_value=results.get("tts", "/tmp/say.wav"))
+    adapter.transcribe_audio = AsyncMock(return_value=results.get("asr", "hello world"))
     return adapter
 
 
@@ -105,24 +110,31 @@ class TestLoadMediaConfig:
         assert load_media_config().is_empty()
 
     def test_parses_providers_models_defaults(self, tmp_path, monkeypatch):
-        path = _write_config(tmp_path, {
-            "defaults": {"image": "p/m1"},
-            "providers": {
-                "p": {
-                    "api": "dashscope-aigc",
-                    "base_url": "https://h/api/v1/",
-                    "api_key": "sk-x",
-                    "models": [
-                        {"model": "m1", "kind": "image"},
-                        {"model": "m2", "kind": "video",
-                         "params": {"resolution": "720P"}, "voice": ""},
-                        {"model": "m3", "kind": "tts", "voice": "longx"},
-                        {"model": "skip-me"},           # no kind → skipped
-                        {"model": "m4", "kind": "weird"},  # bad kind → skipped
-                    ],
+        path = _write_config(
+            tmp_path,
+            {
+                "defaults": {"image": "p/m1"},
+                "providers": {
+                    "p": {
+                        "api": "dashscope-aigc",
+                        "base_url": "https://h/api/v1/",
+                        "api_key": "sk-x",
+                        "models": [
+                            {"model": "m1", "kind": "image"},
+                            {
+                                "model": "m2",
+                                "kind": "video",
+                                "params": {"resolution": "720P"},
+                                "voice": "",
+                            },
+                            {"model": "m3", "kind": "tts", "voice": "longx"},
+                            {"model": "skip-me"},  # no kind → skipped
+                            {"model": "m4", "kind": "weird"},  # bad kind → skipped
+                        ],
+                    },
                 },
             },
-        })
+        )
         monkeypatch.setattr(config_mod, "get_config_path", lambda: path)
         cfg = load_media_config()
         assert not cfg.is_empty()
@@ -136,25 +148,37 @@ class TestLoadMediaConfig:
 
     def test_env_var_resolved(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MEDIA_TEST_KEY", "sk-from-env")
-        path = _write_config(tmp_path, {
-            "providers": {"p": {
-                "api": "dashscope-aigc", "base_url": "https://h",
-                "api_key": "${MEDIA_TEST_KEY}",
-                "models": [{"model": "m", "kind": "image"}],
-            }},
-        })
+        path = _write_config(
+            tmp_path,
+            {
+                "providers": {
+                    "p": {
+                        "api": "dashscope-aigc",
+                        "base_url": "https://h",
+                        "api_key": "${MEDIA_TEST_KEY}",
+                        "models": [{"model": "m", "kind": "image"}],
+                    }
+                },
+            },
+        )
         monkeypatch.setattr(config_mod, "get_config_path", lambda: path)
         cfg = load_media_config()
         assert cfg.providers["p"].api_key == "sk-from-env"
 
     def test_unresolvable_env_skips_provider(self, tmp_path, monkeypatch):
-        path = _write_config(tmp_path, {
-            "providers": {"p": {
-                "api": "dashscope-aigc", "base_url": "https://h",
-                "api_key": "${SURELY_NOT_SET_MEDIA_VAR}",
-                "models": [{"model": "m", "kind": "image"}],
-            }},
-        })
+        path = _write_config(
+            tmp_path,
+            {
+                "providers": {
+                    "p": {
+                        "api": "dashscope-aigc",
+                        "base_url": "https://h",
+                        "api_key": "${SURELY_NOT_SET_MEDIA_VAR}",
+                        "models": [{"model": "m", "kind": "image"}],
+                    }
+                },
+            },
+        )
         monkeypatch.setattr(config_mod, "get_config_path", lambda: path)
         assert load_media_config().is_empty()
 
@@ -164,11 +188,11 @@ class TestResolveModel:
         self.cfg = _full_config()
 
     def test_explicit_provider_model_ref(self):
-        pid, pcfg, entry = self.cfg.resolve_model("image", "test/img")
+        pid, _pcfg, entry = self.cfg.resolve_model("image", "test/img")
         assert (pid, entry.model) == ("test", "img")
 
     def test_bare_model_name(self):
-        pid, _, entry = self.cfg.resolve_model("asr", "hear")
+        _pid, _, entry = self.cfg.resolve_model("asr", "hear")
         assert entry.kind == "asr"
 
     def test_default_when_no_ref(self):
@@ -193,8 +217,7 @@ class TestResolveModel:
             self.cfg.resolve_model("image", "test/vid")
 
     def test_nothing_of_kind(self):
-        cfg = MediaConfig(
-            providers={"t": _provider(models=[ModelEntry("i", "image")])})
+        cfg = MediaConfig(providers={"t": _provider(models=[ModelEntry("i", "image")])})
         with pytest.raises(MediaConfigError, match="No video model"):
             cfg.resolve_model("video", None)
 
@@ -207,8 +230,7 @@ class TestResolveModel:
 class TestToolErrors:
     @pytest.mark.asyncio
     async def test_no_config(self, fresh_plugin, monkeypatch):
-        monkeypatch.setattr(
-            plugin, "load_media_config", lambda: MediaConfig())
+        monkeypatch.setattr(plugin, "load_media_config", lambda: MediaConfig())
         result = await plugin.generate_image(prompt="x")
         assert result.startswith("Error: No media provider configured")
 
@@ -228,8 +250,7 @@ class TestToolErrors:
     async def test_missing_input_file(self, fresh_plugin):
         plugin._config = _full_config()
         plugin._adapters["test"] = _fake_adapter()
-        result = await plugin.generate_image(
-            prompt="x", image="/no/such/file.png")
+        result = await plugin.generate_image(prompt="x", image="/no/such/file.png")
         assert result.startswith("Error: File not found")
 
     @pytest.mark.asyncio
@@ -237,8 +258,10 @@ class TestToolErrors:
         plugin._config = _full_config()
         adapter = _fake_adapter()
         adapter.generate_image = AsyncMock(
-            side_effect=MediaAdapterError("Bailian API error (401): bad key",
-                                          status_code=401))
+            side_effect=MediaAdapterError(
+                "Bailian API error (401): bad key", status_code=401
+            )
+        )
         plugin._adapters["test"] = adapter
         result = await plugin.generate_image(prompt="x")
         assert result.startswith("Error: Bailian API error (401)")
@@ -248,7 +271,8 @@ class TestToolErrors:
         plugin._config = _full_config()
         adapter = _fake_adapter()
         adapter.generate_video = AsyncMock(
-            side_effect=NotImplementedError("video generation"))
+            side_effect=NotImplementedError("video generation")
+        )
         plugin._adapters["test"] = adapter
         result = await plugin.generate_video(prompt="x")
         assert result.startswith("Error: Capability not supported")
@@ -329,7 +353,8 @@ class TestToolSuccess:
         adapter = _fake_adapter()
         plugin._adapters["test"] = adapter
         result = await plugin.generate_video(
-            prompt="a ball", resolution="1080P", duration=8)
+            prompt="a ball", resolution="1080P", duration=8
+        )
         assert result == "/tmp/vid.mp4"
         params = adapter.generate_video.call_args.kwargs["extra_params"]
         # entry params (resolution 720P, duration 5) overridden by call
@@ -378,22 +403,26 @@ class TestDashScopeAdapter:
         adapter = _ds_adapter()
         captured = {}
 
-        async def fake_request(method, url, *, extra_headers=None,
-                               json_body=None):
+        async def fake_request(method, url, *, extra_headers=None, json_body=None):
             captured.update(method=method, url=url, body=json_body)
-            return {"output": {"choices": [{"message": {"content": [
-                {"image": "https://cdn/x.png"}]}}]}}
+            return {
+                "output": {
+                    "choices": [
+                        {"message": {"content": [{"image": "https://cdn/x.png"}]}}
+                    ]
+                }
+            }
 
         monkeypatch.setattr(adapter, "_request", fake_request)
         saved = Path("/tmp/saved.png")
-        monkeypatch.setattr(
-            adapter._saver, "save_url",
-            AsyncMock(return_value=saved))
+        monkeypatch.setattr(adapter._saver, "save_url", AsyncMock(return_value=saved))
         result = await adapter.generate_image(
-            model="wan2.7-image", prompt="a cat", size="1024*1024")
+            model="wan2.7-image", prompt="a cat", size="1024*1024"
+        )
         assert result == str(saved)
         assert captured["url"].endswith(
-            "/services/aigc/multimodal-generation/generation")
+            "/services/aigc/multimodal-generation/generation"
+        )
         body = captured["body"]
         assert body["model"] == "wan2.7-image"
         content = body["input"]["messages"][0]["content"]
@@ -405,8 +434,9 @@ class TestDashScopeAdapter:
         adapter = _ds_adapter()
 
         async def fake_request(method, url, **kw):
-            return {"output": {"choices": [{"message": {"content": [
-                {"text": "sorry"}]}}]}}
+            return {
+                "output": {"choices": [{"message": {"content": [{"text": "sorry"}]}}]}
+            }
 
         monkeypatch.setattr(adapter, "_request", fake_request)
         with pytest.raises(MediaAdapterError, match="No image"):
@@ -419,20 +449,18 @@ class TestDashScopeAdapter:
         responses = [
             {"output": {"task_id": "t-1", "task_status": "PENDING"}},
             {"output": {"task_status": "RUNNING"}},
-            {"output": {"task_status": "SUCCEEDED",
-                        "video_url": "https://cdn/v.mp4"}},
+            {"output": {"task_status": "SUCCEEDED", "video_url": "https://cdn/v.mp4"}},
         ]
 
-        async def fake_request(method, url, *, extra_headers=None,
-                               json_body=None):
+        async def fake_request(method, url, *, extra_headers=None, json_body=None):
             calls.append((method, url, extra_headers))
             return responses[len(calls) - 1]
 
         monkeypatch.setattr(adapter, "_request", fake_request)
         monkeypatch.setattr(dashscope_aigc.asyncio, "sleep", AsyncMock())
         monkeypatch.setattr(
-            adapter._saver, "save_url",
-            AsyncMock(return_value=Path("/tmp/v.mp4")))
+            adapter._saver, "save_url", AsyncMock(return_value=Path("/tmp/v.mp4"))
+        )
         result = await adapter.generate_video(model="hh", prompt="bounce")
         assert result == str(Path("/tmp/v.mp4"))
         submit = calls[0]
@@ -443,13 +471,15 @@ class TestDashScopeAdapter:
     @pytest.mark.asyncio
     async def test_video_failed_task(self, monkeypatch):
         adapter = _ds_adapter()
-        responses = iter([
-            {"output": {"task_id": "t-2"}},
-            {"output": {"task_status": "FAILED", "message": "boom"}},
-        ])
+        responses = iter(
+            [
+                {"output": {"task_id": "t-2"}},
+                {"output": {"task_status": "FAILED", "message": "boom"}},
+            ]
+        )
         monkeypatch.setattr(
-            adapter, "_request",
-            AsyncMock(side_effect=lambda *a, **kw: next(responses)))
+            adapter, "_request", AsyncMock(side_effect=lambda *a, **kw: next(responses))
+        )
         monkeypatch.setattr(dashscope_aigc.asyncio, "sleep", AsyncMock())
         with pytest.raises(MediaAdapterError, match="boom"):
             await adapter.generate_video(model="hh", prompt="x")
@@ -468,25 +498,24 @@ class TestDashScopeAdapter:
         monkeypatch.setattr(adapter, "_request", fake_request)
         monkeypatch.setattr(dashscope_aigc.asyncio, "sleep", AsyncMock())
         with pytest.raises(MediaAdapterError, match="t-3"):
-            await adapter.generate_video(
-                model="hh", prompt="x", deadline_s=0)  # noqa-timeout
+            await adapter.generate_video(model="hh", prompt="x", deadline_s=0)  # noqa-timeout
 
     @pytest.mark.asyncio
     async def test_tts_flat_input_and_audio_url(self, monkeypatch):
         adapter = _ds_adapter()
         captured = {}
 
-        async def fake_request(method, url, *, extra_headers=None,
-                               json_body=None):
+        async def fake_request(method, url, *, extra_headers=None, json_body=None):
             captured["body"] = json_body
             return {"output": {"audio": {"url": "https://cdn/a.wav"}}}
 
         monkeypatch.setattr(adapter, "_request", fake_request)
         monkeypatch.setattr(
-            adapter._saver, "save_url",
-            AsyncMock(return_value=Path("/tmp/a.wav")))
+            adapter._saver, "save_url", AsyncMock(return_value=Path("/tmp/a.wav"))
+        )
         result = await adapter.text_to_speech(
-            model="tts", text="hi", voice="longxiaochun")
+            model="tts", text="hi", voice="longxiaochun"
+        )
         assert result == str(Path("/tmp/a.wav"))
         assert captured["body"] == {
             "model": "tts",
@@ -498,6 +527,7 @@ class TestDashScopeAdapter:
         maps ``.wav`` → ``audio/x-wav``, Linux → ``audio/wav``.  Pin the
         canonical value so the Data URI is identical on every machine."""
         from pathlib import Path
+
         from slife.plugins.media.adapters.dashscope_aigc import DashScopeAIGCAdapter
 
         assert DashScopeAIGCAdapter._audio_mime(Path("a.wav")) == "audio/wav"
@@ -511,12 +541,13 @@ class TestDashScopeAdapter:
         audio.write_bytes(b"fake")
         captured = {}
 
-        async def fake_request(method, url, *, extra_headers=None,
-                               json_body=None):
-            captured.update(method=method, url=url, headers=extra_headers,
-                            body=json_body)
-            return {"output": {"choices": [{"message": {"content": [
-                {"text": "hello"}]}}]}}
+        async def fake_request(method, url, *, extra_headers=None, json_body=None):
+            captured.update(
+                method=method, url=url, headers=extra_headers, body=json_body
+            )
+            return {
+                "output": {"choices": [{"message": {"content": [{"text": "hello"}]}}]}
+            }
 
         monkeypatch.setattr(adapter, "_request", fake_request)
         result = await adapter.transcribe_audio(model="asr", audio_path=audio)
@@ -529,10 +560,12 @@ class TestDashScopeAdapter:
         body = captured["body"]
         assert body["model"] == "asr"
         content = body["input"]["messages"][0]["content"]
-        assert content == [{
-            "type": "input_audio",
-            "input_audio": {"data": "data:audio/wav;base64,ZmFrZQ=="},
-        }]
+        assert content == [
+            {
+                "type": "input_audio",
+                "input_audio": {"data": "data:audio/wav;base64,ZmFrZQ=="},
+            }
+        ]
         assert body["parameters"] == {"format": "wav", "sample_rate": "16000"}
 
     @pytest.mark.asyncio
@@ -543,8 +576,9 @@ class TestDashScopeAdapter:
         resp.status_code = 200
         resp.json = lambda: {"code": "InvalidApiKey", "message": "bad"}
         fake_client.request = AsyncMock(return_value=resp)
-        monkeypatch.setattr(adapter, "_ensure_client",
-                            AsyncMock(return_value=fake_client))
+        monkeypatch.setattr(
+            adapter, "_ensure_client", AsyncMock(return_value=fake_client)
+        )
         with pytest.raises(MediaAdapterError, match="InvalidApiKey"):
             await adapter._request("GET", "https://x")
 
@@ -556,8 +590,9 @@ class TestDashScopeAdapter:
         resp.status_code = 401
         resp.text = "unauthorized"
         fake_client.request = AsyncMock(return_value=resp)
-        monkeypatch.setattr(adapter, "_ensure_client",
-                            AsyncMock(return_value=fake_client))
+        monkeypatch.setattr(
+            adapter, "_ensure_client", AsyncMock(return_value=fake_client)
+        )
         with pytest.raises(MediaAdapterError) as ei:
             await adapter._request("GET", "https://x")
         assert ei.value.status_code == 401
@@ -577,11 +612,12 @@ class TestOpenAICompatAdapter:
         resp.status_code = 200
         resp.json = lambda: {"data": [{"url": "https://cdn/i.png"}]}
         fake_client.post = AsyncMock(return_value=resp)
-        monkeypatch.setattr(adapter, "_ensure_client",
-                            AsyncMock(return_value=fake_client))
         monkeypatch.setattr(
-            adapter._saver, "save_url",
-            AsyncMock(return_value=Path("/tmp/i.png")))
+            adapter, "_ensure_client", AsyncMock(return_value=fake_client)
+        )
+        monkeypatch.setattr(
+            adapter._saver, "save_url", AsyncMock(return_value=Path("/tmp/i.png"))
+        )
         result = await adapter.generate_image(model="gpt-image-1", prompt="x")
         assert result == str(Path("/tmp/i.png"))
         url = fake_client.post.call_args.args[0]
@@ -635,12 +671,16 @@ class TestCheck:
 
     @pytest.mark.asyncio
     async def test_configured_reports_providers_and_kinds(self):
-        cfg = MediaConfig(providers={
-            "p1": ProviderConfig(
-                api="openai-images", base_url="http://x", api_key="k",
-                models=[ModelEntry(model="m1", kind="image")],
-            ),
-        })
+        cfg = MediaConfig(
+            providers={
+                "p1": ProviderConfig(
+                    api="openai-images",
+                    base_url="http://x",
+                    api_key="k",
+                    models=[ModelEntry(model="m1", kind="image")],
+                ),
+            }
+        )
         with patch.object(plugin, "_ensure_config", return_value=cfg):
             out = await self._check()
         data = json.loads(out)
@@ -654,12 +694,16 @@ class TestCheck:
 
     @pytest.mark.asyncio
     async def test_missing_api_key_is_a_fact(self):
-        cfg = MediaConfig(providers={
-            "p1": ProviderConfig(
-                api="openai-images", base_url="http://x", api_key="",
-                models=[ModelEntry(model="m1", kind="tts")],
-            ),
-        })
+        cfg = MediaConfig(
+            providers={
+                "p1": ProviderConfig(
+                    api="openai-images",
+                    base_url="http://x",
+                    api_key="",
+                    models=[ModelEntry(model="m1", kind="tts")],
+                ),
+            }
+        )
         with patch.object(plugin, "_ensure_config", return_value=cfg):
             out = await self._check()
         data = json.loads(out)
@@ -681,15 +725,14 @@ class TestCallFacts:
         plugin._config = _full_config()
         adapter = _fake_adapter()
         adapter.generate_image = AsyncMock(
-            side_effect=MediaAdapterError("403 - model not purchased",
-                                          status_code=403))
+            side_effect=MediaAdapterError("403 - model not purchased", status_code=403)
+        )
         plugin._adapters["test"] = adapter
 
         result = await plugin.generate_image(prompt="x")
         assert result.startswith("Error: 403")
 
-        with patch.object(plugin, "_ensure_config",
-                          return_value=_full_config()):
+        with patch.object(plugin, "_ensure_config", return_value=_full_config()):
             data = await self._check()
         assert len(data["calls"]) == 1
         rec = data["calls"][0]
@@ -702,20 +745,19 @@ class TestCallFacts:
 
     @pytest.mark.asyncio
     async def test_a_later_success_replaces_the_failure(self, fresh_plugin):
-        """"Last call" is the fact — a fixed key must not warn forever."""
+        """ "Last call" is the fact — a fixed key must not warn forever."""
         plugin._config = _full_config()
         adapter = _fake_adapter()
         adapter.generate_image = AsyncMock(
-            side_effect=MediaAdapterError("403 - model not purchased",
-                                          status_code=403))
+            side_effect=MediaAdapterError("403 - model not purchased", status_code=403)
+        )
         plugin._adapters["test"] = adapter
         await plugin.generate_image(prompt="x")
 
         adapter.generate_image = AsyncMock(return_value="/tmp/img.png")
         await plugin.generate_image(prompt="x")
 
-        with patch.object(plugin, "_ensure_config",
-                          return_value=_full_config()):
+        with patch.object(plugin, "_ensure_config", return_value=_full_config()):
             data = await self._check()
         assert len(data["calls"]) == 1
         assert data["calls"][0]["ok"] is True
@@ -728,21 +770,21 @@ class TestCallFacts:
         plugin._config = _full_config()
         adapter = _fake_adapter()
         adapter.generate_image = AsyncMock(
-            side_effect=MediaAdapterError("403 - model not purchased",
-                                          status_code=403))
+            side_effect=MediaAdapterError("403 - model not purchased", status_code=403)
+        )
         plugin._adapters["test"] = adapter
         await plugin.generate_image(prompt="x")
         await plugin.text_to_speech(text="hi")
 
-        with patch.object(plugin, "_ensure_config",
-                          return_value=_full_config()):
+        with patch.object(plugin, "_ensure_config", return_value=_full_config()):
             data = await self._check()
         facts = {c["kind"]: c["ok"] for c in data["calls"]}
         assert facts == {"image": False, "tts": True}
 
     @pytest.mark.asyncio
     async def test_a_call_with_no_resolved_provider_records_nothing(
-        self, fresh_plugin,
+        self,
+        fresh_plugin,
     ):
         """An unresolvable config is its own fact (``error``/``configured``) —
         there is no provider to attribute it to."""
@@ -750,7 +792,6 @@ class TestCallFacts:
         result = await plugin.generate_image(prompt="x", model="test/nope")
         assert result.startswith("Error: Unknown model")
 
-        with patch.object(plugin, "_ensure_config",
-                          return_value=_full_config()):
+        with patch.object(plugin, "_ensure_config", return_value=_full_config()):
             data = await self._check()
         assert data["calls"] == []

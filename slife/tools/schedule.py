@@ -37,7 +37,6 @@ from slife.tools.base import Tool, _MemfilesClientMixin, make_params, require_pa
 _SAFE_TASK_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
-
 def _parse(raw: str | None):
     """Parse an internal tool's JSON result; pass non-JSON strings through."""
     if not raw:
@@ -77,9 +76,7 @@ class ScheduledTaskSetTool(_ScheduleMixin, Tool):
 
     name = "scheduled_task_set"
     category: ClassVar[str] = "Schedule"
-    description = (
-        "Create or update a scheduled task (upsert by name)."
-    )
+    description = "Create or update a scheduled task (upsert by name)."
     parameters = make_params(
         name={
             "type": "string",
@@ -97,8 +94,8 @@ class ScheduledTaskSetTool(_ScheduleMixin, Tool):
             "type": "string",
             "default": "",
             "description": (
-                "5-field cron expression (\"minute hour dom month dow\"), or "
-                "\"manual\" (runs only via run_schedule_now)."
+                '5-field cron expression ("minute hour dom month dow"), or '
+                '"manual" (runs only via run_schedule_now).'
             ),
         },
         timezone={
@@ -114,8 +111,13 @@ class ScheduledTaskSetTool(_ScheduleMixin, Tool):
     )
 
     async def execute(
-        self, name: str = "", description: str = "", schedule: str = "",
-        timezone: str = "", enabled: bool = True, **kwargs,
+        self,
+        name: str = "",
+        description: str = "",
+        schedule: str = "",
+        timezone: str = "",
+        enabled: bool = True,
+        **kwargs,
     ) -> str:
         name = (name or "").strip()
         if err := require_params(name=name, description=(description or "").strip()):
@@ -127,30 +129,38 @@ class ScheduledTaskSetTool(_ScheduleMixin, Tool):
                 "(max 64 chars).  Use an ASCII slug like "
                 '"daily_report".'
             )
-        if schedule and schedule != "manual":
-            # strict=True matches the consuming path (the scheduler's next_run
-            # validates strict=True): an expression like "0 9 31 2 *" passes
-            # croniter.is_valid() non-strict but can never fire — validate up
-            # front so the task is rejected here, never stored-enabled-and-
-            # silently-never-fired.
-            if not is_valid(schedule, strict=True):
-                return f"Error: invalid cron expression {schedule!r}."
+        # strict=True matches the consuming path (the scheduler's next_run
+        # validates strict=True): an expression like "0 9 31 2 *" passes
+        # croniter.is_valid() non-strict but can never fire — validate up
+        # front so the task is rejected here, never stored-enabled-and-
+        # silently-never-fired.
+        if schedule and schedule != "manual" and not is_valid(schedule, strict=True):
+            return f"Error: invalid cron expression {schedule!r}."
         if timezone:
             # The scheduler constructs ZoneInfo(tz) per tick — a bad IANA name
             # must be rejected now with a clear error, not surface later as an
             # uncaught ZoneInfoNotFoundError in the trigger loop.
             from zoneinfo import ZoneInfo
+
             try:
                 ZoneInfo(timezone)
-            except Exception as e:
+            except (KeyError, ValueError, OSError) as e:
                 return (
                     f"Error: invalid timezone {timezone!r} "
-                    f"({e}). Use an IANA name like \"Asia/Shanghai\"."
+                    f'({e}). Use an IANA name like "Asia/Shanghai".'
                 )
-        return self._format(await self._call("__scheduled_task_upsert", {
-            "name": name, "description": description, "schedule": schedule,
-            "timezone": timezone, "enabled": enabled,
-        }))
+        return self._format(
+            await self._call(
+                "__scheduled_task_upsert",
+                {
+                    "name": name,
+                    "description": description,
+                    "schedule": schedule,
+                    "timezone": timezone,
+                    "enabled": enabled,
+                },
+            )
+        )
 
 
 class ScheduledTaskRemoveTool(_ScheduleMixin, Tool):
@@ -179,9 +189,7 @@ class ScheduledTaskListTool(_ScheduleMixin, Tool):
 
     name = "scheduled_task_list"
     category: ClassVar[str] = "Schedule"
-    description = (
-        "List scheduled tasks (name, schedule, timezone, enabled)."
-    )
+    description = "List scheduled tasks (name, schedule, timezone, enabled)."
     parameters = make_params(
         enabled_only={
             "type": "boolean",
@@ -201,10 +209,8 @@ class ScheduledRunListTool(_ScheduleMixin, Tool):
 
     name = "scheduled_run_list"
     category: ClassVar[str] = "Schedule"
-    description = (
-        "List scheduled-task run records, newest first (name/status filter)."
-    )
-    parameters = {
+    description = "List scheduled-task run records, newest first (name/status filter)."
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "name": {
@@ -226,11 +232,22 @@ class ScheduledRunListTool(_ScheduleMixin, Tool):
     }
 
     async def execute(
-        self, name: str = "", status: str = "", limit: int = 50, **kwargs,
+        self,
+        name: str = "",
+        status: str = "",
+        limit: int = 50,
+        **kwargs,
     ) -> str:
-        return self._format(await self._call("__scheduled_runs_list", {
-            "name": name, "status": status, "limit": limit,
-        }))
+        return self._format(
+            await self._call(
+                "__scheduled_runs_list",
+                {
+                    "name": name,
+                    "status": status,
+                    "limit": limit,
+                },
+            )
+        )
 
 
 class ScheduledRunSkipTool(_ScheduleMixin, Tool):
@@ -266,9 +283,7 @@ class RunScheduleNowTool(Tool):
 
     name = "run_schedule_now"
     category: ClassVar[str] = "Schedule"
-    description = (
-        "Trigger a scheduled task now; backfill: pass the run's due_at."
-    )
+    description = "Trigger a scheduled task now; backfill: pass the run's due_at."
     parameters = make_params(
         name={
             "type": "string",
@@ -285,7 +300,10 @@ class RunScheduleNowTool(Tool):
     )
 
     async def execute(
-        self, name: str = "", due_at: str = "", **kwargs,
+        self,
+        name: str = "",
+        due_at: str = "",
+        **kwargs,
     ) -> str:
         if err := require_params(name=name):
             return err

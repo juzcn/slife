@@ -18,9 +18,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from slife.plugins.mcp_gateway.client import MCPClient
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.logfmt import get_session_id, sanitize_secrets
 from slife.platform import assign_to_job_object, terminate_process
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ def _notify_user(title: str, message: str) -> None:
     """Best-effort desktop notification via the project's daemon convention."""
     from slife.platform import desktop_notify
     from slife.threads import run_daemon
+
     run_daemon(desktop_notify, title, message, name="desktop-notify")
 
 
@@ -80,7 +81,7 @@ class MCPWrapperProcess:
         # The background stderr-drain task — stored so stop() can cancel it
         # instead of letting it die via pipe EOF (or a "task was destroyed
         # but it is pending" warning at interpreter shutdown).
-        self._stderr_task: "asyncio.Task | None" = None
+        self._stderr_task: asyncio.Task | None = None
 
     @property
     def pid(self) -> int | None:
@@ -104,9 +105,7 @@ class MCPWrapperProcess:
             logger.warning("wrapper_already_running pid=%s", self.pid)
             return
 
-        logger.info(
-            "wrapper_start cmd=%s args=%s", self._command, " ".join(self._args)
-        )
+        logger.info("wrapper_start cmd=%s args=%s", self._command, " ".join(self._args))
 
         try:
             env = dict(os.environ)
@@ -177,12 +176,12 @@ class MCPWrapperProcess:
                         self._process.stderr.readline(),
                         timeout=_timeouts.timeouts.ready.stderr_line,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     break
                 if not line:
                     break
                 lines.append(line.decode("utf-8", errors="replace").rstrip())
-        except Exception:
+        except Exception:  # noqa: BLE001 — best-effort diagnostic: never fail the caller
             return "(stderr read failed)"
         tail = "\n".join(lines)[-2000:]
         return tail or "(empty)"
@@ -201,9 +200,10 @@ class MCPWrapperProcess:
             # child, not a *slow* one — a 30s cap misfired and aborted a
             # plugin that was still making progress.
             line = await asyncio.wait_for(
-                self._process.stdout.readline(), timeout=signal_timeout,
+                self._process.stdout.readline(),
+                timeout=signal_timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await self._stop_stderr_drain()
             stderr_tail = await self._read_stderr_tail()
             raise RuntimeError(
@@ -231,8 +231,9 @@ class MCPWrapperProcess:
         logger.info("wrapper_port pid=%s port=%s", self._process.pid, self._port)
 
     async def create_client(
-        self, tool_timeout: float | None = None,
-    ) -> "MCPClient":
+        self,
+        tool_timeout: float | None = None,
+    ) -> MCPClient:
         """Create an MCPClient connected to the plugin's Streamable HTTP endpoint.
 
         Disconnecting the client does NOT stop the process — call stop()
@@ -248,9 +249,7 @@ class MCPWrapperProcess:
         from slife.plugins.mcp_gateway.client import MCPClient
 
         if not self._process or not self._running:
-            raise RuntimeError(
-                "Plugin wrapper is not running. Call start() first."
-            )
+            raise RuntimeError("Plugin wrapper is not running. Call start() first.")
 
         if not self._port:
             raise RuntimeError("Plugin port not discovered. Call start() first.")
@@ -288,7 +287,7 @@ class MCPWrapperProcess:
             task.cancel()
             try:
                 await task
-            except (asyncio.CancelledError, Exception):
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110 — cancelled drain must not raise
                 pass
 
     async def _cleanup_failed_start(self) -> None:
@@ -304,11 +303,11 @@ class MCPWrapperProcess:
         await self._stop_stderr_drain()
         try:
             self._process.kill()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — cleanup must never fail the caller
             pass
         try:
             await self._process.wait()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — cleanup must never fail the caller
             pass
         self._process = None
         self._running = False
@@ -345,7 +344,7 @@ class MCPWrapperProcess:
             self._stderr_task.cancel()
             try:
                 await self._stderr_task
-            except (asyncio.CancelledError, Exception):
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110 — cancelled drain must not raise
                 pass
         self._stderr_task = None
 
@@ -360,16 +359,17 @@ class MCPWrapperProcess:
         WARNING and muted during the TUI).
         """
         import re
+
         from slife.logfmt import read_stderr_lines
 
         # Matches the child's structured logger output:
         # "HH:MM:SS [LEVEL] logger_name ..."
         _SUBPROCESS_LOG = re.compile(
-            r'^\d{2}:\d{2}:\d{2}\s+\[(?:DEBUG|INFO ?|WARN(?:ING)?|ERROR)\]\s+\S+'
+            r"^\d{2}:\d{2}:\d{2}\s+\[(?:DEBUG|INFO ?|WARN(?:ING)?|ERROR)\]\s+\S+"
         )
 
         # Matches uvicorn log output: "LEVEL:     message"
-        _UVICORN_LOG = re.compile(r'^(?:INFO|WARNING|ERROR|DEBUG)\s*:')
+        _UVICORN_LOG = re.compile(r"^(?:INFO|WARNING|ERROR|DEBUG)\s*:")
 
         _BANNER_MARKERS = (
             "gofastmcp.com",
@@ -379,7 +379,8 @@ class MCPWrapperProcess:
         _BANNER_CHARS = set("─│└├┬┴╭╮╯╰▀▄█▌▐░▒▓")
 
         async for text in read_stderr_lines(
-            self._process, lambda: self._running,
+            self._process,
+            lambda: self._running,
         ):
             stripped = text.strip()
             if not stripped:
@@ -392,12 +393,13 @@ class MCPWrapperProcess:
             # anyway); the compact URL+code line fires the desktop
             # notification, which is the user-facing channel.
             if stripped.startswith(_OAUTH_ACTION_MARKER):
-                body = stripped[len(_OAUTH_ACTION_MARKER):].strip()
+                body = stripped[len(_OAUTH_ACTION_MARKER) :].strip()
                 from slife.plugins.mcp_gateway.i18n import t
+
                 _notify_user(t("notify_oauth_title"), body)
                 continue
             if stripped.startswith(_OAUTH_MARKER):
-                body = stripped[len(_OAUTH_MARKER):].strip()
+                body = stripped[len(_OAUTH_MARKER) :].strip()
                 logger.warning("oauth_instructions %s", body)
                 continue
 

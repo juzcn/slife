@@ -54,10 +54,10 @@ from slife.plugins.memdb.store import (
     _is_fts_parse_error,
     _like_escape,
     _like_terms,
-    semantic_fetch_limit,
     _serialize_f32,
     _to_fts5_query,
     in_placeholders,
+    semantic_fetch_limit,
 )
 from slife.timeutil import normalize_time_bound, now_local_seconds
 
@@ -168,7 +168,7 @@ def _category_from_path(saved_path: str) -> str:
 _KIND_SPECS = {
     "note": {
         "table": "notes",
-        "key_col": "subject",       # what the read tools take as the key
+        "key_col": "subject",  # what the read tools take as the key
         "time_col": "updated_at",
         "time_granularity": "datetime",
     },
@@ -207,7 +207,9 @@ CABINET_BROWSE_TOOLS = "note_list / diary_list / file_list / report_list"
 
 
 def _kind_window(
-    spec: dict, since: str | None, until: str | None,
+    spec: dict,
+    since: str | None,
+    until: str | None,
 ) -> tuple[str | None, str | None]:
     """Normalize ``since``/``until`` for *spec*'s time axis.
 
@@ -219,14 +221,18 @@ def _kind_window(
     granularity = spec["time_granularity"]
     return (
         normalize_time_bound(since, role="since", granularity=granularity)
-        if since else None,
+        if since
+        else None,
         normalize_time_bound(until, role="until", granularity=granularity)
-        if until else None,
+        if until
+        else None,
     )
 
 
 def _list_window(
-    spec: dict, since: str | None, until: str | None,
+    spec: dict,
+    since: str | None,
+    until: str | None,
 ) -> tuple[list[str], list[str]]:
     """``(clauses, params)`` for *spec*'s window, unaliased — the ``*_list`` shape.
 
@@ -283,7 +289,9 @@ def _valid_kind(kind: str) -> str:
 
 
 def _doc_window(
-    since: str | None, until: str | None, kind: str,
+    since: str | None,
+    until: str | None,
+    kind: str,
 ) -> tuple[str, list[str]]:
     """The window a SEARCH runs inside, as an ``(sql, params)`` AND-suffix.
 
@@ -325,11 +333,11 @@ class MemfilesStore(VecStoreLifecycleMixin):
 
     def __init__(self, db_path: Path):
         self._db_path = db_path
-        self._mem_dir = db_path.parent          # .index.db lives in {agent}.files/
+        self._mem_dir = db_path.parent  # .index.db lives in {agent}.files/
         self._conn: aiosqlite.Connection | None = None
         self._embedding_dim = DEFAULT_EMBEDDING_DIM
         self._embedding_model = ""
-        self._vec_available = False             # sqlite-vec loaded? embeddings optional
+        self._vec_available = False  # sqlite-vec loaded? embeddings optional
         #: Why sqlite-vec is not usable ("" once it loads).  Initialised here,
         #: not only in ``_load_vec_extension``: the normal startup path skips
         #: that call, and ``__check`` reads this whenever ``_vec_available`` is
@@ -423,7 +431,10 @@ class MemfilesStore(VecStoreLifecycleMixin):
     # ── document writes (md mirrored) ──────────────────────────────
 
     async def upsert_note(
-        self, subject: str, content: str, tags: str | None = None,
+        self,
+        subject: str,
+        content: str,
+        tags: str | None = None,
     ) -> dict:
         """Write the subject's note, replacing the body it held (md + DB row).
 
@@ -473,8 +484,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
 
             if doc_id is not None:
                 await self._c.execute(
-                    "UPDATE notes SET content=?, tags=?, updated_at=? "
-                    "WHERE id=?",
+                    "UPDATE notes SET content=?, tags=?, updated_at=? WHERE id=?",
                     (new_md, written_tags, now, doc_id),
                 )
                 await self._clear_doc_chunks("note", doc_id)
@@ -486,8 +496,13 @@ class MemfilesStore(VecStoreLifecycleMixin):
                 )
                 doc_id = cursor.lastrowid
             await self._c.commit()
-            return {"kind": "note", "doc_id": doc_id, "key": subject,
-                    "file_path": rel, "content": new_md}
+            return {
+                "kind": "note",
+                "doc_id": doc_id,
+                "key": subject,
+                "file_path": rel,
+                "content": new_md,
+            }
 
     async def remove_note(self, subject: str) -> bool:
         """Delete a note: its md mirror, its row and its vectors.
@@ -502,7 +517,8 @@ class MemfilesStore(VecStoreLifecycleMixin):
         """
         async with self._write_lock:
             cursor = await self._c.execute(
-                "SELECT id, file_path FROM notes WHERE subject = ?", (subject,),
+                "SELECT id, file_path FROM notes WHERE subject = ?",
+                (subject,),
             )
             row = await cursor.fetchone()
             if not row:
@@ -533,7 +549,8 @@ class MemfilesStore(VecStoreLifecycleMixin):
             # practice), and a duplicate left behind would be a row naming
             # bytes this call just removed.
             cursor = await self._c.execute(
-                "SELECT id FROM files WHERE saved_path = ?", (saved_path,),
+                "SELECT id FROM files WHERE saved_path = ?",
+                (saved_path,),
             )
             doc_ids = [r["id"] for r in await cursor.fetchall()]
             if not doc_ids:
@@ -542,7 +559,8 @@ class MemfilesStore(VecStoreLifecycleMixin):
             for doc_id in doc_ids:
                 await self._clear_doc_chunks("file", doc_id)
             await self._c.execute(
-                "DELETE FROM files WHERE saved_path = ?", (saved_path,),
+                "DELETE FROM files WHERE saved_path = ?",
+                (saved_path,),
             )
             await self._c.commit()
             return True
@@ -570,7 +588,8 @@ class MemfilesStore(VecStoreLifecycleMixin):
             abs_path.write_text(new_md, encoding="utf-8")
 
             cursor = await self._c.execute(
-                "SELECT id FROM diary WHERE date = ?", (date,),
+                "SELECT id FROM diary WHERE date = ?",
+                (date,),
             )
             row = await cursor.fetchone()
             if row:
@@ -589,12 +608,24 @@ class MemfilesStore(VecStoreLifecycleMixin):
                 )
                 doc_id = cursor.lastrowid
             await self._c.commit()
-            return {"kind": "diary", "doc_id": doc_id, "key": date,
-                    "file_path": rel, "content": new_md}
+            return {
+                "kind": "diary",
+                "doc_id": doc_id,
+                "key": date,
+                "file_path": rel,
+                "content": new_md,
+            }
 
     async def add_file(
-        self, *, title: str, original_path: str, saved_path: str,
-        mime: str, size: int, tags: str, summary: str,
+        self,
+        *,
+        title: str,
+        original_path: str,
+        saved_path: str,
+        mime: str,
+        size: int,
+        tags: str,
+        summary: str,
     ) -> dict:
         """Record a saved file (bytes already copied by the caller)."""
         async with self._write_lock:
@@ -604,12 +635,21 @@ class MemfilesStore(VecStoreLifecycleMixin):
                 (title, original_path, saved_path, mime, size, tags, summary, _now()),
             )
             await self._c.commit()
-        return {"kind": "file", "doc_id": cursor.lastrowid,
-                "key": saved_path, "file_path": saved_path}
+        return {
+            "kind": "file",
+            "doc_id": cursor.lastrowid,
+            "key": saved_path,
+            "file_path": saved_path,
+        }
 
     async def upsert_report(
-        self, task_id: int | None, title: str, content: str, tags: str = "",
-        period_start: str | None = None, period_end: str | None = None,
+        self,
+        task_id: int | None,
+        title: str,
+        content: str,
+        tags: str = "",
+        period_start: str | None = None,
+        period_end: str | None = None,
         due_at: str | None = None,
     ) -> dict:
         """Save a report (md + DB row) and, when bound to a task, confirm its run.
@@ -627,7 +667,9 @@ class MemfilesStore(VecStoreLifecycleMixin):
         if not title.strip():
             raise ValueError("title is required")
         async with self._write_lock:
-            slug = _slugify(title) or ("report" if task_id is None else f"report-{task_id}")
+            slug = _slugify(title) or (
+                "report" if task_id is None else f"report-{task_id}"
+            )
             now = _now()
             body = content.strip()
 
@@ -641,14 +683,16 @@ class MemfilesStore(VecStoreLifecycleMixin):
                 cursor = await self._c.execute(
                     "SELECT id, file_path FROM reports "
                     "WHERE task_id = ? AND title = ? "
-                    "ORDER BY id DESC LIMIT 1", (task_id, title),
+                    "ORDER BY id DESC LIMIT 1",
+                    (task_id, title),
                 )
                 row = await cursor.fetchone()
             else:
                 cursor = await self._c.execute(
                     "SELECT id, file_path FROM reports "
                     "WHERE task_id IS NULL AND title = ? "
-                    "ORDER BY id DESC LIMIT 1", (title,),
+                    "ORDER BY id DESC LIMIT 1",
+                    (title,),
                 )
                 row = await cursor.fetchone()
             if row:
@@ -681,7 +725,17 @@ class MemfilesStore(VecStoreLifecycleMixin):
                     "INSERT INTO reports (task_id, title, content, tags, file_path, "
                     "period_start, period_end, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (task_id, title, new_md, tags, rel, period_start, period_end, now, now),
+                    (
+                        task_id,
+                        title,
+                        new_md,
+                        tags,
+                        rel,
+                        period_start,
+                        period_end,
+                        now,
+                        now,
+                    ),
                 )
                 doc_id = cursor.lastrowid
 
@@ -714,27 +768,44 @@ class MemfilesStore(VecStoreLifecycleMixin):
                         (doc_id, task_id),
                     )
             await self._c.commit()
-            return {"kind": "report", "doc_id": doc_id, "key": title,
-                    "file_path": rel, "content": new_md}
+            return {
+                "kind": "report",
+                "doc_id": doc_id,
+                "key": title,
+                "file_path": rel,
+                "content": new_md,
+            }
 
     # ── scheduled-task registry ─────────────────────────────────────
 
     async def upsert_scheduled_task(
-        self, name: str, description: str = "", schedule: str = "",
-        timezone: str = "", enabled: bool = True,
+        self,
+        name: str,
+        description: str = "",
+        schedule: str = "",
+        timezone: str = "",
+        enabled: bool = True,
     ) -> dict:
         """Create or update a scheduled task by name.  Returns its row."""
         now = _now()
         async with self._write_lock:
             cursor = await self._c.execute(
-                "SELECT id FROM scheduled_tasks WHERE name = ?", (name,),
+                "SELECT id FROM scheduled_tasks WHERE name = ?",
+                (name,),
             )
             row = await cursor.fetchone()
             if row:
                 await self._c.execute(
                     "UPDATE scheduled_tasks SET description=?, schedule=?, "
                     "timezone=?, enabled=?, updated_at=? WHERE id=?",
-                    (description, schedule, timezone, 1 if enabled else 0, now, row["id"]),
+                    (
+                        description,
+                        schedule,
+                        timezone,
+                        1 if enabled else 0,
+                        now,
+                        row["id"],
+                    ),
                 )
                 task_id = row["id"]
             else:
@@ -742,7 +813,15 @@ class MemfilesStore(VecStoreLifecycleMixin):
                     "INSERT INTO scheduled_tasks (name, description, schedule, timezone, "
                     "enabled, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (name, description, schedule, timezone, 1 if enabled else 0, now, now),
+                    (
+                        name,
+                        description,
+                        schedule,
+                        timezone,
+                        1 if enabled else 0,
+                        now,
+                        now,
+                    ),
                 )
                 task_id = cursor.lastrowid
             await self._c.commit()
@@ -773,23 +852,29 @@ class MemfilesStore(VecStoreLifecycleMixin):
         """
         async with self._write_lock:
             cursor = await self._c.execute(
-                "SELECT id FROM scheduled_tasks WHERE name = ?", (name,),
+                "SELECT id FROM scheduled_tasks WHERE name = ?",
+                (name,),
             )
             row = await cursor.fetchone()
             if not row:
                 return False
             task_id = row["id"]
             await self._c.execute(
-                "DELETE FROM scheduled_runs WHERE task_id = ?", (task_id,),
+                "DELETE FROM scheduled_runs WHERE task_id = ?",
+                (task_id,),
             )
             await self._c.execute(
-                "DELETE FROM scheduled_tasks WHERE id = ?", (task_id,),
+                "DELETE FROM scheduled_tasks WHERE id = ?",
+                (task_id,),
             )
             await self._c.commit()
         return True
 
     async def record_scheduled_run(
-        self, task_id: int, due_at: str, status: str = "pending",
+        self,
+        task_id: int,
+        due_at: str,
+        status: str = "pending",
     ) -> dict:
         """Insert a scheduled run (idempotent on (task_id, due_at)).
 
@@ -823,7 +908,10 @@ class MemfilesStore(VecStoreLifecycleMixin):
             await self._c.commit()
 
     async def mark_run_failed(
-        self, task_id: int, due_at: str, error: str = "",
+        self,
+        task_id: int,
+        due_at: str,
+        error: str = "",
     ) -> None:
         """Mark a dispatched-but-unconfirmed run as failed (best effort).
 
@@ -909,7 +997,9 @@ class MemfilesStore(VecStoreLifecycleMixin):
         return row[0] if (row and row[0]) else None
 
     async def scheduled_runs_list(
-        self, task_id: int | None = None, status: str | None = None,
+        self,
+        task_id: int | None = None,
+        status: str | None = None,
         limit: int = 50,
     ) -> list[dict]:
         """List runs, newest-first; filter by task and/or status."""
@@ -933,8 +1023,11 @@ class MemfilesStore(VecStoreLifecycleMixin):
     # ── browse / read ────────────────────────────────────────────────
 
     async def note_list(
-        self, since: str | None = None, until: str | None = None,
-        limit: int = 50, offset: int = 0,
+        self,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> dict:
         """List notes, newest-updated first.  Lightweight — no content.
 
@@ -962,8 +1055,11 @@ class MemfilesStore(VecStoreLifecycleMixin):
         return {"entries": entries, "total": total}
 
     async def diary_list(
-        self, since: str | None = None, until: str | None = None,
-        limit: int = 50, offset: int = 0,
+        self,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> dict:
         """List diary entries, newest first, optionally within a date range.
 
@@ -981,7 +1077,8 @@ class MemfilesStore(VecStoreLifecycleMixin):
         clauses, params = _list_window(_KIND_SPECS["diary"], since, until)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         cursor = await self._c.execute(
-            f"SELECT COUNT(*) FROM diary {where}", params,
+            f"SELECT COUNT(*) FROM diary {where}",
+            params,
         )
         row = await cursor.fetchone()
         total = row[0] if row else 0
@@ -994,8 +1091,12 @@ class MemfilesStore(VecStoreLifecycleMixin):
         return {"entries": entries, "total": total}
 
     async def report_list(
-        self, task_id: int | None = None, since: str | None = None,
-        until: str | None = None, limit: int = 50, offset: int = 0,
+        self,
+        task_id: int | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> dict:
         """List reports, newest first, optionally filtered by task and/or window.
 
@@ -1022,7 +1123,8 @@ class MemfilesStore(VecStoreLifecycleMixin):
         params += w_params
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         cursor = await self._c.execute(
-            f"SELECT COUNT(*) FROM reports {where}", params,
+            f"SELECT COUNT(*) FROM reports {where}",
+            params,
         )
         row = await cursor.fetchone()
         total = row[0] if row else 0
@@ -1047,8 +1149,12 @@ class MemfilesStore(VecStoreLifecycleMixin):
         return dict(row) if row else None
 
     async def file_list(
-        self, category: str = "", since: str | None = None,
-        until: str | None = None, limit: int = 50, offset: int = 0,
+        self,
+        category: str = "",
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> dict:
         """List saved files, newest first, optionally filtered by category.
 
@@ -1077,7 +1183,8 @@ class MemfilesStore(VecStoreLifecycleMixin):
         params += w_params
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         cursor = await self._c.execute(
-            f"SELECT COUNT(*) FROM files {where}", params,
+            f"SELECT COUNT(*) FROM files {where}",
+            params,
         )
         row = await cursor.fetchone()
         total = row[0] if row else 0
@@ -1134,7 +1241,10 @@ class MemfilesStore(VecStoreLifecycleMixin):
     # ── writing an annotation onto a saved row ─────────────────────
 
     async def summarize(
-        self, kind: str, key: str, summary: str | None = None,
+        self,
+        kind: str,
+        key: str,
+        summary: str | None = None,
         tags: str | None = None,
     ) -> dict:
         """Write a saved row's summary and/or tags, and re-queue it to be embedded.
@@ -1193,7 +1303,9 @@ class MemfilesStore(VecStoreLifecycleMixin):
                 await self._clear_doc_chunks(kind, row["id"])
             await self._c.commit()
         return {
-            "kind": kind, "id": row["id"], "key": key,
+            "kind": kind,
+            "id": row["id"],
+            "key": key,
             "tags": row["tags"] if tags is None else tags,
             "summary": row.get("summary", "") if summary is None else summary,
             "reembedded": summary is not None and kind == "file",
@@ -1218,7 +1330,8 @@ class MemfilesStore(VecStoreLifecycleMixin):
             value = key
             where = f"{spec['key_col']} = ?"
         cursor = await self._c.execute(
-            f"SELECT id, * FROM {spec['table']} WHERE {where}", (value,),
+            f"SELECT id, * FROM {spec['table']} WHERE {where}",
+            (value,),
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
@@ -1266,7 +1379,9 @@ class MemfilesStore(VecStoreLifecycleMixin):
         return [dict(r) for r in await cursor.fetchall()]
 
     async def replace_embedding_chunks(
-        self, doc: dict, embeddings: list[list[float]],
+        self,
+        doc: dict,
+        embeddings: list[list[float]],
     ) -> None:
         """Atomically replace a document's vector chunks.
 
@@ -1327,8 +1442,13 @@ class MemfilesStore(VecStoreLifecycleMixin):
         )
 
     async def keyword_hits(
-        self, *, query: str, limit: int, since: str | None = None,
-        until: str | None = None, kind: str = "all",
+        self,
+        *,
+        query: str,
+        limit: int,
+        since: str | None = None,
+        until: str | None = None,
+        kind: str = "all",
     ) -> list[dict]:
         """Ranked keyword hits over the cabinet, best first.
 
@@ -1383,8 +1503,13 @@ class MemfilesStore(VecStoreLifecycleMixin):
             return []
 
     async def semantic_hits(
-        self, *, embedding: list[float], limit: int,
-        since: str | None = None, until: str | None = None, kind: str = "all",
+        self,
+        *,
+        embedding: list[float],
+        limit: int,
+        since: str | None = None,
+        until: str | None = None,
+        kind: str = "all",
     ) -> list[dict]:
         """Vector hits over the cabinet, nearest first.
 
@@ -1436,8 +1561,13 @@ class MemfilesStore(VecStoreLifecycleMixin):
         return hits[:limit]
 
     async def regex_hits(
-        self, *, pattern: str, limit: int, since: str | None = None,
-        until: str | None = None, kind: str = "all",
+        self,
+        *,
+        pattern: str,
+        limit: int,
+        since: str | None = None,
+        until: str | None = None,
+        kind: str = "all",
     ) -> list[dict]:
         """Regex hits over the cabinet, newest first.
 
@@ -1477,7 +1607,7 @@ class MemfilesStore(VecStoreLifecycleMixin):
                 if match is None:
                     continue
                 start = max(0, match.start() - 40)
-                r["snippet"] = text[start:start + 160]
+                r["snippet"] = text[start : start + 160]
                 break
             else:
                 continue

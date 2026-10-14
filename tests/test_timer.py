@@ -95,7 +95,7 @@ class TestScheduleWakeup:
 
     @pytest.mark.asyncio
     async def test_posts_timer_message(self):
-        srv, posted, surfaced = self._service()
+        srv, posted, _surfaced = self._service()
         await srv.schedule_wakeup(0.001, "check deploy")
         assert srv._timer_tasks
         await asyncio.sleep(0.05)

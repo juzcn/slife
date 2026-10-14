@@ -108,10 +108,7 @@ class ListSubagentsTool(Tool):
 
         subagent_names = manager.list()
         if not subagent_names:
-            return (
-                "No local subagents running. "
-                "Use spawn_subagent to create one."
-            )
+            return "No local subagents running. Use spawn_subagent to create one."
 
         lines = [f"Local subagents ({len(subagent_names)}):"]
         for aid in sorted(subagent_names):
@@ -167,7 +164,9 @@ class SpawnSubagentTool(Tool):
         worker_name = subagent_name.strip()
         if err := require_params(
             subagent_name=worker_name,
-            _hints={"subagent_name": 'give the worker a name (e.g. "researcher", "coder-1").'},
+            _hints={
+                "subagent_name": 'give the worker a name (e.g. "researcher", "coder-1").'
+            },
         ):
             return err
 
@@ -185,7 +184,7 @@ class SpawnSubagentTool(Tool):
                 f"  Use list_subagents to see all local workers.\n"
                 f'  Use subagent_send_task with subagent_name="{spawned}" to delegate work.'
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — tool-error contract: the subagent manager can fail in several ways; return an error string
             logger.error("subagent_tool_spawn_failed err=%s", e)
             return f"Error spawning subagent: {e}"
 
@@ -261,7 +260,10 @@ class SubagentSendTaskTool(Tool):
         "context, not a guarantee."
     )
     parameters: ClassVar[dict] = make_params(
-        subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},
+        subagent_name={
+            "type": "string",
+            "description": "subagent_name of the local subagent worker.",
+        },
         task={"type": "string", "description": "Self-contained task for the worker."},
         timeout={
             "type": "integer",
@@ -280,7 +282,9 @@ class SubagentSendTaskTool(Tool):
         # omits the param to use the worker default (registry work.task_budget,
         # resolved at call time on the worker).  None / 0 / negative → default.
         _t = kwargs.get("timeout")
-        timeout_override = _t if isinstance(_t, int) and not isinstance(_t, bool) and _t > 0 else None
+        timeout_override = (
+            _t if isinstance(_t, int) and not isinstance(_t, bool) and _t > 0 else None
+        )
         # The clone is taken HERE — at the moment the task is sent — because
         # this is the only point at which the context the task refers to is in
         # hand.  A queued task keeps this snapshot even if the worker runs it
@@ -293,7 +297,7 @@ class SubagentSendTaskTool(Tool):
             n = manager.queued_count(subagent_name)
             try:
                 rpc_id = await manager.send_task_async(subagent_name, task, seed=seed)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — tool-error contract: the manager can fail in several ways; return an error string
                 return f"Error queueing task to subagent '{subagent_name}': {e}"
             return (
                 f"Subagent '{subagent_name}' is busy ({n} task(s) in flight) — the "
@@ -306,7 +310,10 @@ class SubagentSendTaskTool(Tool):
 
         try:
             return await manager.send_task(
-                subagent_name, task, timeout=timeout_override, seed=seed,
+                subagent_name,
+                task,
+                timeout=timeout_override,
+                seed=seed,
             )
         except TimeoutError as e:
             # The worker's TaskTimeout carries the task id (imported here, like
@@ -339,7 +346,7 @@ class SubagentSendTaskTool(Tool):
                 "the worker, so it does not hold up later tasks; its eventual "
                 "result, if any, is NOT delivered automatically."
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — tool-error contract: the manager can fail in several ways; return an error string
             return f"Error sending task to subagent '{subagent_name}': {e}"
 
 
@@ -365,7 +372,10 @@ class SubagentSendTaskAsyncTool(Tool):
         "not a guarantee."
     )
     parameters: ClassVar[dict] = make_params(
-        subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},
+        subagent_name={
+            "type": "string",
+            "description": "subagent_name of the local subagent worker.",
+        },
         task={"type": "string", "description": "Self-contained task for the worker."},
         mode={
             "type": "string",
@@ -376,7 +386,11 @@ class SubagentSendTaskAsyncTool(Tool):
     )
 
     async def execute(
-        self, subagent_name: str = "", task: str = "", mode: str = "auto", **kwargs,
+        self,
+        subagent_name: str = "",
+        task: str = "",
+        mode: str = "auto",
+        **kwargs,
     ) -> str:
         if err := require_params(subagent_name=subagent_name, task=task):
             return err
@@ -390,7 +404,10 @@ class SubagentSendTaskAsyncTool(Tool):
         seed = _serialize_cloned_context(getattr(self, "_ctx", None))
         try:
             rpc_id = await manager.send_task_async(
-                subagent_name, task, mode=mode, seed=seed,
+                subagent_name,
+                task,
+                mode=mode,
+                seed=seed,
             )
             if mode == "poll":
                 return (
@@ -404,7 +421,7 @@ class SubagentSendTaskAsyncTool(Tool):
                 "automatically when complete — it can also be polled at any "
                 "time with subagent_get_task_result."
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — tool-error contract: the manager can fail in several ways; return an error string
             return f"Error sending task to subagent '{subagent_name}': {e}"
 
 
@@ -463,15 +480,18 @@ class SubagentRunTaskBackgroundTool(Tool):
 
         try:
             worker, rpc_id, reused = await manager.send_task_to_pool(
-                task, mode=mode, seed=seed,
+                task,
+                mode=mode,
+                seed=seed,
             )
         except PoolFullError as e:
             return f"Error: {e}."
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — tool-error contract: the pool can fail in several ways; return an error string
             return f"Error delegating to the pool: {e}"
 
         chosen = (
-            "reused an idle worker" if reused
+            "reused an idle worker"
+            if reused
             else "no worker was idle, so a new one was spawned"
         )
         if mode == "poll":
@@ -503,11 +523,19 @@ class SubagentGetTaskResultTool(Tool):
         "result stays retrievable for as long as the task is recorded."
     )
     parameters: ClassVar[dict] = make_params(
-        subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},
-        task_id={"type": "string", "description": "task_id from subagent_send_task_async (or from a timed-out subagent_send_task)."},
+        subagent_name={
+            "type": "string",
+            "description": "subagent_name of the local subagent worker.",
+        },
+        task_id={
+            "type": "string",
+            "description": "task_id from subagent_send_task_async (or from a timed-out subagent_send_task).",
+        },
     )
 
-    async def execute(self, subagent_name: str = "", task_id: str = "", **kwargs) -> str:
+    async def execute(
+        self, subagent_name: str = "", task_id: str = "", **kwargs
+    ) -> str:
         if err := require_params(subagent_name=subagent_name, task_id=task_id):
             return err
         manager, hint = _manager_or_hint()
@@ -557,13 +585,16 @@ class SubagentListTasksTool(Tool):
         if manager is None:
             return hint
         records, total = manager.list_tasks(
-            agent_name=subagent_name or None, status=status or None,
+            agent_name=subagent_name or None,
+            status=status or None,
         )
         if not records:
             return "No subagent task records found."
         # Say how many are NOT shown — a truncated list presented as the total
         # is a fact the caller cannot check.
-        shown = f"{len(records)}" if total == len(records) else f"{len(records)} of {total}"
+        shown = (
+            f"{len(records)}" if total == len(records) else f"{len(records)} of {total}"
+        )
         lines = [f"Subagent tasks ({shown}):"]
         for r in records:
             mode = r.get("mode", "sync")
@@ -579,15 +610,21 @@ class SubagentCancelTaskTool(Tool):
 
     name = "subagent_cancel_task"
     category = "Subagent"
-    description = (
-        "Cancel a subagent task (queued or running)."
-    )
+    description = "Cancel a subagent task (queued or running)."
     parameters: ClassVar[dict] = make_params(
-        subagent_name={"type": "string", "description": "subagent_name of the local subagent worker."},
-        task_id={"type": "string", "description": "task_id from subagent_send_task_async."},
+        subagent_name={
+            "type": "string",
+            "description": "subagent_name of the local subagent worker.",
+        },
+        task_id={
+            "type": "string",
+            "description": "task_id from subagent_send_task_async.",
+        },
     )
 
-    async def execute(self, subagent_name: str = "", task_id: str = "", **kwargs) -> str:
+    async def execute(
+        self, subagent_name: str = "", task_id: str = "", **kwargs
+    ) -> str:
         if err := require_params(subagent_name=subagent_name, task_id=task_id):
             return err
         manager, hint = _manager_or_hint()
@@ -595,8 +632,10 @@ class SubagentCancelTaskTool(Tool):
             return hint
         try:
             cancelled = await manager.cancel_task(subagent_name, task_id)
-        except Exception as e:
-            return f"Error cancelling task '{task_id}' on subagent '{subagent_name}': {e}"
+        except Exception as e:  # noqa: BLE001 — tool-error contract: the manager can fail in several ways; return an error string
+            return (
+                f"Error cancelling task '{task_id}' on subagent '{subagent_name}': {e}"
+            )
         if cancelled:
             return f"Task '{task_id}' on subagent '{subagent_name}' cancelled."
         return (

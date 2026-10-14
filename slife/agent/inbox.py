@@ -15,13 +15,13 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
-from slife.a2a.identity import AgentName, AgentMessage
-from slife.agent.message_history import MessageHistory, REASON_NOT_RECORDED
+from slife.a2a.identity import AgentMessage, AgentName
+from slife.agent.message_history import REASON_NOT_RECORDED, MessageHistory
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from slife.agent.loop import AgentLoop, AgentEventHandler
+    from slife.agent.loop import AgentEventHandler, AgentLoop
 
 logger = logging.getLogger(__name__)
 
@@ -239,11 +239,11 @@ class Inbox:
 
     def __init__(
         self,
-        agent_loop: "AgentLoop",
-        histories: "MessageHistoryStore",
-        on_activity: "Callable | None" = None,
-        on_turn_complete: "Callable | None" = None,
-        ready: "Callable[[], Awaitable[None]] | None" = None,
+        agent_loop: AgentLoop,
+        histories: MessageHistoryStore,
+        on_activity: Callable | None = None,
+        on_turn_complete: Callable | None = None,
+        ready: Callable[[], Awaitable[None]] | None = None,
     ):
         self._agent_loop = agent_loop
         self._histories = histories
@@ -370,13 +370,17 @@ class Inbox:
         except asyncio.QueueFull:
             logger.warning(
                 "inbox_overflow_dropped source=%s pending=%d content=%.80s",
-                msg.source, self._queue.qsize(), msg.content,
+                msg.source,
+                self._queue.qsize(),
+                msg.content,
             )
         logger.debug(
-            "inbox_post source=%s content=%.80s", msg.source, msg.content,
+            "inbox_post source=%s content=%.80s",
+            msg.source,
+            msg.content,
         )
 
-    def has_queued(self, predicate: "Callable[[AgentMessage], bool]") -> bool:
+    def has_queued(self, predicate: Callable[[AgentMessage], bool]) -> bool:
         """True if any *queued* (not yet processed) message satisfies
         *predicate*.  Non-destructive — the scheduler uses it to decide
         whether a pending-fire guard can be dropped without re-firing.
@@ -385,7 +389,11 @@ class Inbox:
         no non-destructive scan); the attribute is stable in every
         supported asyncio version.
         """
-        deque = getattr(self._queue, "_queue", (), )
+        deque = getattr(
+            self._queue,
+            "_queue",
+            (),
+        )
         return any(predicate(m) for m in deque)
 
     # ── Mid-turn input injection (cut-in mode) ────────────────────────
@@ -401,7 +409,7 @@ class Inbox:
         """
         return not self._queue.empty()
 
-    def extract_injectable(self) -> "AgentMessage | None":
+    def extract_injectable(self) -> AgentMessage | None:
         """Pull the FIRST queued message out for mid-turn injection.
 
         Drain-rebuild (same shape as :meth:`cancel_correlation`), preserving
@@ -440,7 +448,7 @@ class Inbox:
             if self._on_activity:
                 try:
                     await self._on_activity("idle")
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 — best-effort: must never break the turn
                     pass
             msg = await self._queue.get()
             if self._frozen:
@@ -448,7 +456,8 @@ class Inbox:
                 # be saved anyway).
                 logger.warning(
                     "inbox_frozen_dropped source=%s reason=%.120s",
-                    msg.source, self._frozen_reason,
+                    msg.source,
+                    self._frozen_reason,
                 )
                 continue
             await self._process_one(msg)
@@ -471,16 +480,21 @@ class Inbox:
         is_remote = msg.source not in (HUMAN, WECHAT, SUBAGENT, HEARTBEAT, SYSTEM)
         logger.info(
             "inbox_process source=%s corr_id=%s content=%.80s remote=%s",
-            msg.source, msg.correlation_id, msg.content, is_remote,
+            msg.source,
+            msg.correlation_id,
+            msg.content,
+            is_remote,
         )
 
         # Notify TUI that a remote task was received
         if is_remote and self._on_activity:
             try:
                 await self._on_activity(
-                    "task_received", source=msg.source, content=msg.content,
+                    "task_received",
+                    source=msg.source,
+                    content=msg.content,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — a TUI activity notification must never break the turn
                 pass
 
         # Notify TUI of peer terminal messages (WeChat etc.)
@@ -488,9 +502,11 @@ class Inbox:
         if msg.source == WECHAT and self._on_activity:
             try:
                 await self._on_activity(
-                    "peer_message", source="wechat", content=msg.content,
+                    "peer_message",
+                    source="wechat",
+                    content=msg.content,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — a TUI activity notification must never break the turn
                 pass
 
         # Notify TUI of subagent completions so they get the same
@@ -510,7 +526,7 @@ class Inbox:
                         channel.data.get("scheduled_task", "") if channel else ""
                     ),
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — a TUI activity notification must never break the turn
                 pass
 
         # Notify the TUI so the status bar shows "⏳ processing" for ANY turn
@@ -519,7 +535,7 @@ class Inbox:
         if self._on_activity:
             try:
                 await self._on_activity("busy")
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — a TUI activity notification must never break the turn
                 pass
 
         history = None
@@ -538,7 +554,8 @@ class Inbox:
             # one history per task from the clone that travelled with the
             # message; the main agent's ignores it.
             history = self._histories.get_or_create(
-                msg.source, seed=msg.context_seed,
+                msg.source,
+                seed=msg.context_seed,
             )
 
             # Prefer the handler attached to the message (TUI path); a remote
@@ -562,13 +579,14 @@ class Inbox:
                 stop_reason = result.stop_reason
                 logger.info(
                     "inbox_cancelled_or_max_iter source=%s reason=%s",
-                    msg.source, stop_reason or REASON_NOT_RECORDED,
+                    msg.source,
+                    stop_reason or REASON_NOT_RECORDED,
                 )
                 # Finalize the handler so the last assistant message is marked complete
                 if handler is not None:
                     try:
                         handler.finalize_current()
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110 — best-effort: must never break the turn
                         pass
 
             # Notify TUI that processing completed
@@ -580,7 +598,7 @@ class Inbox:
                         content=msg.content,
                         result=result.text if hasattr(result, "text") else str(result),
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 — best-effort: must never break the turn
                     pass
 
             # Route reply to originating channel (WeChat, etc.).  Pass the
@@ -600,15 +618,19 @@ class Inbox:
                     # fallback would run the callback a second time — a second
                     # WeChat message, or a duplicate completion push.
                     if _accepts_reply_kwargs(msg.on_reply):
-                        await msg.on_reply(reply_text, cancelled=cancelled,
-                                           stop_reason=stop_reason)
+                        await msg.on_reply(
+                            reply_text, cancelled=cancelled, stop_reason=stop_reason
+                        )
                     else:
                         await msg.on_reply(reply_text)
-                except Exception as e:
-                    logger.debug("on_reply_error channel=%s err=%s",
-                                 msg.metadata.get("channel", "?"), e)
+                except Exception as e:  # noqa: BLE001 — a channel reply callback must not break the turn
+                    logger.debug(
+                        "on_reply_error channel=%s err=%s",
+                        msg.metadata.get("channel", "?"),
+                        e,
+                    )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — the per-message guard: one bad message must not kill the inbox loop
             logger.warning("inbox_process_error source=%s err=%s", msg.source, e)
             # The reason the turn died: status + provider code when the SDK
             # has them, else a class name.  Never the message — the closing
@@ -620,7 +642,7 @@ class Inbox:
             if handler is not None:
                 try:
                     handler.finalize_current()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 — best-effort: must never break the turn
                     pass
             # A rejected request costs whatever the provider refused of it.
             # Attachments first: a block rides in the session only, so it is
@@ -641,7 +663,7 @@ class Inbox:
             if history is not None and _is_bad_request(e):
                 try:
                     images_dropped = self._agent_loop.forget_images(history)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 — best-effort: must never break the turn
                     pass
                 if _is_content_filter(e):
                     try:
@@ -652,7 +674,7 @@ class Inbox:
                         # with identical text (heartbeat content is constant)
                         # and duplicate it as a fresh turn row.
                         rolled_back = True
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110 — best-effort: must never break the turn
                         pass
             # Notify TUI so the user sees the error in chat.  ``dropped``
             # carries the rollback verdict explicitly (never re-derived from
@@ -669,7 +691,7 @@ class Inbox:
                         dropped=rolled_back,
                         images_dropped=images_dropped,
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 — best-effort: must never break the turn
                     pass
             if is_remote and self._on_activity:
                 try:
@@ -684,13 +706,13 @@ class Inbox:
                         # with "Error:".
                         error=True,
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 — best-effort: must never break the turn
                     pass
             # Notify channel on error
             if msg.on_reply is not None:
                 try:
                     await msg.on_reply(f"Error: {e}")
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 — best-effort: must never break the turn
                     pass
         finally:
             # ★ Persist turn unconditionally — even on cancel, error,
@@ -714,8 +736,7 @@ class Inbox:
                     # falls back to the token estimate).
                     usage = self._agent_loop._usage_by_history.get(id(history))
                     context_tokens = (
-                        usage.prompt_tokens + usage.completion_tokens
-                        if usage else 0
+                        usage.prompt_tokens + usage.completion_tokens if usage else 0
                     )
                     channel_identity, channel_data = _channel_persist(msg)
                     await self._on_turn_complete(
@@ -751,19 +772,23 @@ class Inbox:
                     # a second on_reply(error) would confuse a remote peer
                     # whose task already resolved.
                     logger.warning(
-                        "turn_save_failed source=%s err=%s", msg.source, e,
+                        "turn_save_failed source=%s err=%s",
+                        msg.source,
+                        e,
                     )
                     if handler is not None:
                         try:
                             handler.finalize_current()
-                        except Exception:
+                        except Exception:  # noqa: BLE001, S110 — handler finalize is best-effort: must never break the turn
                             pass
                     if self._on_activity:
                         try:
                             await self._on_activity(
-                                "loop_error", source=msg.source, error=str(e),
+                                "loop_error",
+                                source=msg.source,
+                                error=str(e),
                             )
-                        except Exception:
+                        except Exception:  # noqa: BLE001, S110 — a TUI activity notification must never break the turn
                             pass
                 except Exception:
                     logger.warning("on_turn_complete_error", exc_info=True)
@@ -785,12 +810,11 @@ class MessageHistoryStore:
     def __init__(self, system_prompt: str):
         self._system_prompt = system_prompt
         self._by_source: dict[AgentName, MessageHistory] = {}
-        self._default_handler_factory: "Callable[[], AgentEventHandler] | None" = (
-            None
-        )
+        self._default_handler_factory: Callable[[], AgentEventHandler] | None = None
 
     def set_default_handler_factory(
-        self, factory: "Callable[[], AgentEventHandler]",
+        self,
+        factory: Callable[[], AgentEventHandler],
     ) -> None:
         """Set the factory that builds the handler for a turn.
 
@@ -800,14 +824,17 @@ class MessageHistoryStore:
         """
         self._default_handler_factory = factory
 
-    def handler_for(self) -> "AgentEventHandler | None":
+    def handler_for(self) -> AgentEventHandler | None:
         """Return a handler for the turn now starting, or None before startup."""
         if self._default_handler_factory is not None:
             return self._default_handler_factory()
         return None
 
     def get_or_create(
-        self, source: AgentName, *, seed: list[dict] | None = None,
+        self,
+        source: AgentName,
+        *,
+        seed: list[dict] | None = None,
     ) -> MessageHistory:
         """Get the main agent's shared history.
 
@@ -880,7 +907,10 @@ class WorkerHistoryStore(MessageHistoryStore):
         super().__init__(system_prompt)
 
     def get_or_create(
-        self, source: AgentName, *, seed: list[dict] | None = None,
+        self,
+        source: AgentName,
+        *,
+        seed: list[dict] | None = None,
     ) -> MessageHistory:
         """A fresh history for this task — the cloned context, or an empty one."""
         if seed:

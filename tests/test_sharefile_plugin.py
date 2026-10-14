@@ -14,15 +14,15 @@ HTTP route including the SSRF-adjacent filename encoding (RFC 5987).
 The ngrok tunnel lifecycle itself is covered in test_sharefile_tunnel.py.
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import json
 from unittest.mock import MagicMock, patch
 from urllib.parse import quote
 
+import pytest
+
 import slife.plugins.sharefile.server as plugin
 
+pytestmark = pytest.mark.unit
 
 # ── Fixtures ────────────────────────────────────────────────────────────
 
@@ -60,8 +60,8 @@ def _unreachable_tunnel(url="https://slife.ngrok-free.dev"):
     """A tunnel whose URL is published but which the edge cannot serve — the
     state that answers every request with HTTP 530."""
     tunnel = MagicMock()
-    tunnel.is_active = True          # the URL exists…
-    tunnel.is_reachable.return_value = False   # …and nothing is behind it
+    tunnel.is_active = True  # the URL exists…
+    tunnel.is_reachable.return_value = False  # …and nothing is behind it
     tunnel.share_url_for.side_effect = lambda fid: f"{url}/share/{fid}"
     tunnel.status.return_value = {"state": "active", "url": url}
     return patch.multiple(plugin, _tunnel=tunnel)
@@ -164,7 +164,8 @@ class TestShareFile:
 
     @pytest.mark.asyncio
     async def test_unreachable_tunnel_refuses_instead_of_handing_out_a_link(
-        self, tmp_path,
+        self,
+        tmp_path,
     ):
         """A published URL is not a working one: a transport that lost the edge
         answers every request to it with HTTP 530, and the caller only finds
@@ -201,8 +202,8 @@ class TestInternalTools:
         with _unreachable_tunnel():
             raw = await getattr(plugin, "__check")()
         data = json.loads(raw)
-        assert data["active"] is True       # the URL is published…
-        assert data["reachable"] is False   # …and the edge is not serving it
+        assert data["active"] is True  # the URL is published…
+        assert data["reachable"] is False  # …and the edge is not serving it
 
     @pytest.mark.asyncio
     async def test_tunnel_status_failed(self):
@@ -286,7 +287,7 @@ class TestShareRoute:
         raise UnicodeEncodeError in Starlette's init_headers (HTTP 500).
         """
         payload = b"\xe4\xb8\xad\xe6\x96\x87"  # some bytes
-        f = tmp_path / "报告.pdf"      # 报告.pdf
+        f = tmp_path / "报告.pdf"  # 报告.pdf
         f.write_bytes(payload)
         tok = plugin._register_file(str(f))
 

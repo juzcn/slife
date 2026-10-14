@@ -620,22 +620,22 @@ try {
         }
     }
 
-    # Build local wheels for the whole workspace (slife + credstore + cc-switch +
-    # local-embed) and install slife from them.
+    # Build a wheel for slife (the repo's only package) and install slife from
+    # it, so the tool venv gets THIS main snapshot rather than the last slife
+    # release on PyPI.  credstore / local-embed are ordinary PyPI dependencies
+    # now and resolve from the index.
     #
-    # Why wheels and not `--from $extractedDir`: `uv tool install --from`
-    # materialises the workspace members (local-embed / credstore) as EDITABLE
-    # installs pointing at the extracted source dir — which the installer
-    # deletes at the end — so the packages break after a fresh install.
-    # Local wheels install them as non-editable copies: self-contained,
-    # survives cleanup, still 100 % from source, no PyPI.
+    # Why a wheel and not `--from $extractedDir`: `--from` points the install
+    # at the extracted source dir, which the installer deletes at the end (and
+    # can materialise it as an editable install).  A local wheel is a
+    # self-contained, non-editable copy that survives the cleanup.
     $toolInstallLog  = Join-Path $tmpDir "tool-install.log"
     $wheelhouse      = Join-Path $tmpDir "wheelhouse"
     New-Item -ItemType Directory -Force $wheelhouse | Out-Null
 
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & uv build --all-packages --out-dir $wheelhouse $extractedDir.FullName 2>&1 > $toolInstallLog
+    & uv build --out-dir $wheelhouse $extractedDir.FullName 2>&1 > $toolInstallLog
     $buildOk = ($LASTEXITCODE -eq 0)
     if (-not $buildOk) {
         Write-Err "Error: failed to build slife from source."
@@ -645,7 +645,14 @@ try {
         exit 1
     }
 
-    & uv tool install --python 3.13 --find-links $wheelhouse slife 2>&1 > $toolInstallLog
+    # The built wheel is named BY PATH, not by name.  `uv tool install
+    # --find-links $wheelhouse slife` is ambiguous the moment PyPI carries a
+    # slife of the same version: uv is free to take the release instead of this
+    # freshly built snapshot — the one thing this installer exists to avoid,
+    # since it promises the newest main.  --force overwrites stale executables
+    # left behind by a failed previous install.
+    $slifeWheel = (Get-Item "$wheelhouse\slife-*.whl").FullName
+    & uv tool install --python 3.13 --force $slifeWheel 2>&1 > $toolInstallLog
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prevEAP
     if (-not $ok) {
@@ -821,17 +828,19 @@ try {
     }
 
     # 4c. Configs: seed the git-tracked defaults out-of-the-box.  slife.yaml /
-    # local_embed.yaml / tools.yaml / sharefile.yaml come from the
-    # downloaded source tree (now git-tracked).  slife.yaml, tools.yaml and
-    # sharefile.yaml (the last two belong to built-in plugins) live in
-    # ~/.slife; local_embed.yaml is local-embed's own (~/.local-embed).
-    # Missing ones are copied silently; when an existing one differs, the NEW
-    # default is seeded into ~/.slife/ as <name>.<version>.<ext> — never
-    # overwritten, never prompted; the user applies or discards it.
+    # tools.yaml / sharefile.yaml come from the downloaded source tree (now
+    # git-tracked) and all live in ~/.slife (the last two belong to built-in
+    # plugins).  Missing ones are copied silently; when an existing one
+    # differs, the NEW default is seeded into ~/.slife/ as
+    # <name>.<version>.<ext> — never overwritten, never prompted; the user
+    # applies or discards it.
+    #
+    # credstore and local-embed are separate applications now, and each owns
+    # its own config — slife no longer writes into ~/.local-embed (or
+    # ~/.credstore).  Configure local-embed with its own CLI.
     Write-Step "[4c] Setting up configs (out-of-the-box defaults)..."
         $seedPairs = @(
         @("slife.yaml", "$env:USERPROFILE\.slife\slife.yaml"),
-        @("local_embed.yaml", "$env:USERPROFILE\.local-embed\local_embed.yaml"),
         @("tools.yaml", "$env:USERPROFILE\.slife\tools.yaml"),
         @("sharefile.yaml", "$env:USERPROFILE\.slife\sharefile.yaml")
     )

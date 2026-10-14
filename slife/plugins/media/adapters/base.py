@@ -7,9 +7,10 @@ import logging
 import secrets
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 import httpx2
+
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -76,24 +77,42 @@ class MediaAdapter(Protocol):
     """
 
     async def generate_image(
-        self, *, model: str, prompt: str, size: str = "",
-        image: str | Path | None = None, outputs_dir: str = "",
+        self,
+        *,
+        model: str,
+        prompt: str,
+        size: str = "",
+        image: str | Path | None = None,
+        outputs_dir: str = "",
         extra_params: dict | None = None,
     ) -> str: ...
 
     async def generate_video(
-        self, *, model: str, prompt: str, image: str | Path | None = None,
-        outputs_dir: str = "", extra_params: dict | None = None,
+        self,
+        *,
+        model: str,
+        prompt: str,
+        image: str | Path | None = None,
+        outputs_dir: str = "",
+        extra_params: dict | None = None,
         deadline_s: float | None = None,  # None = registry transport.media_deadline
     ) -> str: ...
 
     async def text_to_speech(
-        self, *, model: str, text: str, voice: str = "",
-        outputs_dir: str = "", extra_params: dict | None = None,
+        self,
+        *,
+        model: str,
+        text: str,
+        voice: str = "",
+        outputs_dir: str = "",
+        extra_params: dict | None = None,
     ) -> str: ...
 
     async def transcribe_audio(
-        self, *, model: str, audio_path: Path,
+        self,
+        *,
+        model: str,
+        audio_path: Path,
         extra_params: dict | None = None,
     ) -> str: ...
 
@@ -122,7 +141,11 @@ class ArtifactSaver:
         return self.base_dir(outputs_dir) / name
 
     async def save_url(
-        self, url: str, kind: str, ext: str = "", outputs_dir: str = "",
+        self,
+        url: str,
+        kind: str,
+        ext: str = "",
+        outputs_dir: str = "",
     ) -> Path:
         """Download *url* and store it; returns the local path."""
         if not ext:
@@ -130,27 +153,31 @@ class ArtifactSaver:
         try:
             async with httpx2.AsyncClient(
                 timeout=httpx2.Timeout(
-                        _timeouts.timeouts.transport.media_download,
-                        connect=_timeouts.timeouts.transport.media_connect,
-                    ),
+                    _timeouts.timeouts.transport.media_download,
+                    connect=_timeouts.timeouts.transport.media_connect,
+                ),
                 follow_redirects=True,
             ) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
                 data = resp.content
         except httpx2.HTTPError as e:
-            raise MediaAdapterError(
-                f"Failed to download generated {kind}: {e}"
-            ) from e
+            raise MediaAdapterError(f"Failed to download generated {kind}: {e}") from e
         return self.save_bytes(data, kind, ext, outputs_dir)
 
     def save_bytes(
-        self, data: bytes, kind: str, ext: str, outputs_dir: str = "",
+        self,
+        data: bytes,
+        kind: str,
+        ext: str,
+        outputs_dir: str = "",
     ) -> Path:
         path = self._unique_path(ext, outputs_dir)
         path.write_bytes(data)
         logger.info(
             "media_artifact_saved kind=%s path=%s bytes=%d",
-            kind, path, len(data),
+            kind,
+            path,
+            len(data),
         )
         return path

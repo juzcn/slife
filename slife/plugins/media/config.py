@@ -74,7 +74,9 @@ class MediaConfig:
         return {m.kind for p in self.providers.values() for m in p.models}
 
     def resolve_model(
-        self, kind: str, model_ref: str | None = None,
+        self,
+        kind: str,
+        model_ref: str | None = None,
     ) -> tuple[str, ProviderConfig, ModelEntry]:
         """Resolve a capability model.
 
@@ -95,8 +97,7 @@ class MediaConfig:
             pid, entry = self._find_ref(model_ref)
             if entry.kind != kind:
                 raise MediaConfigError(
-                    f"Model '{model_ref}' is kind '{entry.kind}', "
-                    f"not '{kind}'."
+                    f"Model '{model_ref}' is kind '{entry.kind}', not '{kind}'."
                 )
             return pid, self.providers[pid], entry
 
@@ -107,7 +108,9 @@ class MediaConfig:
                 return pid, self.providers[pid], entry
             logger.warning(
                 "media_default_kind_mismatch kind=%s ref=%s entry_kind=%s",
-                kind, ref, entry.kind,
+                kind,
+                ref,
+                entry.kind,
             )
 
         for pid, provider in self.providers.items():
@@ -117,7 +120,7 @@ class MediaConfig:
 
         raise MediaConfigError(
             f"No {kind} model configured. Add a model with kind: "
-            f"\"{kind}\" to the media: section of slife.yaml."
+            f'"{kind}" to the media: section of slife.yaml.'
         )
 
     def _find_ref(self, ref: str) -> tuple[str, ModelEntry]:
@@ -142,8 +145,7 @@ class MediaConfig:
                 if entry.model == ref:
                     return pid, entry
         raise MediaConfigError(
-            f"Unknown model '{ref}'. Use 'provider/model' or a configured "
-            f"model name."
+            f"Unknown model '{ref}'. Use 'provider/model' or a configured model name."
         )
 
 
@@ -158,16 +160,20 @@ def _parse_models(raw_models: object) -> list[ModelEntry]:
         kind = str(m["kind"])
         if kind not in KNOWN_KINDS:
             logger.warning(
-                "media_model_skip model=%s unknown kind=%s", m["model"], kind,
+                "media_model_skip model=%s unknown kind=%s",
+                m["model"],
+                kind,
             )
             continue
         params = m.get("params")
-        entries.append(ModelEntry(
-            model=str(m["model"]),
-            kind=kind,
-            params=dict(params) if isinstance(params, dict) else {},
-            voice=str(m.get("voice") or ""),
-        ))
+        entries.append(
+            ModelEntry(
+                model=str(m["model"]),
+                kind=kind,
+                params=dict(params) if isinstance(params, dict) else {},
+                voice=str(m.get("voice") or ""),
+            )
+        )
     return entries
 
 
@@ -189,11 +195,11 @@ def load_media_config() -> MediaConfig:
         return MediaConfig()
 
     defaults_raw = media_raw.get("defaults")
-    defaults = {
-        str(k): str(v)
-        for k, v in (defaults_raw or {}).items()
-        if isinstance(v, str)
-    } if isinstance(defaults_raw, dict) else {}
+    defaults = (
+        {str(k): str(v) for k, v in (defaults_raw or {}).items() if isinstance(v, str)}
+        if isinstance(defaults_raw, dict)
+        else {}
+    )
 
     providers: dict[str, ProviderConfig] = {}
     providers_raw = media_raw.get("providers")
@@ -206,7 +212,9 @@ def load_media_config() -> MediaConfig:
                 resolved = resolve_env(praw)
             except KeyError as e:
                 logger.warning(
-                    "media_provider_skip provider=%s unresolved_env=%s", pid, e,
+                    "media_provider_skip provider=%s unresolved_env=%s",
+                    pid,
+                    e,
                 )
                 continue
             models = _parse_models(resolved.get("models"))
@@ -223,6 +231,7 @@ def load_media_config() -> MediaConfig:
     cfg = MediaConfig(defaults=defaults, providers=providers)
     logger.info(
         "media_config_loaded providers=%d kinds=%s",
-        len(providers), sorted(cfg.kinds_available()),
+        len(providers),
+        sorted(cfg.kinds_available()),
     )
     return cfg

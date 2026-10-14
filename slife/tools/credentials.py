@@ -16,8 +16,7 @@ from slife.tools.base import Tool
 
 
 def _simplify_path(path: str) -> str:
-    if path.endswith("/env"):
-        path = path[:-4]
+    path = path.removesuffix("/env")
     return path.lstrip("/")
 
 
@@ -46,14 +45,20 @@ def _find_config_refs(raw: dict, key: str) -> list[str]:
 
 # ═══════════════════════════════════════════════════════════════════════
 
+
 class CredentialCheckTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIncompatibleMethodOverride]
     name = "credential_check"
     category: ClassVar[str] = "Credentials"
-    description = "Check credential in shell, slife.yaml, and credstore. Values always masked."
-    parameters = {
+    description = (
+        "Check credential in shell, slife.yaml, and credstore. Values always masked."
+    )
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "key": {"type": "string", "description": "Credential name, e.g. DEEPSEEK_API_KEY."},
+            "key": {
+                "type": "string",
+                "description": "Credential name, e.g. DEEPSEEK_API_KEY.",
+            },
         },
         "required": ["key"],
     }
@@ -61,25 +66,37 @@ class CredentialCheckTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportInco
     async def execute(self, **kwargs) -> str:
         key: str = kwargs["key"]
         from credstore import get_credential
+
         lines = [f"{key} status:"]
         env_val = os.environ.get(key)
-        lines.append(f"  [shell]      : {'✓ set (' + _mask_value(env_val) + ')' if env_val else '✗ not set'}")
+        lines.append(
+            f"  [shell]      : {'✓ set (' + _mask_value(env_val) + ')' if env_val else '✗ not set'}"
+        )
         raw = read_config(self._config_path)
         refs = _find_config_refs(raw, key)
-        lines.append(f"  [slife.yaml]: {'✓ referenced (' + ', '.join(refs) + ')' if refs else '✗ not referenced'}")
+        lines.append(
+            f"  [slife.yaml]: {'✓ referenced (' + ', '.join(refs) + ')' if refs else '✗ not referenced'}"
+        )
         cred_val = get_credential(key)
-        lines.append(f"  [credstore]  : {'✓ stored (' + _mask_value(cred_val) + ')' if cred_val else '✗ not stored'}")
+        lines.append(
+            f"  [credstore]  : {'✓ stored (' + _mask_value(cred_val) + ')' if cred_val else '✗ not stored'}"
+        )
         return "\n".join(lines)
 
 
 class InjectCredentialTool(Tool):
     name = "credential_inject"
     category: ClassVar[str] = "Credentials"
-    description = "Load a secret from credstore into os.environ. Temporary, this process only."
-    parameters = {
+    description = (
+        "Load a secret from credstore into os.environ. Temporary, this process only."
+    )
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "key": {"type": "string", "description": "Credential name, e.g. DEEPSEEK_API_KEY."},
+            "key": {
+                "type": "string",
+                "description": "Credential name, e.g. DEEPSEEK_API_KEY.",
+            },
         },
         "required": ["key"],
     }
@@ -87,6 +104,7 @@ class InjectCredentialTool(Tool):
     async def execute(self, **kwargs) -> str:
         key: str = kwargs["key"]
         from credstore import get_credential
+
         value = get_credential(key)
         if value is None:
             return f"Error: '{key}' not found in the credential store."
@@ -99,10 +117,13 @@ class UninjectCredentialTool(Tool):
     name = "credential_uninject"
     category: ClassVar[str] = "Credentials"
     description = "Remove an env var from os.environ. Keyring secret remains stored."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "key": {"type": "string", "description": "Env var name, e.g. DEEPSEEK_API_KEY."},
+            "key": {
+                "type": "string",
+                "description": "Env var name, e.g. DEEPSEEK_API_KEY.",
+            },
         },
         "required": ["key"],
     }
@@ -111,4 +132,8 @@ class UninjectCredentialTool(Tool):
         key: str = kwargs["key"]
         existed = key in os.environ
         os.environ.pop(key, None)
-        return f"Removed {key} from environment." if existed else f"{key} was not set in the environment."
+        return (
+            f"Removed {key} from environment."
+            if existed
+            else f"{key} was not set in the environment."
+        )

@@ -22,25 +22,25 @@ from pathlib import Path
 
 from cachetools import TTLCache
 
-from slife.plugins.wechat.client import WechatClawbotClient, BASE_URL
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.logfmt import error_json
+from slife.plugins.wechat.client import BASE_URL, WechatClawbotClient
 from slife.plugins.wechat.config import (
+    clear_wechat_config,
     load_wechat_config,
     save_wechat_config,
     update_wechat_updates_buf,
-    clear_wechat_config,
 )
 from slife.server_utils import create_plugin_server
-from slife.logfmt import error_json
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+
 
 @asynccontextmanager
 async def _wechat_lifespan(_app):
     """Graceful shutdown: stop the poll / QR / typing background tasks
-   ."""
+    ."""
     try:
         yield
     finally:
-        global _poll_task, _qr_task, _typing_tasks
         for t in list(_typing_tasks.values()):
             t.cancel()
         _typing_tasks.clear()
@@ -73,6 +73,7 @@ def _render_qr_ascii(content: str) -> str:
         return ""
     try:
         import qrcode
+
         qr = qrcode.QRCode(border=1, box_size=1)
         qr.add_data(content)
         qr.make(fit=True)
@@ -98,12 +99,15 @@ def _render_qr_ascii(content: str) -> str:
         logger.warning("qrcode_lib_unavailable hint=install_qrcode")
         return content
 
+
 # ── Global state ─────────────────────────────────────────────────────────
 
 _client = WechatClawbotClient()
 from slife.paths import agent_name as _get_agent_name
+
 _agent_name: str = _get_agent_name()
 from slife.paths import get_data_dir as _get_data_dir
+
 _work_dir: Path = _get_data_dir()
 
 # Background polling
@@ -120,7 +124,8 @@ _MAX_QUEUED = 200  # keep at most 200 pending messages
 # maxsize caps memory like the old size-pruning loop.
 _DEDUP_WINDOW = 30.0  # seconds — re-deliveries arrive well within this
 _seen_keys: TTLCache[str, bool, float] = TTLCache[str, bool, float](
-    maxsize=_MAX_QUEUED * 3, ttl=_DEDUP_WINDOW,
+    maxsize=_MAX_QUEUED * 3,
+    ttl=_DEDUP_WINDOW,
 )
 
 # Last get_updates_buf written to the session file — persist only on change.
@@ -137,6 +142,7 @@ def _persist_updates_buf(buf: str) -> None:
         _persisted_sync_buf = buf
     except Exception:
         logger.debug("wechat_cursor_persist_failed", exc_info=True)
+
 
 # Typing indicator keep-alive — per-conversation tasks managed by the server.
 # Its refresh cadence and keepalive bound are the registry cadences
@@ -165,9 +171,7 @@ def _msg_key(msg: dict, text: str) -> str:
     dropped as a "duplicate".  Including the text makes only true
     re-deliveries (same sender, same conversation, same text) dedupe.
     """
-    return (
-        f"{msg.get('from_user_id', '')}::{msg.get('context_token', '')}::{text}"
-    )
+    return f"{msg.get('from_user_id', '')}::{msg.get('context_token', '')}::{text}"
 
 
 async def _poll_loop(poll_interval: float | None = None) -> None:
@@ -176,8 +180,6 @@ async def _poll_loop(poll_interval: float | None = None) -> None:
     *poll_interval* defaults to the registry cadence
     ``pacing.wechat_upstream_poll``.
     """
-    global _pending, _seen_keys
-
     if poll_interval is None:
         poll_interval = _timeouts.timeouts.pacing.wechat_upstream_poll
 
@@ -224,12 +226,14 @@ async def _poll_loop(poll_interval: float | None = None) -> None:
                     "context_token": ctx_token,
                 }
 
-                _pending.append({
-                    "to_user_id": from_id,
-                    "context_token": ctx_token,
-                    "text": text,
-                    "message_type": m.get("message_type", 0),
-                })
+                _pending.append(
+                    {
+                        "to_user_id": from_id,
+                        "context_token": ctx_token,
+                        "text": text,
+                        "message_type": m.get("message_type", 0),
+                    }
+                )
                 new_count += 1
 
             # Trim if too many queued
@@ -252,7 +256,7 @@ async def _poll_loop(poll_interval: float | None = None) -> None:
             # Persist the ack token after every successful poll so a post-
             # restart session resumes ack'ing (no replay re-ingest) (D6).
             _persist_updates_buf(_client.updates_buf)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — the background poll loop must never die
             logger.debug("poll_error err=%s", e)
             # Surface to the LLM: status reports degraded until the link
             # recovers (a successful poll clears the fault).
@@ -268,7 +272,7 @@ def _flush_logs() -> None:
     for h in logging.getLogger().handlers:
         try:
             h.flush()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — a log-flush failure must never break logging
             pass
 
 
@@ -282,7 +286,7 @@ def _start_polling() -> None:
 
 def _stop_polling() -> None:
     """Cancel the background poll task and all typing keep-alives."""
-    global _poll_task, _pending, _typing_tasks
+    global _poll_task
     if _poll_task is not None and not _poll_task.done():
         _poll_task.cancel()
     _poll_task = None
@@ -306,8 +310,6 @@ def _start_typing_keepalive(from_id: str, ctx_token: str) -> None:
     keep-alive runs inside the plugin process so the harness (AgentService)
     doesn't need to know about typing at all.
     """
-    global _typing_tasks
-
     # Don't double-start for the same conversation
     if from_id in _typing_tasks and not _typing_tasks[from_id].done():
         return
@@ -316,15 +318,17 @@ def _start_typing_keepalive(from_id: str, ctx_token: str) -> None:
         # Bound the keepalive: the reply dispatch stops it for a normal turn,
         # but if the agent never replies (crash, or the stop is missed) it must
         # not loop forever.
-        deadline = (asyncio.get_event_loop().time()
-                    + _timeouts.timeouts.pacing.typing_max_lifetime)
+        deadline = (
+            asyncio.get_event_loop().time()
+            + _timeouts.timeouts.pacing.typing_max_lifetime
+        )
         while asyncio.get_event_loop().time() < deadline:
             try:
                 await asyncio.sleep(_timeouts.timeouts.pacing.typing_refresh)
                 await _client.send_typing(uid, tok, status=1)
             except asyncio.CancelledError:
                 break
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — typing keep-alive is best-effort
                 pass
 
     _typing_tasks[from_id] = asyncio.create_task(_keep_typing(from_id, ctx_token))
@@ -332,7 +336,6 @@ def _start_typing_keepalive(from_id: str, ctx_token: str) -> None:
 
 def _stop_typing_keepalive(from_id: str) -> None:
     """Cancel and remove the typing keep-alive task for a conversation."""
-    global _typing_tasks
     task = _typing_tasks.pop(from_id, None)
     if task is not None and not task.done():
         task.cancel()
@@ -359,13 +362,14 @@ async def __wechat_drain_incoming() -> str:
     a typing keep-alive started automatically so the WeChat user sees
     "对方正在输入…" while the agent processes the message.
     """
-    global _pending
-
     if not _client.is_logged_in:
-        return json.dumps({
-            "messages": [],
-            "status": "not_logged_in",
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "messages": [],
+                "status": "not_logged_in",
+            },
+            ensure_ascii=False,
+        )
 
     msgs = list(_pending)
     _pending.clear()
@@ -379,14 +383,17 @@ async def __wechat_drain_incoming() -> str:
             # Fire an initial typing indicator immediately
             try:
                 await _client.send_typing(from_id, ctx_token, status=1)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — best-effort typing indicator
                 pass
 
-    return json.dumps({
-        "messages": msgs,
-        "count": len(msgs),
-        "status": "ok",
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "messages": msgs,
+            "count": len(msgs),
+            "status": "ok",
+        },
+        ensure_ascii=False,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -396,15 +403,17 @@ async def __wechat_drain_incoming() -> str:
 
 async def _qr_poll_loop(qrcode: str, base_url: str, attempts: int = 0) -> None:
     """Background task: poll QR status until scanned, expired, or error."""
-    global _client, _qr_status, _qr_content, _qr_error
+    global _qr_status, _qr_content, _qr_error
 
     _qr_status = "waiting"
-    deadline = asyncio.get_event_loop().time() + _timeouts.timeouts.transport.qr_deadline
+    deadline = (
+        asyncio.get_event_loop().time() + _timeouts.timeouts.transport.qr_deadline
+    )
 
     while asyncio.get_event_loop().time() < deadline:
         try:
             data = await _client._poll_login_status(qrcode, base_url)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — the background QR poll loop must not die
             logger.debug("qr_poll_error err=%s", e)
             await asyncio.sleep(_timeouts.timeouts.pacing.qr_poll)
             continue
@@ -425,7 +434,8 @@ async def _qr_poll_loop(qrcode: str, base_url: str, attempts: int = 0) -> None:
             ilink_user_id = data.get("ilink_user_id", "")
             ilink_bot_id = data.get("ilink_bot_id", "")
             await _client.start(
-                bot_token, bu,
+                bot_token,
+                bu,
                 ilink_user_id=ilink_user_id,
                 ilink_bot_id=ilink_bot_id,
             )
@@ -447,7 +457,9 @@ async def _qr_poll_loop(qrcode: str, base_url: str, attempts: int = 0) -> None:
 
         if data.get("expired"):
             if attempts < _QR_MAX_ATTEMPTS:
-                logger.info("qr_expired refreshing %d/%d", attempts + 1, _QR_MAX_ATTEMPTS)
+                logger.info(
+                    "qr_expired refreshing %d/%d", attempts + 1, _QR_MAX_ATTEMPTS
+                )
                 try:
                     new_data = await _client._fetch_qrcode(base_url)
                     new_qr = new_data.get("qrcode", "")
@@ -464,7 +476,9 @@ async def _qr_poll_loop(qrcode: str, base_url: str, attempts: int = 0) -> None:
                     return
             else:
                 _qr_status = "expired"
-                _qr_error = "QR code expired after 3 refreshes. Call wechat_login again."
+                _qr_error = (
+                    "QR code expired after 3 refreshes. Call wechat_login again."
+                )
                 return
 
         if data.get("scanned"):
@@ -483,18 +497,20 @@ async def _qr_poll_loop(qrcode: str, base_url: str, attempts: int = 0) -> None:
 
 @mcp.tool(
     name="wechat_login",
-    description=(
-        "Generate a WeChat login QR code."
-    ),
+    description=("Generate a WeChat login QR code."),
 )
 async def wechat_login() -> str:
-    global _client, _qr_task, _qr_status, _qr_content, _qr_error
+    global _qr_task, _qr_status, _qr_content, _qr_error
 
     if _client.is_logged_in and not _client.auth_failed:
-        return json.dumps({
-            "status": "already_logged_in",
-            "hint": "Already logged in. Call wechat_logout first to switch accounts.",
-        }, ensure_ascii=False, indent=2)
+        return json.dumps(
+            {
+                "status": "already_logged_in",
+                "hint": "Already logged in. Call wechat_logout first to switch accounts.",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
     if _client.auth_failed:
         # Stale rejected token — drop it so a fresh QR scan can proceed.
         _client.reject_session()
@@ -523,18 +539,12 @@ async def wechat_login() -> str:
 
     qr_ascii = _render_qr_ascii(_qr_content)
 
-    return "\n".join([
-        "SHOW THIS QR IN YOUR REPLY:",
-        qr_ascii,
-        "Scan with WeChat. Call wechat_check_status to track. ~10min expiry.",
-    ])
+    return f"SHOW THIS QR IN YOUR REPLY:\n{qr_ascii}\nScan with WeChat. Call wechat_check_status to track. ~10min expiry."
 
 
 @mcp.tool(
     name="wechat_send_message",
-    description=(
-        "Send a text message to the WeChat user you are chatting with."
-    ),
+    description=("Send a text message to the WeChat user you are chatting with."),
 )
 async def wechat_send_message(
     peer_wechat_id: str,
@@ -549,13 +559,13 @@ async def wechat_send_message(
         text: The message body.
         context_token: Thread context token; empty for the first message.
     """
-    global _client
-
     if not _client.is_logged_in:
         return error_json("Not logged in. Call wechat_login first.")
 
     if not peer_wechat_id.strip() or not text.strip():
-        return error_json("Both peer_wechat_id and text are required and must be non-empty.")
+        return error_json(
+            "Both peer_wechat_id and text are required and must be non-empty."
+        )
 
     # Stop the typing keep-alive for this conversation — the reply is going
     # out now; without this the "正在输入…" indicator would keep refreshing
@@ -568,15 +578,18 @@ async def wechat_send_message(
         # (errno/error/retcode) — the getupdates path checks it; the send path
         # must too, or a rejected send is reported as "sent".
         from slife.plugins.wechat.client import _envelope_error, _error_envelope
+
         if isinstance(result, dict) and _error_envelope(result):
             _client.auth_failed = True
             _client.last_error = _envelope_error(result) or "send rejected"
-            logger.warning("send_rejected to=%s err=%s", peer_wechat_id, _client.last_error)
+            logger.warning(
+                "send_rejected to=%s err=%s", peer_wechat_id, _client.last_error
+            )
             return error_json(f"Send rejected by server: {_client.last_error}")
         # Hide typing indicator after reply
         try:
             await _client.send_typing(peer_wechat_id, context_token or "", status=2)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort typing indicator
             pass
         logger.debug("sent to=%s len=%d", peer_wechat_id, len(text))
         out = {"status": "sent"}
@@ -650,13 +663,9 @@ def _last_contact_entry(user_id: str, ctx: str | None = "") -> dict | None:
 
 @mcp.tool(
     name="wechat_check_status",
-    description=(
-        "WeChat connection status: logged in, time remaining, last_contact."
-    ),
+    description=("WeChat connection status: logged in, time remaining, last_contact."),
 )
 async def wechat_check_status() -> str:
-    global _client, _poll_task, _qr_status, _qr_content, _qr_error
-
     # If a QR login is in progress, report its state
     if _qr_status and not _client.is_logged_in:
         qr_info = {
@@ -669,9 +678,7 @@ async def wechat_check_status() -> str:
                 "and scan. " + (f"QR link: {_qr_content}" if _qr_content else "")
             )
         elif _qr_status == "scanned":
-            qr_info["hint"] = (
-                "QR code scanned — waiting for confirmation on the phone."
-            )
+            qr_info["hint"] = "QR code scanned — waiting for confirmation on the phone."
         elif _qr_status == "expired":
             qr_info["hint"] = "QR code expired. Call wechat_login again."
         elif _qr_status == "error":
@@ -694,21 +701,33 @@ async def wechat_check_status() -> str:
                         )
                         _client.reject_session()
                         clear_wechat_config(_agent_name, _work_dir)
-                        return json.dumps({
-                            "status": "not_logged_in",
-                            "polling": False,
-                            "hint": ("WeChat session was rejected by the server — "
-                                     "call wechat_login to re-scan the QR code."),
-                        }, ensure_ascii=False, indent=2)
+                        return json.dumps(
+                            {
+                                "status": "not_logged_in",
+                                "polling": False,
+                                "hint": (
+                                    "WeChat session was rejected by the server — "
+                                    "call wechat_login to re-scan the QR code."
+                                ),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        )
                     # Network/API failure while validating — keep the saved
                     # session but tell the LLM the link is currently down.
-                    return json.dumps({
-                        "status": "degraded",
-                        "polling": False,
-                        "hint": ("WeChat server unreachable during session check "
-                                 "- retry, or call wechat_login if it persists. "
-                                 f"Last error: {_client.last_error}"),
-                    }, ensure_ascii=False, indent=2)
+                    return json.dumps(
+                        {
+                            "status": "degraded",
+                            "polling": False,
+                            "hint": (
+                                "WeChat server unreachable during session check "
+                                "- retry, or call wechat_login if it persists. "
+                                f"Last error: {_client.last_error}"
+                            ),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
                 if restored:
                     _client.clear_session_faults()
                     # Seed the persisted getupdates ack so the first poll after
@@ -727,21 +746,31 @@ async def wechat_check_status() -> str:
                     _start_polling()
                     session = _client.get_session_dict()
                     age = time.time() - session.get("saved_at", time.time())
-                    remaining = max(0, _timeouts.timeouts.pacing.wechat_session_max_age - age)
-                    return json.dumps({
-                        "status": "restored",
-                        "remaining_hours": round(remaining / 3600, 1),
-                        "polling": _poll_task is not None and not _poll_task.done(),
-                        "last_contact": _last_contact_entry(ilink_uid, ""),
-                    }, ensure_ascii=False, indent=2)
-            except Exception as e:
+                    remaining = max(
+                        0, _timeouts.timeouts.pacing.wechat_session_max_age - age
+                    )
+                    return json.dumps(
+                        {
+                            "status": "restored",
+                            "remaining_hours": round(remaining / 3600, 1),
+                            "polling": _poll_task is not None and not _poll_task.done(),
+                            "last_contact": _last_contact_entry(ilink_uid, ""),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+            except Exception as e:  # noqa: BLE001 — the status tool returns a result, never raises
                 logger.debug("restore_failed err=%s", e)
 
-        return json.dumps({
-            "status": "not_logged_in",
-            "polling": False,
-            "hint": "Not logged in. Call wechat_login to start the QR login flow.",
-        }, ensure_ascii=False, indent=2)
+        return json.dumps(
+            {
+                "status": "not_logged_in",
+                "polling": False,
+                "hint": "Not logged in. Call wechat_login to start the QR login flow.",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     # Track last contact for proactive messaging
     last_contact = _client.last_contact if hasattr(_client, "last_contact") else {}
@@ -759,25 +788,39 @@ async def wechat_check_status() -> str:
     if _client.auth_failed:
         _client.reject_session()
         clear_wechat_config(_agent_name, _work_dir)
-        return json.dumps({
-            "status": "not_logged_in",
-            "polling": False,
-            "hint": ("WeChat session was rejected by the server — "
-                     "call wechat_login to re-scan the QR code. "
-                     f"Last error: {_client.last_error}"),
-        }, ensure_ascii=False, indent=2)
+        return json.dumps(
+            {
+                "status": "not_logged_in",
+                "polling": False,
+                "hint": (
+                    "WeChat session was rejected by the server — "
+                    "call wechat_login to re-scan the QR code. "
+                    f"Last error: {_client.last_error}"
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
     if _client.last_error:
-        return json.dumps({
-            "status": "degraded",
-            "remaining_hours": round(remaining / 3600, 1),
-            "polling": _poll_task is not None and not _poll_task.done(),
-            "last_contact": (
-                _last_contact_entry(last_from_id, last_ctx) if last_from_id else None
-            ),
-            "hint": ("WeChat link is down — messages will not arrive until it "
-                     "recovers. "
-                     f"Last error: {_client.last_error}"),
-        }, ensure_ascii=False, indent=2)
+        return json.dumps(
+            {
+                "status": "degraded",
+                "remaining_hours": round(remaining / 3600, 1),
+                "polling": _poll_task is not None and not _poll_task.done(),
+                "last_contact": (
+                    _last_contact_entry(last_from_id, last_ctx)
+                    if last_from_id
+                    else None
+                ),
+                "hint": (
+                    "WeChat link is down — messages will not arrive until it "
+                    "recovers. "
+                    f"Last error: {_client.last_error}"
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     resp = {
         "status": "logged_in",
@@ -796,9 +839,7 @@ async def wechat_check_status() -> str:
 
 @mcp.tool(
     name="wechat_logout",
-    description=(
-        "Log out of WeChat and clear the saved session."
-    ),
+    description=("Log out of WeChat and clear the saved session."),
 )
 async def wechat_logout() -> str:
     global _client, _qr_status, _qr_content, _qr_error
@@ -817,18 +858,22 @@ async def wechat_logout() -> str:
 
     try:
         await _client.stop()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — logout cleanup must never raise
         logger.debug("stop_error err=%s", e)
 
     _client = WechatClawbotClient()
     # Removes the session file — the getupdates ack cursor goes with it.
     clear_wechat_config(_agent_name, _work_dir)
 
-    return json.dumps({
-        "status": "logged_out",
-        "config_cleared": True,
-        "hint": "Logged out. Call wechat_login to reconnect.",
-    }, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {
+            "status": "logged_out",
+            "config_cleared": True,
+            "hint": "Logged out. Call wechat_login to reconnect.",
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 # ── Entry point ──────────────────────────────────────────────────────────
@@ -843,8 +888,9 @@ def main():
     """
     from slife.server_utils import run_plugin_server, shutdown_server_logging
 
-    logger.info("wechat_start agent_name=%s log=%s pid=%s",
-                _agent_name, _log_path, os.getpid())
+    logger.info(
+        "wechat_start agent_name=%s log=%s pid=%s", _agent_name, _log_path, os.getpid()
+    )
     try:
         run_plugin_server(mcp)
     finally:

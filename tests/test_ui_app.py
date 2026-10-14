@@ -1,19 +1,18 @@
 """Tests for Slife.ui.app — AgentService, event handler, StatusBar logic."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from slife.config import Config, ModelConfig
+import pytest
+
 from slife.agent.llm_client import TokenUsage
 from slife.agent.loop import ToolCallInfo
 from slife.agent.service import AgentService
+from slife.config import Config, ModelConfig
 from slife.ui.app import HistoryInput, StatusBar, _parse_images_from_input
 from slife.ui.handler import TUIHandler
 
+pytestmark = pytest.mark.unit
 
 # ── AgentService ──────────────────────────────────────────────────────
 
@@ -45,14 +44,16 @@ class TestAgentService:
 
     def test_thinking_enabled_true(self):
         config = Config(
-            models=[ModelConfig(
-                ref="deepseek/pro",
-                provider="deepseek",
-                api_model="pro",
-                display_name="Pro",
-                api_key="k",
-                thinking_enabled=True,
-            )],
+            models=[
+                ModelConfig(
+                    ref="deepseek/pro",
+                    provider="deepseek",
+                    api_model="pro",
+                    display_name="Pro",
+                    api_key="k",
+                    thinking_enabled=True,
+                )
+            ],
             active_model_ref="deepseek/pro",
             tools=[],
         )
@@ -61,7 +62,9 @@ class TestAgentService:
 
     def test_clear(self, sample_config):
         service = AgentService(sample_config)
-        service.session_usage = TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
+        service.session_usage = TokenUsage(
+            prompt_tokens=100, completion_tokens=50, total_tokens=150
+        )
         service.clear()
         assert service.session_usage.total_tokens == 0
 
@@ -79,7 +82,8 @@ class TestAgentService:
         """First round after restore → the precomputed estimate (no recompute)."""
         service = AgentService(sample_config)
         service.agent_loop._last_usage = TokenUsage(
-            prompt_tokens=5000, total_tokens=5000,
+            prompt_tokens=5000,
+            total_tokens=5000,
         )
         assert service.current_context_tokens == 5000
 
@@ -88,7 +92,9 @@ class TestAgentService:
         (the persisted history the next request would re-send)."""
         service = AgentService(sample_config)
         service.agent_loop._last_usage = TokenUsage(
-            prompt_tokens=4321, completion_tokens=99, total_tokens=4420,
+            prompt_tokens=4321,
+            completion_tokens=99,
+            total_tokens=4420,
         )
         assert service.current_context_tokens == 4420
 
@@ -168,7 +174,7 @@ class TestTUIHandler:
     @pytest.mark.asyncio
     async def test_bare_dot_reply_is_silent(self):
         """A bare "." reply is never rendered and the message is discarded."""
-        handler, app, mock_assistant = self._handler_with_assistant()
+        handler, _app, mock_assistant = self._handler_with_assistant()
         mock_assistant._buffer = ""
         handler._silent_dot = False
 
@@ -184,7 +190,7 @@ class TestTUIHandler:
     @pytest.mark.asyncio
     async def test_non_dot_reply_renders(self):
         """A normal text reply renders; silent_dot stays False."""
-        handler, app, mock_assistant = self._handler_with_assistant()
+        handler, _app, mock_assistant = self._handler_with_assistant()
         mock_assistant._buffer = ""
         handler._silent_dot = False
 
@@ -202,7 +208,10 @@ class TestTUIHandler:
         old_assistant = MagicMock()
         new_assistant = MagicMock()
         mock_chat_view = app.query_one.return_value
-        mock_chat_view.add_assistant_message.side_effect = [old_assistant, new_assistant]
+        mock_chat_view.add_assistant_message.side_effect = [
+            old_assistant,
+            new_assistant,
+        ]
 
         handler = TUIHandler(app)
         await handler.on_thinking_chunk("Hmm...")  # creates old_assistant
@@ -279,9 +288,9 @@ class TestTUIHandler:
         mock_chat_view.add_assistant_message.side_effect = [mock_a1, mock_a2]
 
         handler = TUIHandler(app)
-        await handler.on_thinking_chunk("x")   # creates a1
+        await handler.on_thinking_chunk("x")  # creates a1
         handler._iteration_needs_new_message = True
-        await handler.on_thinking_chunk("y")   # creates a2 (new iteration)
+        await handler.on_thinking_chunk("y")  # creates a2 (new iteration)
         assert handler._turn_assistants == [mock_a1, mock_a2]
 
         handler.on_trim(4)
@@ -461,10 +470,10 @@ class TestStatusBar:
         bar.update = MagicMock()
         bar.update_info(thinking=True, heartbeat="●", heartbeat_color="#3fb950")
         text = bar.update.call_args[0][0]
-        assert "thinking" in text     # thinking badge keeps its label
-        assert "⚡" not in text        # no bolt anywhere (badge or heartbeat)
-        assert "●" in text            # heartbeat is a dot
-        assert "#3fb950" in text      # colored
+        assert "thinking" in text  # thinking badge keeps its label
+        assert "⚡" not in text  # no bolt anywhere (badge or heartbeat)
+        assert "●" in text  # heartbeat is a dot
+        assert "#3fb950" in text  # colored
 
     @pytest.mark.asyncio
     async def test_on_heartbeat_glyph_is_dot(self):
@@ -526,7 +535,10 @@ class TestStatusBar:
             app.query_one = MagicMock(return_value=chat_view)
 
             await app._on_activity(
-                "task_completed", source="jack", content=content, result="ok",
+                "task_completed",
+                source="jack",
+                content=content,
+                result="ok",
             )
 
             text = chat_view.add_system_message.call_args.args[0]
@@ -544,7 +556,10 @@ class TestStatusBar:
         app.query_one = MagicMock(return_value=chat_view)
 
         await app._on_activity(
-            "task_completed", source="jack", content="bare text", result="ok",
+            "task_completed",
+            source="jack",
+            content="bare text",
+            result="ok",
         )
 
         assert chat_view.add_system_message.call_args.args[0] == (
@@ -566,9 +581,11 @@ class TestStatusBar:
         app.query_one = MagicMock(return_value=chat_view)
 
         await app._on_activity(
-            "task_completed", source="jack",
+            "task_completed",
+            source="jack",
             content=a2a_marker("jack", "cid-1", type="task_request") + "do X",
-            result="Error: boom", error=True,
+            result="Error: boom",
+            error=True,
         )
 
         chat_view.add_system_message.assert_not_called()
@@ -585,13 +602,14 @@ class TestStatusBar:
         app.query_one = MagicMock(return_value=chat_view)
 
         await app._on_activity(
-            "loop_error", source="jack", error="Error code: 400 - boom",
+            "loop_error",
+            source="jack",
+            error="Error code: 400 - boom",
             dropped=True,
         )
 
         call = chat_view.add_system_message.call_args
-        assert call.args[0] == \
-            "✗ Turn dropped (not in context): Error code: 400 - boom"
+        assert call.args[0] == "✗ Turn dropped (not in context): Error code: 400 - boom"
         assert call.kwargs["color"] == "#f85149"
 
     @pytest.mark.asyncio
@@ -605,7 +623,10 @@ class TestStatusBar:
         app.query_one = MagicMock(return_value=chat_view)
 
         await app._on_activity(
-            "loop_error", source="jack", error="Request timed out", dropped=False,
+            "loop_error",
+            source="jack",
+            error="Request timed out",
+            dropped=False,
         )
 
         call = chat_view.add_system_message.call_args
@@ -623,8 +644,13 @@ class TestStatusBar:
         app.query_one = MagicMock(return_value=chat_view)
 
         await app._on_activity(
-            "tools_synced", seconds=12.4, total=64, added=60, updated=3,
-            removed=1, error="",
+            "tools_synced",
+            seconds=12.4,
+            total=64,
+            added=60,
+            updated=3,
+            removed=1,
+            error="",
         )
 
         call = chat_view.add_system_message.call_args
@@ -646,13 +672,17 @@ class TestStatusBar:
         app.query_one = MagicMock(return_value=chat_view)
 
         await app._on_activity(
-            "tools_synced", seconds=0.3, total=64, added=0, updated=0, removed=0,
+            "tools_synced",
+            seconds=0.3,
+            total=64,
+            added=0,
+            updated=0,
+            removed=0,
             error="",
         )
 
         assert chat_view.add_system_message.call_args.args[0] == (
-            "⚙ Tool set synced in 0.3s, 0 added, 0 updated, 0 removed "
-            "— 64 tools usable"
+            "⚙ Tool set synced in 0.3s, 0 added, 0 updated, 0 removed — 64 tools usable"
         )
 
     @pytest.mark.asyncio
@@ -666,13 +696,17 @@ class TestStatusBar:
         app.query_one = MagicMock(return_value=chat_view)
 
         await app._on_activity(
-            "tools_synced", seconds=1.0, total=5, added=0, updated=2, removed=0,
+            "tools_synced",
+            seconds=1.0,
+            total=5,
+            added=0,
+            updated=2,
+            removed=0,
             error="",
         )
 
         assert chat_view.add_system_message.call_args.args[0] == (
-            "⚙ Tool set synced in 1.0s, 0 added, 2 updated, 0 removed "
-            "— 5 tools usable"
+            "⚙ Tool set synced in 1.0s, 0 added, 2 updated, 0 removed — 5 tools usable"
         )
 
     @pytest.mark.asyncio
@@ -685,7 +719,11 @@ class TestStatusBar:
         app.query_one = MagicMock(return_value=chat_view)
 
         await app._on_activity(
-            "tools_synced", seconds=3.1, total=0, added=0, removed=0,
+            "tools_synced",
+            seconds=3.1,
+            total=0,
+            added=0,
+            removed=0,
             error="boom",
         )
 
@@ -711,8 +749,15 @@ class TestStatusBar:
         app.query_one = MagicMock(return_value=chat_view)
 
         await app._on_activity(
-            "tools_synced", seconds=151.2, total=124, added=124, updated=0,
-            removed=0, unanswered=15, corrected=False, error="",
+            "tools_synced",
+            seconds=151.2,
+            total=124,
+            added=124,
+            updated=0,
+            removed=0,
+            unanswered=15,
+            corrected=False,
+            error="",
         )
 
         assert chat_view.add_system_message.call_args.args[0] == (
@@ -732,8 +777,15 @@ class TestStatusBar:
         app.query_one = MagicMock(return_value=chat_view)
 
         await app._on_activity(
-            "tools_synced", seconds=435.0, total=310, added=186, updated=0,
-            removed=0, unanswered=0, corrected=True, error="",
+            "tools_synced",
+            seconds=435.0,
+            total=310,
+            added=186,
+            updated=0,
+            removed=0,
+            unanswered=0,
+            corrected=True,
+            error="",
         )
 
         assert chat_view.add_system_message.call_args.args[0] == (
@@ -758,8 +810,15 @@ class TestStatusBar:
         app.query_one = MagicMock(return_value=chat_view)
 
         await app._on_activity(
-            "tools_synced", seconds=571.0, total=309, added=185, updated=0,
-            removed=0, unanswered=1, corrected=True, error="",
+            "tools_synced",
+            seconds=571.0,
+            total=309,
+            added=185,
+            updated=0,
+            removed=0,
+            unanswered=1,
+            corrected=True,
+            error="",
         )
 
         assert chat_view.add_system_message.call_args.args[0] == (
@@ -950,7 +1009,6 @@ class TestFatalExit:
         assert "memdb" in app._fatal_message
         assert app._return_code == 1
 
-
     @pytest.mark.asyncio
     async def test_required_plugin_failed_aborts(self, sample_config):
         """A REQUIRED plugin returning FAILED aborts startup, no warning."""
@@ -1002,7 +1060,7 @@ class TestFatalExit:
         app._show_system_message = MagicMock()
 
         async def _hung():
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
 
         await app._start_plugin_safe("memdb", _hung())
 
@@ -1066,7 +1124,8 @@ class TestFatalExit:
             await app._start_plugin_safe(name, _never_ready())
 
         await asyncio.gather(
-            _fail_plugin("memdb"), _fail_plugin("memfiles"),
+            _fail_plugin("memdb"),
+            _fail_plugin("memfiles"),
         )
 
         assert app._fatal_message is not None
@@ -1108,21 +1167,27 @@ class TestParseImagesFromInput:
         assert _parse_images_from_input("hi @someone how are you") == []
 
     def test_multiple_bare_paths(self, tmp_path):
-        a = tmp_path / "a.png"; a.write_bytes(b"\x89PNG\r\n\x1a\nfake")
-        b = tmp_path / "b.jpg"; b.write_bytes(b"\xff\xd8\xff\xe0JFIF")
+        a = tmp_path / "a.png"
+        a.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        b = tmp_path / "b.jpg"
+        b.write_bytes(b"\xff\xd8\xff\xe0JFIF")
         got = _parse_images_from_input(f"看图 @{a} 和 @{b} 哪个好")
         assert got == [str(a), str(b)]
 
     def test_adjacent_no_space(self, tmp_path):
         """@a.png和@b.png — two directives with no whitespace between them."""
-        a = tmp_path / "a.png"; a.write_bytes(b"\x89PNG\r\n\x1a\nfake")
-        b = tmp_path / "b.png"; b.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        a = tmp_path / "a.png"
+        a.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        b = tmp_path / "b.png"
+        b.write_bytes(b"\x89PNG\r\n\x1a\nfake")
         got = _parse_images_from_input(f"对比@{a}和@{b}")
         assert got == [str(a), str(b)]
 
     def test_comma_separated(self, tmp_path):
-        a = tmp_path / "a.png"; a.write_bytes(b"\x89PNG\r\n\x1a\nfake")
-        b = tmp_path / "b.png"; b.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        a = tmp_path / "a.png"
+        a.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        b = tmp_path / "b.png"
+        b.write_bytes(b"\x89PNG\r\n\x1a\nfake")
         got = _parse_images_from_input(f"@{a},@{b}")
         assert got == [str(a), str(b)]
 
@@ -1139,13 +1204,16 @@ class TestParseImagesFromInput:
         assert got == [str(img)]
 
     def test_quoted_then_bare(self, tmp_path):
-        a = tmp_path / "has space.png"; a.write_bytes(b"\x89PNG\r\n\x1a\nfake")
-        b = tmp_path / "b.png"; b.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        a = tmp_path / "has space.png"
+        a.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        b = tmp_path / "b.png"
+        b.write_bytes(b"\x89PNG\r\n\x1a\nfake")
         got = _parse_images_from_input(f'@"{a}" 和 @{b}')
         assert got == [str(a), str(b)]
 
     def test_mixed_url_path(self, tmp_path):
-        img = tmp_path / "a.png"; img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        img = tmp_path / "a.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
         got = _parse_images_from_input(
             f"@{img} @https://example.com/x.png @http://e.com/y.jpg"
         )
@@ -1156,12 +1224,14 @@ class TestParseImagesFromInput:
         assert got == ["data:image/png;base64,AAAA"]
 
     def test_data_uri_adjacent_to_path(self, tmp_path):
-        img = tmp_path / "a.png"; img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        img = tmp_path / "a.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
         got = _parse_images_from_input(f"@{img} @data:image/png;base64,AAAA")
         assert got == [str(img), "data:image/png;base64,AAAA"]
 
     def test_bracketed(self, tmp_path):
-        img = tmp_path / "a.png"; img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        img = tmp_path / "a.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
         got = _parse_images_from_input(f"@[{img}] 和 @{{{img}}}")
         assert got == [str(img), str(img)]
 
@@ -1173,7 +1243,8 @@ class TestParseImagesFromInput:
         assert _parse_images_from_input("@") == []
 
     def test_path_and_non_image_together(self, tmp_path):
-        img = tmp_path / "a.png"; img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        img = tmp_path / "a.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
         got = _parse_images_from_input(f"@{img} @everyone thanks")
         assert got == [str(img)]
 
@@ -1188,7 +1259,8 @@ class TestParseImagesFromInput:
         ]
 
     def test_duplicate_directives_kept(self, tmp_path):
-        img = tmp_path / "a.png"; img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        img = tmp_path / "a.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
         got = _parse_images_from_input(f"@{img} 再来一次 @{img}")
         assert got == [str(img), str(img)]
 
@@ -1201,9 +1273,7 @@ class TestParseImagesFromInput:
         assert got == ["https://example.com/a.png", "http://e.com/b.jpg"]
 
     def test_url_comma_separated(self):
-        got = _parse_images_from_input(
-            "@https://a.com/x.png,@https://b.com/y.png"
-        )
+        got = _parse_images_from_input("@https://a.com/x.png,@https://b.com/y.png")
         assert got == ["https://a.com/x.png", "https://b.com/y.png"]
 
     def test_url_no_extension(self):

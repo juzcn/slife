@@ -25,9 +25,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 
 import httpx2
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.config import EmbeddingsConfig, _resolve_secret
 from slife.env import is_env_ref
 from slife.plugins.memdb.embeddings import (  # shared model knowledge
@@ -36,7 +38,6 @@ from slife.plugins.memdb.embeddings import (  # shared model knowledge
     _known_model,
 )
 from slife.plugins.memdb.semantic import SemanticManager as _BaseSemanticManager
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ async def read_published_state(store) -> dict:
     """
     try:
         raw = await store.get_meta(SEMANTIC_STATE_KEY)
-    except Exception:
+    except (sqlite3.Error, ValueError):
         return {"state": "unknown"}
     if not raw:
         return {"state": "unknown"}
@@ -112,7 +113,7 @@ class EmbeddingClient:
     # ── Construction from the host's active endpoint ───────────────
 
     @classmethod
-    def from_endpoint(cls, ep: dict | None) -> "EmbeddingClient":
+    def from_endpoint(cls, ep: dict | None) -> EmbeddingClient:
         """Build from ``get_active_endpoint()``'s dict (``base_url``/``model``/
         ``api_key``).  Missing or placeholder ``base_url`` ⇒ disabled."""
         emb = None
@@ -146,7 +147,9 @@ class EmbeddingClient:
         # and an unknown one was never probed, because claiming to know is
         # exactly what makes `load()` skip `_probe_api_dim`.
         return cls(
-            model=model, api_key=api_key, base_url=base_url,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
             dim=_guess_dim(model),
             dim_known=_known_model(model) is not None,
             enabled=enabled,
@@ -245,10 +248,11 @@ class EmbeddingClient:
             )
             resp.raise_for_status()
             return True
-        except Exception as e:
+        except (httpx2.HTTPError, OSError, TimeoutError) as e:
             logger.warning(
                 "embedding_probe_failed base_url=%s err=%s",
-                self._base_url, e,
+                self._base_url,
+                e,
             )
             return False
 
@@ -291,7 +295,8 @@ class EmbeddingClient:
                 logger.warning(
                     "embedding_api_unavailable model=%s base_url=%s "
                     "(backend not ready — keyword search only)",
-                    self._model, self._base_url,
+                    self._model,
+                    self._base_url,
                 )
             else:
                 # Probe whenever the width is still unknown — the listed model
@@ -304,9 +309,11 @@ class EmbeddingClient:
                 ok = True
                 logger.info(
                     "embedding_loaded backend=api model=%s dim=%d base_url=%s",
-                    self._model, self._dim, self._base_url,
+                    self._model,
+                    self._dim,
+                    self._base_url,
                 )
-        except Exception as e:
+        except (httpx2.HTTPError, OSError, ValueError, AttributeError) as e:
             logger.warning("embedding_load_failed err=%s", e)
         finally:
             # Always resolve the shared future and clear the slot.  A
@@ -327,13 +334,15 @@ class EmbeddingClient:
             resp = await client.get(f"{self._base_url}/models")
             resp.raise_for_status()
             entries = [
-                m for m in (resp.json().get("data") or [])
+                m
+                for m in (resp.json().get("data") or [])
                 if isinstance(m, dict) and m.get("id")
             ]
-        except Exception as e:
+        except (httpx2.HTTPError, OSError, ValueError, AttributeError) as e:
             logger.warning(
                 "embedding_model_discover_failed base_url=%s err=%s",
-                self._base_url, e,
+                self._base_url,
+                e,
             )
             return False
         if not entries:
@@ -362,7 +371,7 @@ class EmbeddingClient:
         """Pin the real embedding width with one cheap single-token embed."""
         try:
             response = await self._call_api(["."])
-        except Exception as e:
+        except (httpx2.HTTPError, OSError, ValueError, AttributeError) as e:
             logger.warning("embedding_dim_probe_failed err=%s", e)
             return
         if not response or not response[0]:
@@ -371,7 +380,9 @@ class EmbeddingClient:
         if actual and actual != self._dim:
             logger.info(
                 "api_dim_override model=%s guessed=%d actual=%d",
-                self._model, self._dim, actual,
+                self._model,
+                self._dim,
+                actual,
             )
             self._dim = actual
         self._dim_known = True
@@ -391,10 +402,18 @@ class EmbeddingClient:
             resp.raise_for_status()
             payload = resp.json()
             return [
-                d["embedding"] for d in (payload.get("data") or [])
+                d["embedding"]
+                for d in (payload.get("data") or [])
                 if isinstance(d, dict) and isinstance(d.get("embedding"), list)
             ]
-        except Exception as e:
+        except (
+            httpx2.HTTPError,
+            OSError,
+            ValueError,
+            AttributeError,
+            KeyError,
+            TypeError,
+        ) as e:
             logger.warning("embedding_call_failed model=%s err=%s", self._model, e)
             return None
 
@@ -468,7 +487,8 @@ class SemanticManager(_BaseSemanticManager):
         if stored_model is not None and stored_model != model_id:
             logger.info(
                 "embedding_model_changed old=%s new=%s — dropping old vectors",
-                stored_model, model_id,
+                stored_model,
+                model_id,
             )
             await self._store.drop_embeddings()
         await self._store.set_meta("embedding_model", model_id)
@@ -589,7 +609,7 @@ class SemanticReader:
         """
         try:
             return await self._ensure_embedder()
-        except Exception as exc:  # a boot task must not surface as an error
+        except Exception as exc:  # noqa: BLE001 — a boot task must not surface as an error
             logger.warning("semantic_reader_warmup_failed err=%s", exc)
             return False
 
@@ -680,7 +700,7 @@ class SemanticReader:
         if e.loaded:
             return True
         if self._load_failed:
-            return False            # a finished failure — do not probe again
+            return False  # a finished failure — do not probe again
         try:
             # Bounded at the endpoint-readiness budget: this is a "is it
             # there" question, not a bulk embed.
@@ -688,14 +708,19 @@ class SemanticReader:
                 self._probe_then_load(),
                 timeout=_timeouts.timeouts.ready.probe_endpoint,
             )
-        except Exception as exc:  # timeout, transport, bad payload
+        except (
+            TimeoutError,
+            httpx2.HTTPError,
+            OSError,
+            ValueError,
+            AttributeError,
+        ) as exc:  # timeout, transport, bad payload
             logger.warning("semantic_reader_load_failed err=%s", exc)
             ok = False
         if not ok:
             self._load_failed = True
             self._degrade(
-                f"embedding endpoint did not answer ({e.base_url}) — "
-                "keyword only.",
+                f"embedding endpoint did not answer ({e.base_url}) — keyword only.",
             )
             return False
         return True
@@ -724,8 +749,8 @@ class SemanticReader:
 
 
 __all__ = [
-    "EmbeddingClient",
     "SEMANTIC_STATE_KEY",
+    "EmbeddingClient",
     "SemanticManager",
     "SemanticReader",
     "read_published_state",

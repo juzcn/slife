@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_PROMPT = (
     "[Heartbeat] click.  Reply per your heartbeat contract in the system "
     "prompt: real content if you have something worth saying, otherwise "
-    "exactly \".\"."
+    'exactly ".".'
 )
 
 #: TUI filter mark — a turn whose user message starts with this is a heartbeat.
@@ -62,11 +62,11 @@ class _SilentHandler:
         pass
 
     async def on_tool_call(
-        self, tool_call: "ToolCallInfo", iteration: int = 0, max_iterations: int = 30
+        self, tool_call: ToolCallInfo, iteration: int = 0, max_iterations: int = 30
     ) -> None:
         pass
 
-    async def on_tool_approval(self, tool_call: "ToolCallInfo") -> bool:
+    async def on_tool_approval(self, tool_call: ToolCallInfo) -> bool:
         return True
 
     async def on_tool_result(
@@ -74,7 +74,7 @@ class _SilentHandler:
     ) -> None:
         pass
 
-    async def on_token_usage(self, usage: "TokenUsage") -> None:
+    async def on_token_usage(self, usage: TokenUsage) -> None:
         pass
 
     async def on_stream_retry(self) -> None:
@@ -87,7 +87,7 @@ class _SilentHandler:
         pass
 
 
-def heartbeat_period(config: "Config") -> float:
+def heartbeat_period(config: Config) -> float:
     """The configured idle interval in seconds.
 
     ``0`` or less means the heartbeat is OFF — an explicit ``0`` disables it
@@ -103,7 +103,7 @@ def heartbeat_period(config: "Config") -> float:
         return float(_timeouts.timeouts.pacing.heartbeat)
 
 
-async def heartbeat_loop(service: "AgentService") -> None:
+async def heartbeat_loop(service: AgentService) -> None:
     """Periodically post a heartbeat message while the agent is idle.
 
     Skips the beat when a turn is in progress or messages are queued, so
@@ -134,5 +134,5 @@ async def heartbeat_loop(service: "AgentService") -> None:
             logger.info("heartbeat_posted")
         except asyncio.CancelledError:
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — the heartbeat loop must survive any error
             logger.debug("heartbeat_error err=%s", e)

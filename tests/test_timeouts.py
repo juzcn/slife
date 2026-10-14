@@ -40,12 +40,25 @@ def test_registry_is_defaults_no_external_file():
 def test_every_role_has_exactly_its_known_fields():
     """Field inventory is stable — a rename breaks the consumers loudly."""
     assert {f.name for f in fields(Timeouts().work)} == {
-        "tool_budget", "task_budget", "task_lifetime", "stall", "shell",
-        "pip_install", "save_memory", "recall_discriminator",
+        "tool_budget",
+        "task_budget",
+        "task_lifetime",
+        "stall",
+        "shell",
+        "pip_install",
+        "save_memory",
+        "recall_discriminator",
     }
     assert {f.name for f in fields(Timeouts().ready)} >= {
-        "plugin_start", "spawn", "connect_attempt", "connect_startup",
-        "signal", "stderr_line", "relisten", "probe_broker", "probe_endpoint",
+        "plugin_start",
+        "spawn",
+        "connect_attempt",
+        "connect_startup",
+        "signal",
+        "stderr_line",
+        "relisten",
+        "probe_broker",
+        "probe_endpoint",
     }
     for role in ROLES:
         assert role in Timeouts().__dict__
@@ -133,9 +146,11 @@ def test_invariant_reconcile_guard_clears_the_longest_await():
     against the 150s threshold, every later trigger coalesced behind them.
     """
     with pytest.raises(TimeoutConfigError, match="reconcile_guard"):
-        _mutated(**{
-            "ready.reconcile_guard": 1.9 * Timeouts().ready.tool_sync_wait,
-        })
+        _mutated(
+            **{
+                "ready.reconcile_guard": 1.9 * Timeouts().ready.tool_sync_wait,
+            }
+        )
     # …and two of the longest await is the bound, not a round number near it.
     exact = 2 * Timeouts().ready.tool_sync_wait
     assert validate(_mutated(**{"ready.reconcile_guard": exact})) == []

@@ -4,19 +4,21 @@ Each provider is one OpenAI-compatible endpoint (base_url + api_key + single
 model); tools manage providers, not a per-provider model registry.
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
-import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from tests.conftest import dump_config, load_config_text
-from slife.tools.embeddings import (
-    ListEmbeddingsTool,
-    SetEmbeddingsTool, SwitchEmbeddingsTool, RemoveEmbeddingsTool,
-    EnableEmbeddingsTool,
-)
+import pytest
 
+from slife.tools.embeddings import (
+    EnableEmbeddingsTool,
+    ListEmbeddingsTool,
+    RemoveEmbeddingsTool,
+    SetEmbeddingsTool,
+    SwitchEmbeddingsTool,
+)
+from tests.conftest import dump_config, load_config_text
+
+pytestmark = pytest.mark.unit
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -31,23 +33,26 @@ def _read_config(path: Path) -> dict:
 
 def _make_path(tmp_path: Path) -> Path:
     p = tmp_path / "slife.yaml"
-    _write_config(p, {
-        "embeddings": {
-            "providers": {
-                "local-embed": {
-                    "base_url": "http://127.0.0.1:8000/v1",
-                    "api_key": "local",
+    _write_config(
+        p,
+        {
+            "embeddings": {
+                "providers": {
+                    "local-embed": {
+                        "base_url": "http://127.0.0.1:8000/v1",
+                        "api_key": "local",
+                    },
+                    "openai": {
+                        "base_url": "https://api.openai.com/v1",
+                        "api_key": "${OPENAI_API_KEY}",
+                        "model": "text-embedding-3-small",
+                    },
                 },
-                "openai": {
-                    "base_url": "https://api.openai.com/v1",
-                    "api_key": "${OPENAI_API_KEY}",
-                    "model": "text-embedding-3-small",
-                },
+                "active_model": "local-embed",
+                "enabled": True,
             },
-            "active_model": "local-embed",
-            "enabled": True,
         },
-    })
+    )
     return p
 
 
@@ -72,7 +77,7 @@ class TestListEmbeddingsTool:
         assert "openai" in result
         assert "http://127.0.0.1:8000/v1" in result
         assert "text-embedding-3-small" in result
-        assert "★" in result            # active marker
+        assert "★" in result  # active marker
         assert "local-embed" in result
 
     @pytest.mark.asyncio
@@ -94,8 +99,10 @@ class TestSetEmbeddingsTool:
         tool = SetEmbeddingsTool(config_path=p)
         _no_reload(tool)
         result = await tool.execute(
-            provider="bedrock", model="cohere.embed",
-            base_url="https://bedrock.example/v1", api_key="sk-b",
+            provider="bedrock",
+            model="cohere.embed",
+            base_url="https://bedrock.example/v1",
+            api_key="sk-b",
         )
         assert "Created" in result
         raw = _read_config(p)
@@ -110,7 +117,8 @@ class TestSetEmbeddingsTool:
         tool = SetEmbeddingsTool(config_path=p)
         _no_reload(tool)
         result = await tool.execute(
-            provider="openai", model="text-embedding-3-large",
+            provider="openai",
+            model="text-embedding-3-large",
         )
         assert "Updated" in result
         raw = _read_config(p)
@@ -131,8 +139,9 @@ class TestSetEmbeddingsTool:
         _write_config(p, {"embeddings": {"providers": {}}})
         tool = SetEmbeddingsTool(config_path=p)
         _no_reload(tool)
-        await tool.execute(provider="p1", model="m1",
-                           base_url="http://x/v1", api_key="k")
+        await tool.execute(
+            provider="p1", model="m1", base_url="http://x/v1", api_key="k"
+        )
         raw = _read_config(p)
         assert raw["embeddings"]["active_model"] == "p1"
 
@@ -153,13 +162,16 @@ class TestSetEmbeddingsTool:
         object.__setattr__(tool, "_ctx", ctx)
 
         result = await tool.execute(
-            provider="openai", model="text-embedding-3-small",
+            provider="openai",
+            model="text-embedding-3-small",
         )
         memdb_client.call_tool.assert_called_once_with(
-            "__memory_reload_semantic", {"enabled": True},
+            "__memory_reload_semantic",
+            {"enabled": True},
         )
         memfiles_client.call_tool.assert_called_once_with(
-            "__memfiles_reload_semantic", {"enabled": True},
+            "__memfiles_reload_semantic",
+            {"enabled": True},
         )
         assert "memdb" in result
 
@@ -210,12 +222,15 @@ class TestRemoveEmbeddingsTool:
     @pytest.mark.asyncio
     async def test_removing_last_provider_drops_section(self, tmp_path):
         p = tmp_path / "slife.yaml"
-        _write_config(p, {
-            "embeddings": {
-                "providers": {"p1": {"base_url": "http://x/v1"}},
-                "active_model": "",
+        _write_config(
+            p,
+            {
+                "embeddings": {
+                    "providers": {"p1": {"base_url": "http://x/v1"}},
+                    "active_model": "",
+                },
             },
-        })
+        )
         tool = RemoveEmbeddingsTool(config_path=p)
         _no_reload(tool)
         await tool.execute(provider="p1")
@@ -252,10 +267,12 @@ class TestEnableEmbeddingsTool:
 
         await tool.execute(enabled=False)
         memdb_client.call_tool.assert_called_once_with(
-            "__memory_reload_semantic", {"enabled": False},
+            "__memory_reload_semantic",
+            {"enabled": False},
         )
         memfiles_client.call_tool.assert_called_once_with(
-            "__memfiles_reload_semantic", {"enabled": False},
+            "__memfiles_reload_semantic",
+            {"enabled": False},
         )
 
 
@@ -271,7 +288,9 @@ class TestHotReloadTargets:
 
     @pytest.mark.asyncio
     async def test_the_loop_is_driven_by_the_specs_not_a_name_list(
-        self, tmp_path, monkeypatch,
+        self,
+        tmp_path,
+        monkeypatch,
     ):
         """A plugin declares its reload tool; the loop needs no edit for it.
 
@@ -288,23 +307,32 @@ class TestHotReloadTargets:
         client = MagicMock()
         client.call_tool = AsyncMock(return_value='{"status": "rebuilt"}')
         # Patch the registry the helper reads (it imports it at call time).
-        monkeypatch.setattr(spec_module, "PLUGIN_SPECS", {
-            "third-index": PluginSpec(
-                "third-index", "some.module", ctx_field="third_client",
-                semantic_reload_tool="__third_reload_semantic",
-            ),
-        }, raising=False)
+        monkeypatch.setattr(
+            spec_module,
+            "PLUGIN_SPECS",
+            {
+                "third-index": PluginSpec(
+                    "third-index",
+                    "some.module",
+                    ctx_field="third_client",
+                    semantic_reload_tool="__third_reload_semantic",
+                ),
+            },
+            raising=False,
+        )
 
         ctx = SimpleNamespace(third_client=client, catalog=None, config=None)
         notes = await emb_tools._hot_reload(ctx, enabled=True)
         client.call_tool.assert_called_once_with(
-            "__third_reload_semantic", {"enabled": True},
+            "__third_reload_semantic",
+            {"enabled": True},
         )
         assert "third-index: rebuilt" in notes
 
     @pytest.mark.asyncio
     async def test_a_declared_index_with_no_client_says_restart_to_apply(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         from types import SimpleNamespace
 
@@ -312,12 +340,19 @@ class TestHotReloadTargets:
         from slife.plugins.spec import PluginSpec
         from slife.tools import embeddings as emb_tools
 
-        monkeypatch.setattr(spec_module, "PLUGIN_SPECS", {
-            "memdb": PluginSpec(
-                "memdb", "m", ctx_field="memdb_client",
-                semantic_reload_tool="__memory_reload_semantic",
-            ),
-        }, raising=False)
+        monkeypatch.setattr(
+            spec_module,
+            "PLUGIN_SPECS",
+            {
+                "memdb": PluginSpec(
+                    "memdb",
+                    "m",
+                    ctx_field="memdb_client",
+                    semantic_reload_tool="__memory_reload_semantic",
+                ),
+            },
+            raising=False,
+        )
         ctx = SimpleNamespace(memdb_client=None, catalog=None, config=None)
         notes = await emb_tools._hot_reload(ctx, enabled=True)
         assert "memdb: plugin not connected — restart to apply" in notes

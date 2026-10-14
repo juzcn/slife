@@ -1,22 +1,20 @@
 """Tests for slife.tools.exec — code execution tools."""
 
-from contextlib import contextmanager
-
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
-import pytest
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from slife.platform import kill_process_tree
 from slife.tools.exec import (
-    ShellTool,
-    RunPythonScriptTool,
     InstallPythonPackageTool,
+    RunPythonScriptTool,
+    ShellTool,
     _parse_input,
 )
-from slife.platform import kill_process_tree
 
+pytestmark = pytest.mark.unit
 
 
 @contextmanager
@@ -238,7 +236,9 @@ class TestShellToolExecute:
         mock_process.returncode = 0
 
         with _spawn(mock_process):
-            result = await tool.execute(command="export MY_VAR=my_value && echo $MY_VAR")
+            result = await tool.execute(
+                command="export MY_VAR=my_value && echo $MY_VAR"
+            )
 
         assert result == "my_value"
 
@@ -313,9 +313,14 @@ class TestInstallPythonPackageToolExecute:
         """When uv is not available, subprocess raises FileNotFoundError."""
         tool = InstallPythonPackageTool()
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=FileNotFoundError("No such file: uv"))):
-            with pytest.raises(FileNotFoundError):
-                await tool.execute(packages=["requests"])
+        with (
+            patch(
+                "asyncio.create_subprocess_exec",
+                AsyncMock(side_effect=FileNotFoundError("No such file: uv")),
+            ),
+            pytest.raises(FileNotFoundError),
+        ):
+            await tool.execute(packages=["requests"])
 
     @pytest.mark.asyncio
     async def test_package_install_failure(self):
@@ -341,8 +346,12 @@ class TestInstallPythonPackageToolExecute:
         mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)) as mock_exec:
-            await tool.execute(packages=["requests>=2.31,<3.0", "beautifulsoup4[html5lib]>=4.12"])
+        with patch(
+            "asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)
+        ) as mock_exec:
+            await tool.execute(
+                packages=["requests>=2.31,<3.0", "beautifulsoup4[html5lib]>=4.12"]
+            )
 
         # Verify the special-char packages were passed through to uv
         call_args = mock_exec.call_args[0]
@@ -381,7 +390,9 @@ class TestRunPythonScriptToolMetadata:
     def test_parameters_script_required(self):
         assert "script" in RunPythonScriptTool.parameters["required"]
         assert "script" in RunPythonScriptTool.parameters["properties"]
-        assert RunPythonScriptTool.parameters["properties"]["script"]["type"] == "string"
+        assert (
+            RunPythonScriptTool.parameters["properties"]["script"]["type"] == "string"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -401,9 +412,13 @@ class TestRunPythonScriptToolExecute:
         mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
-        with patch("slife.tools.exec._resolve_skill_script", return_value="/fake/script.py"):
-            with _spawn(mock_process):
-                result = await tool.execute(script="script.py")
+        with (
+            patch(
+                "slife.tools.exec._resolve_skill_script", return_value="/fake/script.py"
+            ),
+            _spawn(mock_process),
+        ):
+            result = await tool.execute(script="script.py")
 
         assert result == "script output"
 
@@ -417,9 +432,15 @@ class TestRunPythonScriptToolExecute:
         mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
-        with patch("slife.tools.exec._resolve_skill_script", return_value="/fake/script.py"):
-            with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)) as mock_exec:
-                await tool.execute(script="script.py")
+        with (
+            patch(
+                "slife.tools.exec._resolve_skill_script", return_value="/fake/script.py"
+            ),
+            patch(
+                "asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)
+            ) as mock_exec,
+        ):
+            await tool.execute(script="script.py")
 
         call_args = mock_exec.call_args[0]
         assert call_args[1] == "-X"
@@ -468,7 +489,9 @@ class TestRunPythonScriptToolExecute:
         mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)) as mock_exec:
+        with patch(
+            "asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)
+        ) as mock_exec:
             result = await tool.execute(
                 script="-c \"import openpyxl; print('openpyxl', openpyxl.__version__)\""
             )
@@ -492,7 +515,9 @@ class TestRunPythonScriptToolExecute:
         mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)) as mock_exec:
+        with patch(
+            "asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)
+        ) as mock_exec:
             result = await tool.execute(script="-c 'print(\"hi\")'")
 
         assert result == "ok"
@@ -535,7 +560,9 @@ class TestRunPythonScriptToolExecute:
         tool = RunPythonScriptTool()
         mock_process = MagicMock()
         mock_process.stdout = _MockStream(b"")
-        mock_process.stderr = _MockStream(b"ModuleNotFoundError: No module named 'nonexistent'")
+        mock_process.stderr = _MockStream(
+            b"ModuleNotFoundError: No module named 'nonexistent'"
+        )
         mock_process.returncode = 1
 
         with _spawn(mock_process):
@@ -554,9 +581,15 @@ class TestRunPythonScriptToolExecute:
         mock_process.stderr = _MockStream(b"")
         mock_process.returncode = 0
 
-        with patch("slife.tools.exec._resolve_skill_script", return_value="/fake/script.py"):
-            with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)) as mock_exec:
-                result = await tool.execute(script='script.py {"key": "val"}')
+        with (
+            patch(
+                "slife.tools.exec._resolve_skill_script", return_value="/fake/script.py"
+            ),
+            patch(
+                "asyncio.create_subprocess_exec", AsyncMock(return_value=mock_process)
+            ) as mock_exec,
+        ):
+            result = await tool.execute(script='script.py {"key": "val"}')
 
         assert result == "done"
         # Verify args were passed to subprocess
@@ -587,7 +620,9 @@ class TestRunPythonScriptToolExecute:
         mock_process.returncode = 0
 
         with _spawn(mock_process):
-            result = await tool.execute(script="-c import warnings; warnings.warn('deprecation')")
+            result = await tool.execute(
+                script="-c import warnings; warnings.warn('deprecation')"
+            )
 
         assert "no output" in result
         assert "stderr" in result
@@ -697,7 +732,9 @@ class TestKillProcessTree:
         import sys as _sys
 
         proc = await asyncio.create_subprocess_exec(
-            _sys.executable, "-c", "import time; time.sleep(300)",
+            _sys.executable,
+            "-c",
+            "import time; time.sleep(300)",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
             # Own process group so a POSIX killpg only hits the child, not
@@ -715,7 +752,9 @@ class TestKillProcessTree:
         import sys as _sys
 
         proc = await asyncio.create_subprocess_exec(
-            _sys.executable, "-c", "import time; time.sleep(300)",
+            _sys.executable,
+            "-c",
+            "import time; time.sleep(300)",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
             # Own process group so a POSIX killpg only hits the child.

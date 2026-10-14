@@ -16,6 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
+from slife.paths import get_tools_config_path
 from slife.tools._config_io import (
     _ConfigPathMixin,
     config_write_locked,
@@ -24,7 +25,6 @@ from slife.tools._config_io import (
     with_fetched_at,
     write_config,
 )
-from slife.paths import get_tools_config_path
 from slife.tools.base import Tool, require_bool
 from slife.tools.catalog import config_status
 
@@ -48,8 +48,14 @@ class _CliConfigMixin(_ConfigPathMixin):
         super().__init__(config_path or get_tools_config_path())
 
     @classmethod
-    def from_config(cls, cfg: dict, config: "Config | None", ctx: "ToolContext | None" = None):  # pyright: ignore[reportIncompatibleMethodOverride]
-        path = config._tools_config_path() if config is not None else get_tools_config_path()
+    def from_config(
+        cls, cfg: dict, config: "Config | None", ctx: "ToolContext | None" = None
+    ):  # pyright: ignore[reportIncompatibleMethodOverride]
+        path = (
+            config._tools_config_path()
+            if config is not None
+            else get_tools_config_path()
+        )
         tool = cls(config_path=path)
         if ctx is not None:
             object.__setattr__(tool, "_ctx", ctx)
@@ -64,7 +70,6 @@ def _cli_section(raw: dict) -> dict:
         section = {}
         raw[_CLI_TOOLS_KEY] = section
     return section
-
 
 
 def _format_cli_tools(cli_tools: dict) -> str:
@@ -128,7 +133,8 @@ def cli_catalog_rows(cli_tools: dict) -> dict[str, dict]:
             # The name matters as much as the description: it is what a caller
             # types, and the flattener emits both.
             "schema": json.dumps(
-                {"name": name, "description": description}, ensure_ascii=False,
+                {"name": name, "description": description},
+                ensure_ascii=False,
             ),
             "status": config_status(cfg.get("enabled", True) is not False),
         }
@@ -188,16 +194,31 @@ class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMe
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "Short name (e.g. 'gh')."},
-            "command": {"type": "string", "description": "Shell invocation (e.g. 'gh', 'python -m mytool')."},
-            "description": {"type": "string", "description": "What it does, from --help output, in the CLI's own language."},
-            "install": {"type": "string", "description": "Install command (e.g. 'npm i -g yldp'); omit if pre-installed."},
+            "command": {
+                "type": "string",
+                "description": "Shell invocation (e.g. 'gh', 'python -m mytool').",
+            },
+            "description": {
+                "type": "string",
+                "description": "What it does, from --help output, in the CLI's own language.",
+            },
+            "install": {
+                "type": "string",
+                "description": "Install command (e.g. 'npm i -g yldp'); omit if pre-installed.",
+            },
             "source": {
                 "type": "object",
                 "description": "Provenance for future updates.",
                 "properties": {
                     "url": {"type": "string", "description": "Discovery URL."},
-                    "type": {"type": "string", "description": "Source type: npm, pypi, github, url, cargo, apt."},
-                    "version": {"type": "string", "description": "Version at install time."},
+                    "type": {
+                        "type": "string",
+                        "description": "Source type: npm, pypi, github, url, cargo, apt.",
+                    },
+                    "version": {
+                        "type": "string",
+                        "description": "Version at install time.",
+                    },
                     "description": {"type": "string", "description": "Optional note."},
                 },
             },
@@ -213,7 +234,6 @@ class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMe
         install: str = kwargs.get("install", "")
         source: dict | None = kwargs.get("source")
 
-
         source = with_fetched_at(source)
 
         ctx = getattr(self, "_ctx", None)
@@ -228,8 +248,12 @@ class CliSetTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibleMe
             # asking afterwards always answers "yes".
             is_update = name in config.cli_tools
             config.save_cli_tool(
-                name=name, command=command, description=description,
-                install=install, source=source, enabled=old_enabled,
+                name=name,
+                command=command,
+                description=description,
+                install=install,
+                source=source,
+                enabled=old_enabled,
             )
             current = config.cli_tools
         else:
@@ -261,7 +285,9 @@ class CliRemoveTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibl
 
     name = "cli_remove"
     category = "CLI"
-    description = "Remove a CLI registration from tools.yaml. Does not uninstall the command."
+    description = (
+        "Remove a CLI registration from tools.yaml. Does not uninstall the command."
+    )
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
@@ -273,7 +299,6 @@ class CliRemoveTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompatibl
     @config_write_locked
     async def execute(self, **kwargs) -> str:
         name: str = kwargs["name"]
-
 
         ctx = getattr(self, "_ctx", None)
         config = _live_cli_config(self)
@@ -309,8 +334,9 @@ class CliListToolsTool(_CliConfigMixin, Tool):  # pyright: ignore[reportIncompat
 
     async def execute(self, **kwargs) -> str:
 
-        ctx = getattr(self, "_ctx", None); config = ctx.config if ctx is not None else None
-        
+        ctx = getattr(self, "_ctx", None)
+        config = ctx.config if ctx is not None else None
+
         if config is not None and config._path is not None and config.cli_tools:
             return _format_cli_tools(config.cli_tools)
         return get_cli_tools_summary(self._config_path)

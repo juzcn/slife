@@ -186,8 +186,7 @@ def rest_api_names() -> set[str]:
     if isinstance(section, dict):
         return set(section)
     return {
-        name for name, entry in _servers_dict(raw).items()
-        if _is_rest_api_entry(entry)
+        name for name, entry in _servers_dict(raw).items() if _is_rest_api_entry(entry)
     }
 
 
@@ -521,13 +520,13 @@ def _is_rest_api_entry(entry: object) -> bool:
     args = entry.get("args")
     env = entry.get("env")
     # Shape fallback for hand-edited entries that lost their source tag.
-    if (
+    return bool(
         command == OPENAPI_PROXY_COMMAND
-        and isinstance(args, list) and OPENAPI_PROXY_MARKER in args
-        and isinstance(env, dict) and SPEC_URL_ENV in env
-    ):
-        return True
-    return False
+        and isinstance(args, list)
+        and OPENAPI_PROXY_MARKER in args
+        and isinstance(env, dict)
+        and SPEC_URL_ENV in env
+    )
 
 
 def list_rest_apis() -> dict:
@@ -543,8 +542,7 @@ def list_rest_apis() -> dict:
     section = raw.get("rest-api")
     if isinstance(section, dict) and section:
         return {
-            name: entry for name, entry in section.items()
-            if isinstance(entry, dict)
+            name: entry for name, entry in section.items() if isinstance(entry, dict)
         }
     return {
         name: entry

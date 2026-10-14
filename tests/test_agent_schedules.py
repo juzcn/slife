@@ -13,8 +13,8 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-from slife.agent import schedules as S
 import slife.timeouts as _timeouts
+from slife.agent import schedules as S
 
 
 def _pacing():
@@ -31,6 +31,7 @@ def _iso(dt):
 
 
 # ── trigger text ─────────────────────────────────────────────────────
+
 
 def test_trigger_text_has_mark_name_and_dispatch_hint():
     text = S.trigger_text("daily_diary", "Write today's diary")
@@ -54,6 +55,7 @@ def test_trigger_text_handles_empty_description():
 
 
 # ── build_worker_task ───────────────────────────────────────────────
+
 
 def test_build_worker_task_self_contained():
     task = S.build_worker_task("daily_report", "Write today's report")
@@ -82,6 +84,7 @@ def test_build_worker_task_handles_empty_description():
 
 # ── _parse_iso ───────────────────────────────────────────────────────
 
+
 def test_parse_iso_roundtrip_and_bad():
     dt = _aware(2026, 8, 25, 9, 0)
     assert S._parse_iso(_iso(dt)) == dt
@@ -92,6 +95,7 @@ def test_parse_iso_roundtrip_and_bad():
 
 # ── _latest_fire_at_or_before ────────────────────────────────────────
 
+
 def test_latest_fire_single_and_multi():
     # daily 9am; anchor 3 days back → newest fire <= now is today 9am
     anchor = _aware(2026, 8, 22, 9, 0)
@@ -100,9 +104,15 @@ def test_latest_fire_single_and_multi():
     assert latest == _aware(2026, 8, 25, 9, 0)
 
     # no fire in (anchor, now] → None
-    assert S._latest_fire_at_or_before(
-        "0 9 * * *", _aware(2026, 8, 25, 9, 0), _aware(2026, 8, 25, 9, 30), None,
-    ) is None
+    assert (
+        S._latest_fire_at_or_before(
+            "0 9 * * *",
+            _aware(2026, 8, 25, 9, 0),
+            _aware(2026, 8, 25, 9, 30),
+            None,
+        )
+        is None
+    )
 
 
 def test_latest_fire_long_downtime_not_capped():
@@ -124,16 +134,29 @@ def test_latest_fire_now_at_fire_time_returns_now():
     now = _aware(2026, 8, 25, 9, 0)  # exactly the 9am fire
     assert S._latest_fire_at_or_before("0 9 * * *", anchor, now, None) == now
     # ...but only when *now* is strictly after the anchor (fire == anchor is excluded)
-    assert S._latest_fire_at_or_before(
-        "0 9 * * *", now, _aware(2026, 8, 25, 9, 0), None,
-    ) is None
+    assert (
+        S._latest_fire_at_or_before(
+            "0 9 * * *",
+            now,
+            _aware(2026, 8, 25, 9, 0),
+            None,
+        )
+        is None
+    )
 
 
 # ── _classify ────────────────────────────────────────────────────────
 
+
 def _task(schedule="0 9 * * *", last_run_due=None, created_at=None, **kw):
-    t = {"id": 1, "name": "t", "description": "d", "schedule": schedule,
-         "timezone": "", "created_at": created_at or _iso(_aware(2026, 8, 1))}
+    t = {
+        "id": 1,
+        "name": "t",
+        "description": "d",
+        "schedule": schedule,
+        "timezone": "",
+        "created_at": created_at or _iso(_aware(2026, 8, 1)),
+    }
     if last_run_due is not None:
         t["last_run_due"] = last_run_due
     t.update(kw)
@@ -189,9 +212,11 @@ def test_classify_grace_boundary():
 # ── fire_task_now ────────────────────────────────────────────────────
 
 #: The scheduled task every dispatch test fires.
-_TASK_JSON = ('{"id": 7, "name": "daily", "description": "d", '
-              '"schedule": "0 9 * * *", "timezone": "", '
-              '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
+_TASK_JSON = (
+    '{"id": 7, "name": "daily", "description": "d", '
+    '"schedule": "0 9 * * *", "timezone": "", '
+    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}'
+)
 
 
 def _scheduled_client(records: list | None = None):
@@ -291,12 +316,14 @@ async def test_fire_task_now_sends_the_context_with_the_task(monkeypatch):
     ctx = MagicMock()
     ctx.memfiles_client = _scheduled_client()
     ctx.message_history = MagicMock(
-        messages=[{"role": "system", "content": "sys"},
-                 {"role": "user", "content": "u1", "_turn_id": 4},
-                 {"role": "assistant", "content": "a1"},
-                 # The turn being run: no rowid, so it is not context.
-                 {"role": "user", "content": "u2"},
-                 {"role": "assistant", "content": "a2"}],
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "u1", "_turn_id": 4},
+            {"role": "assistant", "content": "a1"},
+            # The turn being run: no rowid, so it is not context.
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+        ],
     )
     service = MagicMock()
     service._tool_ctx = ctx
@@ -308,8 +335,10 @@ async def test_fire_task_now_sends_the_context_with_the_task(monkeypatch):
     seed = manager.send_task_to_pool.call_args.kwargs["seed"]
     # Verbatim, ``_turn_id`` included: the worker's rebuild keys on it to
     # re-fetch a turn from the shared store.
-    assert seed == [{"role": "user", "content": "u1", "_turn_id": 4},
-                    {"role": "assistant", "content": "a1"}]
+    assert seed == [
+        {"role": "user", "content": "u1", "_turn_id": 4},
+        {"role": "assistant", "content": "a1"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -341,9 +370,11 @@ async def test_fire_task_now_marks_run_failed_on_dispatch_error(monkeypatch):
     async def fake_call_tool(name, arguments=None):
         calls.append((name, arguments or {}))
         if name == "__scheduled_task_by_name":
-            return ('{"id": 7, "name": "daily", "description": "d", '
-                    '"schedule": "manual", "timezone": "", '
-                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
+            return (
+                '{"id": 7, "name": "daily", "description": "d", '
+                '"schedule": "manual", "timezone": "", '
+                '"created_at": "2026-08-01T00:00:00", "last_run_due": null}'
+            )
         return "{}"
 
     client.call_tool = fake_call_tool
@@ -356,8 +387,10 @@ async def test_fire_task_now_marks_run_failed_on_dispatch_error(monkeypatch):
 
     manager = MagicMock()
     manager.send_task_to_pool = AsyncMock(
-        side_effect=PoolFullError("no subagent is idle and the pool is at its "
-                                  "limit (2) — worker-1 (1 in flight)"),
+        side_effect=PoolFullError(
+            "no subagent is idle and the pool is at its "
+            "limit (2) — worker-1 (1 in flight)"
+        ),
     )
     monkeypatch.setattr("slife.subagent.process.get_manager", lambda: manager)
 
@@ -380,9 +413,11 @@ async def test_fire_task_now_marks_run_failed_when_no_manager(monkeypatch):
     async def fake_call_tool(name, arguments=None):
         calls.append((name, arguments or {}))
         if name == "__scheduled_task_by_name":
-            return ('{"id": 7, "name": "daily", "description": "d", '
-                    '"schedule": "manual", "timezone": "", '
-                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
+            return (
+                '{"id": 7, "name": "daily", "description": "d", '
+                '"schedule": "manual", "timezone": "", '
+                '"created_at": "2026-08-01T00:00:00", "last_run_due": null}'
+            )
         return "{}"
 
     client.call_tool = fake_call_tool
@@ -430,9 +465,11 @@ async def test_fire_task_now_dispatch_error_fails_given_due_at(monkeypatch):
 
     async def fake_call_tool(name, arguments=None):
         if name == "__scheduled_task_by_name":
-            return ('{"id": 7, "name": "daily", "description": "d", '
-                    '"schedule": "manual", "timezone": "", '
-                    '"created_at": "2026-08-01T00:00:00", "last_run_due": null}')
+            return (
+                '{"id": 7, "name": "daily", "description": "d", '
+                '"schedule": "manual", "timezone": "", '
+                '"created_at": "2026-08-01T00:00:00", "last_run_due": null}'
+            )
         if name == "__scheduled_mark_run_failed":
             mark_calls.append(arguments or {})
         return "{}"
@@ -452,8 +489,9 @@ async def test_fire_task_now_dispatch_error_fails_given_due_at(monkeypatch):
     due = "2026-08-27T10:55:00+08:00"
     result = await S.fire_task_now(service, "daily", due_at=due)
     assert "Error: dispatch failed" in result
-    assert mark_calls == [{"task_id": 7, "due_at": due,
-                           "error": "max subagents reached"}]
+    assert mark_calls == [
+        {"task_id": 7, "due_at": due, "error": "max subagents reached"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -473,6 +511,7 @@ async def test_fire_task_now_unknown_task():
 
 
 # ── pending-fire guard ──────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_fire_marks_pending_guard_then_clears_on_dispatch(monkeypatch):
@@ -498,6 +537,7 @@ async def test_fire_marks_pending_guard_then_clears_on_dispatch(monkeypatch):
 
 
 # ── startup one-shot sweep: pending → failed, no message ─────────────
+
 
 def _make_service(client, posted):
     inbox = MagicMock()
@@ -525,10 +565,12 @@ async def test_schedule_startup_sweep_reaps_failed_and_posts_nothing():
     async def fake_call_tool(name, arguments=None):
         calls.append(name)
         if name == "__scheduled_fail_unconfirmed":
-            return ('{"failed": 2, "runs": [{"task_id": 7, "name": "daily", '
-                    '"due_at": "2026-08-25T09:00:00", "status": "failed"}, '
-                    '{"task_id": 8, "name": "weekly", '
-                    '"due_at": "2026-08-24T18:00:00", "status": "failed"}]}')
+            return (
+                '{"failed": 2, "runs": [{"task_id": 7, "name": "daily", '
+                '"due_at": "2026-08-25T09:00:00", "status": "failed"}, '
+                '{"task_id": 8, "name": "weekly", '
+                '"due_at": "2026-08-24T18:00:00", "status": "failed"}]}'
+            )
         if name == "__scheduled_tasks_state":
             return "[]"
         return "{}"
@@ -576,10 +618,12 @@ async def test_schedule_startup_sweep_marks_missed_without_posting(monkeypatch):
         if name == "__scheduled_fail_unconfirmed":
             return '{"failed": 0, "runs": []}'
         if name == "__scheduled_tasks_state":
-            return ('[{"id": 1, "name": "daily", "schedule": "0 9 * * *", '
-                    '"timezone": "", '
-                    f'"created_at": "{_iso(created)}", '
-                    f'"last_run_due": "{_iso(last_due)}"}}]')
+            return (
+                '[{"id": 1, "name": "daily", "schedule": "0 9 * * *", '
+                '"timezone": "", '
+                f'"created_at": "{_iso(created)}", '
+                f'"last_run_due": "{_iso(last_due)}"}}]'
+            )
         if name == "__scheduled_mark_missed":
             mark_calls.append(arguments)
             return '{"status": "missed"}'
@@ -608,16 +652,22 @@ async def test_pending_schedule_runs_merges_dedupes_and_sorts():
 
     async def fake_call_tool(name, arguments=None):
         if name == "__scheduled_tasks_list":
-            return ('{"total": 2, "tasks": [{"id": 1, "name": "daily"}, '
-                    '{"id": 2, "name": "weekly"}]}')
+            return (
+                '{"total": 2, "tasks": [{"id": 1, "name": "daily"}, '
+                '{"id": 2, "name": "weekly"}]}'
+            )
         if name == "__scheduled_runs_list":
             if arguments["status"] == "failed":
                 # The same due_at appears twice → must render once.
-                return ('{"total": 2, "runs": ['
-                        '{"task_id": 1, "due_at": "2026-08-25T09:00:00", "status": "failed"}, '
-                        '{"task_id": 1, "due_at": "2026-08-25T09:00:00", "status": "failed"}]}')
-            return ('{"total": 1, "runs": ['
-                    '{"task_id": 2, "due_at": "2026-08-24T18:00:00", "status": "missed"}]}')
+                return (
+                    '{"total": 2, "runs": ['
+                    '{"task_id": 1, "due_at": "2026-08-25T09:00:00", "status": "failed"}, '
+                    '{"task_id": 1, "due_at": "2026-08-25T09:00:00", "status": "failed"}]}'
+                )
+            return (
+                '{"total": 1, "runs": ['
+                '{"task_id": 2, "due_at": "2026-08-24T18:00:00", "status": "missed"}]}'
+            )
         return "{}"
 
     client.call_tool = fake_call_tool
@@ -675,6 +725,7 @@ async def test_schedule_loop_never_announces_missed_or_stale(monkeypatch):
 
 # ── run_schedule_now native tool ─────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_run_schedule_now_tool_requires_name():
     from slife.tools.schedule import RunScheduleNowTool
@@ -722,6 +773,7 @@ async def test_run_schedule_now_tool_passes_backfill_due_at():
 
 
 # ── completion reconciliation: run record, not worker narration ─────
+
 
 def _client_with_run(status, mark_calls):
     """Memfiles stub: one run's status, keyed by the ``due_at`` asked for.
@@ -774,8 +826,13 @@ async def test_completion_content_settles_unconfirmed_run_and_says_so():
     assert "report saved" not in msg
     assert "report was not saved" in msg
     assert "failed" in msg
-    assert mark_calls == [{"task_id": 7, "due_at": due,
-                           "error": "worker finished without confirming the run"}]
+    assert mark_calls == [
+        {
+            "task_id": 7,
+            "due_at": due,
+            "error": "worker finished without confirming the run",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -789,7 +846,8 @@ async def test_completion_content_judges_its_own_run_not_the_newest_one():
     due_a, due_b = "2026-08-25T09:00:00", "2026-08-25T10:00:00"
     mark_calls: list[dict] = []
     service = _make_service(
-        _client_with_run({due_a: "ran", due_b: "pending"}, mark_calls), [],
+        _client_with_run({due_a: "ran", due_b: "pending"}, mark_calls),
+        [],
     )
 
     msg = await S._schedule_completion_content(service, "daily", due_a)

@@ -1,23 +1,23 @@
 """Tests for Slife.agent.loop — agent loop, streaming, and tool execution."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
 import json
-import pytest
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from slife.agent.llm_client import LLMClient, StreamChunk, TokenUsage
 from slife.agent.loop import (
+    AgentEventHandler,
     AgentLoop,
-    ToolCallInfo,
     AgentResult,
     MaxIterationsExceeded,
-    AgentEventHandler,
     StreamStallError,
+    ToolCallInfo,
 )
-from slife.agent.llm_client import LLMClient, TokenUsage, StreamChunk
 
+pytestmark = pytest.mark.unit
 
 # ── ToolCallInfo ──────────────────────────────────────────────────────
 
@@ -146,7 +146,11 @@ class TestBuildToolCallsFromDeltas:
 
     def test_single_complete_tool_call(self):
         accum = {
-            0: {"id": "call_abc", "name": "web_search", "arguments": '{"query": "cats"}'}
+            0: {
+                "id": "call_abc",
+                "name": "web_search",
+                "arguments": '{"query": "cats"}',
+            }
         }
         result = AgentLoop._build_tool_calls_from_deltas(accum)
         assert len(result) == 1
@@ -156,8 +160,8 @@ class TestBuildToolCallsFromDeltas:
 
     def test_multiple_tool_calls_sorted_by_index(self):
         accum = {
-            1: {"id": "c2", "name": "t2", "arguments": '{}'},
-            0: {"id": "c1", "name": "t1", "arguments": '{}'},
+            1: {"id": "c2", "name": "t2", "arguments": "{}"},
+            0: {"id": "c1", "name": "t1", "arguments": "{}"},
         }
         result = AgentLoop._build_tool_calls_from_deltas(accum)
         assert [tc.id for tc in result] == ["c1", "c2"]
@@ -254,7 +258,9 @@ class TestProcessStream:
     """Tests for AgentLoop._process_stream."""
 
     @pytest.mark.asyncio
-    async def test_simple_text_response(self, sample_model_config, empty_registry, history):
+    async def test_simple_text_response(
+        self, sample_model_config, empty_registry, history
+    ):
         """Stream returns a simple text response."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
@@ -265,7 +271,7 @@ class TestProcessStream:
             yield StreamChunk(content=" world!")
             yield StreamChunk(usage=TokenUsage(5, 3, 8))
 
-        with patch.object(llm, 'chat_stream', side_effect=mock_stream):
+        with patch.object(llm, "chat_stream", side_effect=mock_stream):
             result = await loop._process_stream(history, None)
 
         assert result.content == "Hello world!"
@@ -282,14 +288,16 @@ class TestProcessStream:
             yield StreamChunk(content="OK")
             yield StreamChunk(usage=TokenUsage(3, 1, 4))
 
-        with patch.object(llm, 'chat_stream', side_effect=mock_stream):
+        with patch.object(llm, "chat_stream", side_effect=mock_stream):
             result = await loop._process_stream(history, None)
 
         assert result.thinking == "Let me think..."
         assert result.content == "OK"
 
     @pytest.mark.asyncio
-    async def test_with_handler_callbacks(self, sample_model_config, empty_registry, history):
+    async def test_with_handler_callbacks(
+        self, sample_model_config, empty_registry, history
+    ):
         """Handler receives callbacks during streaming."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
@@ -301,7 +309,7 @@ class TestProcessStream:
             yield StreamChunk(content="Answer")
             yield StreamChunk(usage=TokenUsage(2, 1, 3))
 
-        with patch.object(llm, 'chat_stream', side_effect=mock_stream):
+        with patch.object(llm, "chat_stream", side_effect=mock_stream):
             await loop._process_stream(history, handler)
 
         handler.on_thinking_chunk.assert_awaited_with("Hmm")
@@ -315,20 +323,38 @@ class TestProcessStream:
 
         async def mock_stream(messages, tools, **kwargs):
             # First chunk: tool call with id and name
-            yield StreamChunk(tool_deltas=[
-                {"index": 0, "id": "call_x", "function": {"name": "echo", "arguments": ""}}
-            ])
+            yield StreamChunk(
+                tool_deltas=[
+                    {
+                        "index": 0,
+                        "id": "call_x",
+                        "function": {"name": "echo", "arguments": ""},
+                    }
+                ]
+            )
             # Second chunk: more arguments
-            yield StreamChunk(tool_deltas=[
-                {"index": 0, "id": "", "function": {"name": "", "arguments": '{"msg"'}}
-            ])
+            yield StreamChunk(
+                tool_deltas=[
+                    {
+                        "index": 0,
+                        "id": "",
+                        "function": {"name": "", "arguments": '{"msg"'},
+                    }
+                ]
+            )
             # Third chunk: arguments continued
-            yield StreamChunk(tool_deltas=[
-                {"index": 0, "id": "", "function": {"name": "", "arguments": ': "hi"}'}}
-            ])
+            yield StreamChunk(
+                tool_deltas=[
+                    {
+                        "index": 0,
+                        "id": "",
+                        "function": {"name": "", "arguments": ': "hi"}'},
+                    }
+                ]
+            )
             yield StreamChunk(usage=TokenUsage(10, 5, 15))
 
-        with patch.object(llm, 'chat_stream', side_effect=mock_stream):
+        with patch.object(llm, "chat_stream", side_effect=mock_stream):
             result = await loop._process_stream(history, None)
 
         assert 0 in result.tool_accum
@@ -347,14 +373,17 @@ class TestProcessStream:
             yield StreamChunk(content="test")
             yield StreamChunk(usage=TokenUsage(1, 1, 2))
 
-        with patch.object(llm, 'chat_stream', side_effect=mock_stream):
+        with patch.object(llm, "chat_stream", side_effect=mock_stream):
             result = await loop._process_stream(history, None)
 
         assert result.content == "test"
 
     @pytest.mark.asyncio
     async def test_retries_transient_error(
-        self, sample_model_config, empty_registry, history,
+        self,
+        sample_model_config,
+        empty_registry,
+        history,
     ):
         """A transient httpx2 transport failure is retried transparently."""
         import httpx2
@@ -384,7 +413,10 @@ class TestProcessStream:
 
     @pytest.mark.asyncio
     async def test_no_retry_on_non_transient(
-        self, sample_model_config, empty_registry, history,
+        self,
+        sample_model_config,
+        empty_registry,
+        history,
     ):
         """Non-transient errors are not retried."""
         llm = LLMClient(sample_model_config)
@@ -399,15 +431,18 @@ class TestProcessStream:
         with (
             patch.object(llm, "chat_stream", side_effect=failing_stream),
             patch("slife.timeouts.timeouts.stream.retry_base_delay", 0),
+            pytest.raises(ValueError),
         ):
-            with pytest.raises(ValueError):
-                await loop._process_stream(history, None)
+            await loop._process_stream(history, None)
 
         assert len(calls) == 1
 
     @pytest.mark.asyncio
     async def test_resets_handler_before_retry(
-        self, sample_model_config, empty_registry, history,
+        self,
+        sample_model_config,
+        empty_registry,
+        history,
     ):
         """Partial streamed output is cleared via on_stream_retry before retry."""
         import httpx2
@@ -438,7 +473,10 @@ class TestProcessStream:
 
     @pytest.mark.asyncio
     async def test_gives_up_after_retries(
-        self, sample_model_config, empty_registry, history,
+        self,
+        sample_model_config,
+        empty_registry,
+        history,
     ):
         """Retryable failures stop after the max retries and wrap the error."""
         import httpx2
@@ -455,15 +493,18 @@ class TestProcessStream:
         with (
             patch.object(llm, "chat_stream", side_effect=always_fails),
             patch("slife.timeouts.timeouts.stream.retry_base_delay", 0),
+            pytest.raises(RuntimeError, match="LLM stream failed after 3 attempts"),
         ):
-            with pytest.raises(RuntimeError, match="LLM stream failed after 3 attempts"):
-                await loop._process_stream(history, None)
+            await loop._process_stream(history, None)
 
         assert len(calls) == 3
 
     @pytest.mark.asyncio
     async def test_stream_timeout_turns_stall_into_error(
-        self, sample_model_config, empty_registry, history,
+        self,
+        sample_model_config,
+        empty_registry,
+        history,
     ):
         """A silent provider stall (no chunk, no error) is cut by
         ``stream_timeout`` into a catchable TimeoutError instead of hanging."""
@@ -476,13 +517,18 @@ class TestProcessStream:
             await asyncio.sleep(3600)
             yield  # pragma: no cover — marks this as an async generator
 
-        with patch.object(llm, "chat_stream", side_effect=stalled_stream):
-            with pytest.raises(TimeoutError, match="LLM stream timed out after 0.05s"):
-                await loop._process_stream(history, None)
+        with (
+            patch.object(llm, "chat_stream", side_effect=stalled_stream),
+            pytest.raises(TimeoutError, match="LLM stream timed out after 0.05s"),
+        ):
+            await loop._process_stream(history, None)
 
     @pytest.mark.asyncio
     async def test_stream_max_retries_zero_fails_fast(
-        self, sample_model_config, empty_registry, history,
+        self,
+        sample_model_config,
+        empty_registry,
+        history,
     ):
         """``stream_max_retries=0`` disables retry — one attempt, then the
         transient error propagates immediately (subagent fail-fast)."""
@@ -500,11 +546,12 @@ class TestProcessStream:
         with (
             patch.object(llm, "chat_stream", side_effect=flaky_stream),
             patch("slife.timeouts.timeouts.stream.retry_base_delay", 0),
+            pytest.raises(
+                RuntimeError,
+                match="LLM stream failed after 1 attempts",
+            ),
         ):
-            with pytest.raises(
-                RuntimeError, match="LLM stream failed after 1 attempts",
-            ):
-                await loop._process_stream(history, None)
+            await loop._process_stream(history, None)
 
         assert len(calls) == 1
 
@@ -512,6 +559,7 @@ class TestProcessStream:
         """StreamStallError routes through the retry ladder like other
         transient transport failures."""
         from slife.agent.loop import _is_retryable_stream_error
+
         assert _is_retryable_stream_error(StreamStallError(120.0)) is True
 
     def test_httpx2_httpcore2_transport_errors_retryable(self):
@@ -522,8 +570,10 @@ class TestProcessStream:
         ""); previously it was exempted from the retry ladder and bubbled to
         the user as an empty ✗.
         """
-        from slife.agent.loop import _is_retryable_stream_error
         import httpx2
+
+        from slife.agent.loop import _is_retryable_stream_error
+
         assert _is_retryable_stream_error(httpx2.ReadError("")) is True
         assert (
             _is_retryable_stream_error(httpx2.RemoteProtocolError("x", request=None))
@@ -544,14 +594,19 @@ class TestProcessStream:
 
     @pytest.mark.asyncio
     async def test_stream_stall_fails_fast(
-        self, sample_model_config, empty_registry, history,
+        self,
+        sample_model_config,
+        empty_registry,
+        history,
     ):
         """A silent provider (no chunk, no error) trips the inactivity
         watchdog and fails fast (subagent-style) with an actionable error."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(
-            llm, empty_registry,
-            stream_stall_timeout=0.05, stream_max_retries=0,  # noqa-timeout
+            llm,
+            empty_registry,
+            stream_stall_timeout=0.05,  # noqa-timeout
+            stream_max_retries=0,
         )
         calls: list[int] = []
 
@@ -560,17 +615,23 @@ class TestProcessStream:
             await asyncio.sleep(3600)
             yield  # pragma: no cover — marks this as an async generator
 
-        with patch.object(llm, "chat_stream", side_effect=silent_stream):
-            with pytest.raises(
-                RuntimeError, match="LLM stream stalled — no data for",
-            ):
-                await loop._process_stream(history, None)
+        with (
+            patch.object(llm, "chat_stream", side_effect=silent_stream),
+            pytest.raises(
+                RuntimeError,
+                match="LLM stream stalled — no data for",
+            ),
+        ):
+            await loop._process_stream(history, None)
 
         assert len(calls) == 1
 
     @pytest.mark.asyncio
     async def test_stream_stall_retries_then_succeeds(
-        self, sample_model_config, empty_registry, history,
+        self,
+        sample_model_config,
+        empty_registry,
+        history,
     ):
         """A stall is retryable — a second attempt that streams recovers."""
         llm = LLMClient(sample_model_config)
@@ -596,7 +657,10 @@ class TestProcessStream:
 
     @pytest.mark.asyncio
     async def test_stream_stall_resets_per_chunk_not_total_cap(
-        self, sample_model_config, empty_registry, history,
+        self,
+        sample_model_config,
+        empty_registry,
+        history,
     ):
         """The watchdog resets on every chunk — a slow-but-live stream that
         takes longer in total than the stall window is never cut (a total
@@ -617,7 +681,10 @@ class TestProcessStream:
 
     @pytest.mark.asyncio
     async def test_retry_exhaustion_keeps_non_empty_detail(
-        self, sample_model_config, empty_registry, history,
+        self,
+        sample_model_config,
+        empty_registry,
+        history,
     ):
         """Retry exhaustion wraps even an error that stringifies to empty in
         an actionable RuntimeError (detail falls back to the type name)."""
@@ -635,9 +702,9 @@ class TestProcessStream:
         with (
             patch.object(llm, "chat_stream", side_effect=empty_err_stream),
             patch("slife.timeouts.timeouts.stream.retry_base_delay", 0),
+            pytest.raises(RuntimeError, match="ReadError"),
         ):
-            with pytest.raises(RuntimeError, match="ReadError"):
-                await loop._process_stream(history, None)
+            await loop._process_stream(history, None)
 
         assert len(calls) == 3
 
@@ -649,7 +716,9 @@ class TestExecuteTools:
     """Tests for AgentLoop._execute_tools."""
 
     @pytest.mark.asyncio
-    async def test_single_tool_execution(self, sample_model_config, tool_registry, history):
+    async def test_single_tool_execution(
+        self, sample_model_config, tool_registry, history
+    ):
         """Single tool executed and added to history."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, tool_registry)
@@ -687,7 +756,7 @@ class TestExecuteTools:
         assert result_call[0][2] is True  # is_error
 
         msgs = history.to_openai_messages()
-        tool_msg = [m for m in msgs if m["role"] == "tool"][0]
+        tool_msg = next(m for m in msgs if m["role"] == "tool")
         assert "Intentional failure" in tool_msg["content"]
 
     @pytest.mark.asyncio
@@ -700,8 +769,10 @@ class TestExecuteTools:
 
         tcs = [
             ToolCallInfo(
-                id="c1", name="echo",
-                arguments={"message": "hi"}, args_truncated=True,
+                id="c1",
+                name="echo",
+                arguments={"message": "hi"},
+                args_truncated=True,
             )
         ]
         handler = AsyncMock(spec=AgentEventHandler)
@@ -729,12 +800,18 @@ class TestExecuteTools:
         assert any(m["role"] == "tool" for m in msgs)
 
     @pytest.mark.asyncio
-    async def test_error_detection_by_prefix(self, sample_model_config, tool_registry, history):
+    async def test_error_detection_by_prefix(
+        self, sample_model_config, tool_registry, history
+    ):
         """Results starting with 'Error' are flagged as errors."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, tool_registry)
 
-        tcs = [ToolCallInfo(id="c1", name="echo", arguments={"message": "Error: something"})]
+        tcs = [
+            ToolCallInfo(
+                id="c1", name="echo", arguments={"message": "Error: something"}
+            )
+        ]
         handler = AsyncMock(spec=AgentEventHandler)
 
         await loop._execute_tools(tcs, history, handler)
@@ -746,7 +823,9 @@ class TestExecuteTools:
 
     @pytest.mark.asyncio
     async def test_bare_timeout_arg_bounds_tool_without_native_timeout(
-        self, sample_model_config, history,
+        self,
+        sample_model_config,
+        history,
     ):
         """An LLM-appended bare ``timeout`` arg (no ``_timeout`` prefix) on
         a tool whose schema defines no timeout parameter is read as the
@@ -769,7 +848,10 @@ class TestExecuteTools:
 
     @pytest.mark.asyncio
     async def test_bare_timeout_arg_not_forwarded(
-        self, sample_model_config, tool_registry, history,
+        self,
+        sample_model_config,
+        tool_registry,
+        history,
     ):
         """A bare ``timeout`` arg is popped for tools without a native
         timeout — the business args reach the tool untouched and the call
@@ -780,7 +862,8 @@ class TestExecuteTools:
 
         tcs = [
             ToolCallInfo(
-                id="c1", name="echo",
+                id="c1",
+                name="echo",
                 arguments={"message": "hi", "timeout": 30},
             )
         ]
@@ -792,7 +875,9 @@ class TestExecuteTools:
 
     @pytest.mark.asyncio
     async def test_native_timeout_zero_never_reaches_the_tool(
-        self, sample_model_config, history,
+        self,
+        sample_model_config,
+        history,
     ):
         """B2/B3 regression — on a tool with a NATIVE ``timeout`` parameter,
         both `_timeout: 0` and a bare `timeout: 0` MUST NOT be forwarded:
@@ -819,7 +904,9 @@ class TestExecuteTools:
 
     @pytest.mark.asyncio
     async def test_garbage_timeout_never_kills_the_turn(
-        self, sample_model_config, history,
+        self,
+        sample_model_config,
+        history,
     ):
         """A malformed _timeout / bare timeout (the LLM writes natural
         language like "5 seconds") must degrade to the tool default for the
@@ -828,8 +915,10 @@ class TestExecuteTools:
         from slife.tools.registry import ToolRegistry
 
         for args in (
-            {"_timeout": "5 seconds"}, {"_timeout": "x"},
-            {"timeout": "fast"}, {"_timeout": None},
+            {"_timeout": "5 seconds"},
+            {"_timeout": "x"},
+            {"timeout": "fast"},
+            {"_timeout": None},
         ):
             tool = _NativeTimeoutTool()
             registry = ToolRegistry()
@@ -845,7 +934,9 @@ class TestExecuteTools:
 
     @pytest.mark.asyncio
     async def test_native_timeout_positive_still_mapped(
-        self, sample_model_config, history,
+        self,
+        sample_model_config,
+        history,
     ):
         """Control for the native mapping — a positive `_timeout` is still
         forwarded onto the native arg (existing contract); a sub-second
@@ -882,10 +973,13 @@ class _NativeTimeoutTool:
 
     name = "native_timed"
     description = "Records the timeout it received."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "timeout": {"type": "integer", "description": "Timeout in seconds. Default 30."},
+            "timeout": {
+                "type": "integer",
+                "description": "Timeout in seconds. Default 30.",
+            },
         },
         "required": [],
     }
@@ -905,9 +999,10 @@ class _HungTool:
     background (Rule 1); with an explicit ``_timeout`` it is bounded by the
     background wait_for (Rule 2); in the sync path a bare ``timeout`` arg or
     the chain default still bounds it."""
+
     name = "hung"
     description = "Never finishes."
-    parameters = {"type": "object", "properties": {}, "required": []}
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
 
     async def execute(self, **kwargs) -> str:
         await asyncio.sleep(3600)  # pragma: no cover — never returns
@@ -916,7 +1011,8 @@ class _HungTool:
 
 @pytest.mark.asyncio
 async def test_async_without_timeout_escapes_chain_bound(
-    sample_model_config, history,
+    sample_model_config,
+    history,
 ):
     """Rule 1 (DESIGN.md §4.7): ``_async: true`` with NO ``_timeout`` runs
     the tool BARE — the chain default (loop tool_timeout / work.tool_budget)
@@ -950,13 +1046,14 @@ async def test_async_without_timeout_escapes_chain_bound(
     task.cancel()
     try:
         await task
-    except (asyncio.CancelledError, Exception):
+    except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110 — cleanup: swallow the cancelled task's result
         pass
 
 
 @pytest.mark.asyncio
 async def test_async_with_explicit_timeout_bounds(
-    sample_model_config, history,
+    sample_model_config,
+    history,
 ):
     """Rule 2 (DESIGN.md §4.7): ``_async`` + a positive ``_timeout`` on a tool
     WITHOUT a native ``timeout`` param wraps the background execution with
@@ -970,10 +1067,13 @@ async def test_async_with_explicit_timeout_bounds(
     llm = LLMClient(sample_model_config)
     loop = AgentLoop(llm, registry, tool_timeout=0.2)  # noqa-timeout
 
-    tcs = [ToolCallInfo(
-        id="c1", name="hung",
-        arguments={"_async": True, "_timeout": 0.2},
-    )]
+    tcs = [
+        ToolCallInfo(
+            id="c1",
+            name="hung",
+            arguments={"_async": True, "_timeout": 0.2},
+        )
+    ]
     handler = AsyncMock(spec=AgentEventHandler)
 
     await loop._execute_tools(tcs, history, handler)
@@ -992,7 +1092,8 @@ async def test_async_with_explicit_timeout_bounds(
 
 @pytest.mark.asyncio
 async def test_async_with_explicit_timeout_maps_to_native_arg(
-    sample_model_config, history,
+    sample_model_config,
+    history,
 ):
     """Rule 2 (DESIGN.md §4.7): ``_async`` + a positive ``_timeout`` on a tool
     WITH a native ``timeout`` parameter assigns the agent value to the
@@ -1007,10 +1108,13 @@ async def test_async_with_explicit_timeout_maps_to_native_arg(
     loop = AgentLoop(llm, registry)
 
     before = set(async_tasks.values())
-    tcs = [ToolCallInfo(
-        id="c1", name="native_timed",
-        arguments={"_async": True, "_timeout": 7},
-    )]
+    tcs = [
+        ToolCallInfo(
+            id="c1",
+            name="native_timed",
+            arguments={"_async": True, "_timeout": 7},
+        )
+    ]
     handler = AsyncMock(spec=AgentEventHandler)
 
     await loop._execute_tools(tcs, history, handler)
@@ -1045,14 +1149,16 @@ class TestAgentLoopRun:
             yield StreamChunk(content="Hello!")
             yield StreamChunk(usage=TokenUsage(5, 3, 8))
 
-        with patch.object(llm, 'chat_stream', side_effect=mock_stream):
+        with patch.object(llm, "chat_stream", side_effect=mock_stream):
             result = await loop.run("Hi", history)
 
         assert result.text == "Hello!"
         assert result.usage.total_tokens == 8
 
     @pytest.mark.asyncio
-    async def test_run_adds_user_message(self, sample_model_config, empty_registry, empty_history):
+    async def test_run_adds_user_message(
+        self, sample_model_config, empty_registry, empty_history
+    ):
         """Run adds the user message to history."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
@@ -1061,7 +1167,7 @@ class TestAgentLoopRun:
             yield StreamChunk(content="OK")
             yield StreamChunk(usage=TokenUsage(1, 1, 2))
 
-        with patch.object(llm, 'chat_stream', side_effect=mock_stream):
+        with patch.object(llm, "chat_stream", side_effect=mock_stream):
             await loop.run("User input here", empty_history)
 
         msgs = empty_history.to_openai_messages()
@@ -1082,7 +1188,7 @@ class TestAgentLoopRun:
             yield StreamChunk(content="ok")
             yield StreamChunk(usage=TokenUsage(10_000, 5, 10_005))
 
-        with patch.object(llm, 'chat_stream', side_effect=mock_human):
+        with patch.object(llm, "chat_stream", side_effect=mock_human):
             await loop.run("hi", empty_history)
         assert loop.context_tokens_for(empty_history) == 10_005
 
@@ -1092,7 +1198,7 @@ class TestAgentLoopRun:
             yield StreamChunk(content=".")
             yield StreamChunk(usage=TokenUsage(11_000, 2, 11_002))
 
-        with patch.object(llm, 'chat_stream', side_effect=mock_heartbeat):
+        with patch.object(llm, "chat_stream", side_effect=mock_heartbeat):
             await loop.run("[Heartbeat]", empty_history)
 
         # One context → one reading: the shared history's last-call usage.
@@ -1106,7 +1212,9 @@ class TestMidturnInjection:
 
     @pytest.mark.asyncio
     async def test_run_injects_pending_at_iteration_boundary(
-        self, sample_model_config, history,
+        self,
+        sample_model_config,
+        history,
     ):
         from slife.a2a.identity import AgentMessage, AgentName
         from slife.tools.context import ToolContext
@@ -1117,7 +1225,8 @@ class TestMidturnInjection:
         msg = AgentMessage(
             source=AgentName("jack"),
             content='[A2A:{"from": "jack", "task_id": "cid-1"}] do X',
-            correlation_id="cid-1", metadata={"a2a_kind": "task"},
+            correlation_id="cid-1",
+            metadata={"a2a_kind": "task"},
         )
         calls = {"n": 0}
 
@@ -1153,7 +1262,9 @@ class TestMidturnInjection:
 
     @pytest.mark.asyncio
     async def test_queue_mode_never_injects(
-        self, sample_model_config, history,
+        self,
+        sample_model_config,
+        history,
     ):
         from slife.tools.factory import create_tools_from_config
 
@@ -1171,13 +1282,16 @@ class TestMidturnInjection:
 
         assert result.text == "done."
         assert not any(
-            m.get("role") == "assistant" and m.get("tool_calls")
+            m.get("role") == "assistant"
+            and m.get("tool_calls")
             and m["tool_calls"][0]["function"]["name"] == "_check_new_input"
             for m in history.messages
         )
 
     @pytest.mark.asyncio
-    async def test_run_with_tool_calls(self, sample_model_config, tool_registry, history):
+    async def test_run_with_tool_calls(
+        self, sample_model_config, tool_registry, history
+    ):
         """Agent correctly handles tool calls and loops back."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, tool_registry)
@@ -1189,12 +1303,27 @@ class TestMidturnInjection:
             if call_count[0] == 1:
                 # First call: LLM requests tool
                 yield StreamChunk(content="Let me echo that.")
-                yield StreamChunk(tool_deltas=[
-                    {"index": 0, "id": "c1", "function": {"name": "echo", "arguments": ""}}
-                ])
-                yield StreamChunk(tool_deltas=[
-                    {"index": 0, "id": "", "function": {"name": "", "arguments": '{"message": "hello"}'}}
-                ])
+                yield StreamChunk(
+                    tool_deltas=[
+                        {
+                            "index": 0,
+                            "id": "c1",
+                            "function": {"name": "echo", "arguments": ""},
+                        }
+                    ]
+                )
+                yield StreamChunk(
+                    tool_deltas=[
+                        {
+                            "index": 0,
+                            "id": "",
+                            "function": {
+                                "name": "",
+                                "arguments": '{"message": "hello"}',
+                            },
+                        }
+                    ]
+                )
                 yield StreamChunk(usage=TokenUsage(10, 5, 15))
             else:
                 # Second call: final response
@@ -1203,7 +1332,7 @@ class TestMidturnInjection:
 
         handler = AsyncMock(spec=AgentEventHandler)
 
-        with patch.object(llm, 'chat_stream', side_effect=mock_stream):
+        with patch.object(llm, "chat_stream", side_effect=mock_stream):
             result = await loop.run("echo hello", history, handler=handler)
 
         assert result.text == "Done!"
@@ -1217,20 +1346,28 @@ class TestMidturnInjection:
         handler.on_token_usage.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_run_max_iterations(self, sample_model_config, tool_registry, history):
+    async def test_run_max_iterations(
+        self, sample_model_config, tool_registry, history
+    ):
         """Agent returns cancelled result when max iterations exceeded."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, tool_registry, max_iterations=2)
 
         async def always_tool_call(messages, tools, **kwargs):
-            yield StreamChunk(tool_deltas=[
-                {"index": 0, "id": "c1", "function": {"name": "echo", "arguments": '{"message":"x"}'}}
-            ])
+            yield StreamChunk(
+                tool_deltas=[
+                    {
+                        "index": 0,
+                        "id": "c1",
+                        "function": {"name": "echo", "arguments": '{"message":"x"}'},
+                    }
+                ]
+            )
             yield StreamChunk(usage=TokenUsage(2, 1, 3))
 
         handler = AsyncMock(spec=AgentEventHandler)
 
-        with patch.object(llm, 'chat_stream', side_effect=always_tool_call):
+        with patch.object(llm, "chat_stream", side_effect=always_tool_call):
             result = await loop.run("test", history, handler=handler)
             assert result.cancelled is True
             # The reason rides the result so the harness's closing line can
@@ -1241,7 +1378,9 @@ class TestMidturnInjection:
             handler.on_max_iterations.assert_awaited_once_with(2)
 
     @pytest.mark.asyncio
-    async def test_run_cancel_records_esc_reason(self, sample_model_config, tool_registry, history):
+    async def test_run_cancel_records_esc_reason(
+        self, sample_model_config, tool_registry, history
+    ):
         """A cancelled turn reports WHY it stopped, not just that it did."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, tool_registry)
@@ -1251,16 +1390,19 @@ class TestMidturnInjection:
             yield StreamChunk(content="half a sen")
             yield StreamChunk(usage=TokenUsage(2, 1, 3))
 
-        with patch.object(llm, 'chat_stream', side_effect=cancelled_stream):
+        with patch.object(llm, "chat_stream", side_effect=cancelled_stream):
             result = await loop.run("test", history)
 
         assert result.cancelled is True
-        assert result.text == ""            # the partial text is not carried
+        assert result.text == ""  # the partial text is not carried
         assert result.stop_reason == "esc"
 
     @pytest.mark.asyncio
     async def test_max_iterations_zero_is_unlimited(
-        self, sample_model_config, tool_registry, history,
+        self,
+        sample_model_config,
+        tool_registry,
+        history,
     ):
         """max_iterations=0 means no cap — the loop runs past any fixed
         iteration count until a final response arrives (never raises
@@ -1274,15 +1416,24 @@ class TestMidturnInjection:
             nonlocal calls
             calls += 1
             if calls < 6:  # 5 tool-calling iterations, then a final answer
-                yield StreamChunk(tool_deltas=[
-                    {"index": 0, "id": "c1", "function": {"name": "echo", "arguments": '{"message":"x"}'}}
-                ])
+                yield StreamChunk(
+                    tool_deltas=[
+                        {
+                            "index": 0,
+                            "id": "c1",
+                            "function": {
+                                "name": "echo",
+                                "arguments": '{"message":"x"}',
+                            },
+                        }
+                    ]
+                )
                 yield StreamChunk(usage=TokenUsage(2, 1, 3))
             else:
                 yield StreamChunk(content="Done!")
                 yield StreamChunk(usage=TokenUsage(1, 1, 2))
 
-        with patch.object(llm, 'chat_stream', side_effect=tool_then_done):
+        with patch.object(llm, "chat_stream", side_effect=tool_then_done):
             result = await loop.run("test", history)
 
         assert result.text == "Done!"
@@ -1291,7 +1442,10 @@ class TestMidturnInjection:
 
     @pytest.mark.asyncio
     async def test_set_max_iterations_applies_next_turn(
-        self, sample_model_config, tool_registry, history,
+        self,
+        sample_model_config,
+        tool_registry,
+        history,
     ):
         """A runtime cap change does not affect the running turn; the next
         run reads the new value."""
@@ -1299,13 +1453,19 @@ class TestMidturnInjection:
         loop = AgentLoop(llm, tool_registry, max_iterations=1)
 
         async def always_tool_call(messages, tools, **kwargs):
-            yield StreamChunk(tool_deltas=[
-                {"index": 0, "id": "c1", "function": {"name": "echo", "arguments": '{"message":"x"}'}}
-            ])
+            yield StreamChunk(
+                tool_deltas=[
+                    {
+                        "index": 0,
+                        "id": "c1",
+                        "function": {"name": "echo", "arguments": '{"message":"x"}'},
+                    }
+                ]
+            )
             yield StreamChunk(usage=TokenUsage(2, 1, 3))
 
         # Turn 1: capped at 1 → cancelled at the cap.
-        with patch.object(llm, 'chat_stream', side_effect=always_tool_call):
+        with patch.object(llm, "chat_stream", side_effect=always_tool_call):
             r1 = await loop.run("test", history)
             assert r1.cancelled is True
 
@@ -1318,22 +1478,34 @@ class TestMidturnInjection:
             nonlocal calls
             calls += 1
             if calls < 4:  # 3 tool iterations, then a final answer
-                yield StreamChunk(tool_deltas=[
-                    {"index": 0, "id": "c1", "function": {"name": "echo", "arguments": '{"message":"x"}'}}
-                ])
+                yield StreamChunk(
+                    tool_deltas=[
+                        {
+                            "index": 0,
+                            "id": "c1",
+                            "function": {
+                                "name": "echo",
+                                "arguments": '{"message":"x"}',
+                            },
+                        }
+                    ]
+                )
                 yield StreamChunk(usage=TokenUsage(2, 1, 3))
             else:
                 yield StreamChunk(content="Done!")
                 yield StreamChunk(usage=TokenUsage(1, 1, 2))
 
-        with patch.object(llm, 'chat_stream', side_effect=tool_then_done):
+        with patch.object(llm, "chat_stream", side_effect=tool_then_done):
             r2 = await loop.run("test", history)
             assert r2.text == "Done!"
             assert calls == 4  # cap 0 took effect — not stopped at 1
 
     @pytest.mark.asyncio
     async def test_set_max_iterations_applies_mid_turn(
-        self, sample_model_config, tool_registry, history,
+        self,
+        sample_model_config,
+        tool_registry,
+        history,
     ):
         """Tightening the cap mid-turn stops the running turn immediately —
         the cap is checked live, not fixed at run() start."""
@@ -1347,14 +1519,20 @@ class TestMidturnInjection:
             calls += 1
             if calls == 2:
                 loop.set_max_iterations(1)  # tighten the cap mid-turn
-            yield StreamChunk(tool_deltas=[
-                {"index": 0, "id": "c1", "function": {"name": "echo", "arguments": '{"message":"x"}'}}
-            ])
+            yield StreamChunk(
+                tool_deltas=[
+                    {
+                        "index": 0,
+                        "id": "c1",
+                        "function": {"name": "echo", "arguments": '{"message":"x"}'},
+                    }
+                ]
+            )
             yield StreamChunk(usage=TokenUsage(2, 1, 3))
 
         handler = AsyncMock(spec=AgentEventHandler)
 
-        with patch.object(llm, 'chat_stream', side_effect=shrink_cap):
+        with patch.object(llm, "chat_stream", side_effect=shrink_cap):
             result = await loop.run("test", history, handler=handler)
 
         assert result.cancelled is True
@@ -1364,7 +1542,9 @@ class TestMidturnInjection:
         handler.on_max_iterations.assert_awaited_once_with(1)
 
     @pytest.mark.asyncio
-    async def test_run_with_images(self, sample_model_config, empty_registry, history, tmp_path):
+    async def test_run_with_images(
+        self, sample_model_config, empty_registry, history, tmp_path
+    ):
         """@path / programmatic attachments auto-invoke attach_image: the
         user message stays verbatim text, the image blocks are injected into
         it, and the harness synthesizes the assistant(tool_use) + tool
@@ -1376,9 +1556,10 @@ class TestMidturnInjection:
         img2 = tmp_path / "test2.png"
         img2.write_bytes(b"\x89PNG\r\n\x1a\nfake png 2")
 
-        from slife.tools.models import AttachImageTool
         from slife.tools.context import ToolContext
+        from slife.tools.models import AttachImageTool
         from slife.tools.registry import ToolRegistry
+
         registry = ToolRegistry()
         tool = AttachImageTool()
         tool._ctx = ToolContext(message_history=history)
@@ -1391,17 +1572,16 @@ class TestMidturnInjection:
             yield StreamChunk(content="I see images!")
             yield StreamChunk(usage=TokenUsage(5, 3, 8))
 
-        with patch.object(llm, 'chat_stream', side_effect=mock_stream):
+        with patch.object(llm, "chat_stream", side_effect=mock_stream):
             result = await loop.run(
-                "Describe these", history,
+                "Describe these",
+                history,
                 images=[str(img), str(img2)],
             )
 
         assert result.text == "I see images!"
         # Find the just-added user message, then the harness pair after it.
-        ui = next(
-            i for i, m in enumerate(history.messages) if m["role"] == "user"
-        )
+        ui = next(i for i, m in enumerate(history.messages) if m["role"] == "user")
         user = history.messages[ui]
         assert user["content"][0] == {"type": "text", "text": "Describe these"}
         # Both images injected as separate image_url blocks.
@@ -1425,18 +1605,21 @@ class TestMidturnInjection:
         assert res["content"].startswith("Image included:")
 
     @pytest.mark.asyncio
-    async def test_run_content_accumulation(self, sample_model_config, empty_registry, history):
+    async def test_run_content_accumulation(
+        self, sample_model_config, empty_registry, history
+    ):
         """Content from multiple chunks is accumulated correctly."""
         llm = LLMClient(sample_model_config)
         loop = AgentLoop(llm, empty_registry)
 
         parts = ["The ", "quick ", "brown ", "fox"]
+
         async def mock_stream(messages, tools, **kwargs):
             for p in parts:
                 yield StreamChunk(content=p)
             yield StreamChunk(usage=TokenUsage(4, 4, 8))
 
-        with patch.object(llm, 'chat_stream', side_effect=mock_stream):
+        with patch.object(llm, "chat_stream", side_effect=mock_stream):
             result = await loop.run("test", history)
 
         assert result.text == "The quick brown fox"
@@ -1452,7 +1635,10 @@ class TestToolListInjection:
 
     @pytest.mark.asyncio
     async def test_load_mid_turn_lands_in_the_next_request(
-        self, sample_model_config, history, tmp_path,
+        self,
+        sample_model_config,
+        history,
+        tmp_path,
     ):
         from slife.tools.base import Tool
         from slife.tools.catalog import CatalogStore
@@ -1462,7 +1648,7 @@ class TestToolListInjection:
         class _Native(Tool):
             name = "native_x"
             description = "a native tool"
-            parameters = {"type": "object", "properties": {}}
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
 
             async def execute(self, **kwargs) -> str:
                 return "ok"
@@ -1490,10 +1676,15 @@ class TestToolListInjection:
                 if len(seen) == 1:
                     # What func_tool_load does mid-turn: flip the row loaded.
                     assert (await svc.load_tool("native_b"))[0]
-                    yield StreamChunk(tool_deltas=[
-                        {"index": 0, "id": "c1",
-                         "function": {"name": "native_a", "arguments": "{}"}},
-                    ])
+                    yield StreamChunk(
+                        tool_deltas=[
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "native_a", "arguments": "{}"},
+                            },
+                        ]
+                    )
                 else:
                     yield StreamChunk(content="done")
                 yield StreamChunk(usage=TokenUsage(1, 1, 2))
@@ -1547,7 +1738,7 @@ class TestSameMessageLoadAndCall:
         class _Target(Tool):
             name = "target_tool"
             description = "the tool that gets loaded"
-            parameters = {"type": "object", "properties": {}}
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
             ran = 0
 
             async def execute(self, **kwargs) -> str:
@@ -1562,14 +1753,18 @@ class TestSameMessageLoadAndCall:
         reg.register(loader)
         reg.set_catalog(svc)
         loader._ctx = SimpleNamespace(
-            catalog=svc, registry=reg, mcp_client=None, message_history=None,
+            catalog=svc,
+            registry=reg,
+            mcp_client=None,
+            message_history=None,
         )
         return store, svc, reg, loader, _Target, AgentLoop, MessageHistory
 
     @pytest.mark.asyncio
     async def test_the_call_is_refused_and_the_load_still_lands(self, tmp_path):
-        (store, svc, reg, loader, target_cls, AgentLoop,
-         MessageHistory) = self._setup(tmp_path)
+        (store, svc, reg, loader, target_cls, AgentLoop, MessageHistory) = self._setup(
+            tmp_path
+        )
         await store.open()
         try:
             await svc.sync_system_tools([reg.get("target_tool"), loader])
@@ -1578,16 +1773,22 @@ class TestSameMessageLoadAndCall:
             history = MessageHistory(system_prompt="x")
             await loop._execute_tools(
                 [
-                    ToolCallInfo(id="c1", name="func_tool_load",
-                                 arguments={"full_name": "target_tool"}),
+                    ToolCallInfo(
+                        id="c1",
+                        name="func_tool_load",
+                        arguments={"full_name": "target_tool"},
+                    ),
                     ToolCallInfo(id="c2", name="target_tool", arguments={}),
                 ],
-                history, None, iteration=1,
+                history,
+                None,
+                iteration=1,
             )
 
             results = {
                 m["tool_call_id"]: m["content"]
-                for m in history.messages if m.get("role") == "tool"
+                for m in history.messages
+                if m.get("role") == "tool"
             }
             # The load states no timing at all: injection is what a load
             # changes, and the sibling call below proves that injection is not

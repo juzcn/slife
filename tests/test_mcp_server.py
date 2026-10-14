@@ -9,9 +9,6 @@ auto-connect call failed pydantic validation ("Missing required argument
 'a'") and no external MCP server could load.
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import importlib
 import json
 import logging
@@ -22,6 +19,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from slife.plugins.mcp_gateway.connection import ServerConfig
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
@@ -70,17 +69,18 @@ class TestAutoConnectConfigured:
         # the boot path must use; the test locks the section format so a
         # regression back to the pre-restructure top-level ``servers`` key
         # fails here.
-        fake_config._servers_dict.side_effect = (
-            lambda raw: raw.get("mcp", {}).get("servers", {})
-            or raw.get("servers", {})
+        fake_config._servers_dict.side_effect = lambda raw: (
+            raw.get("mcp", {}).get("servers", {}) or raw.get("servers", {})
         )
         # No ``rest-api`` section in this config, and the set must be a real
         # iterable — the boot path asks once for the names placement says are
         # REST APIs.
         fake_config.rest_api_names.return_value = set()
-        fake_config.resolve_server_config.side_effect = (
-            lambda name, entry, **kw: ServerConfig(
-                name=name, command="echo", enabled=entry.get("enabled", True),
+        fake_config.resolve_server_config.side_effect = lambda name, entry, **kw: (
+            ServerConfig(
+                name=name,
+                command="echo",
+                enabled=entry.get("enabled", True),
             )
         )
         with (
@@ -119,16 +119,19 @@ class TestAutoConnectConfigured:
         pool.list_servers.return_value = []
         fake_config = MagicMock()
         fake_config.load_config.return_value = {
-            "mcp": {"servers": {"healthy": {"command": "echo"},
-                                "slow": {"command": "echo"}}},
+            "mcp": {
+                "servers": {"healthy": {"command": "echo"}, "slow": {"command": "echo"}}
+            },
         }
-        fake_config._servers_dict.side_effect = (
-            lambda raw: raw.get("mcp", {}).get("servers", {})
+        fake_config._servers_dict.side_effect = lambda raw: raw.get("mcp", {}).get(
+            "servers", {}
         )
         fake_config.rest_api_names.return_value = set()
-        fake_config.resolve_server_config.side_effect = (
-            lambda name, entry, **kw: ServerConfig(
-                name=name, command="echo", enabled=True,
+        fake_config.resolve_server_config.side_effect = lambda name, entry, **kw: (
+            ServerConfig(
+                name=name,
+                command="echo",
+                enabled=True,
             )
         )
         with (
@@ -160,7 +163,15 @@ class TestPersistEntry:
         fake_cfg.server_section.return_value = None
         with patch.object(srv, "plugin_config", fake_cfg):
             srv._persist_entry(
-                "srv", "echo", [], None, "", None, "desc", None, None,
+                "srv",
+                "echo",
+                [],
+                None,
+                "",
+                None,
+                "desc",
+                None,
+                None,
             )
         fake_cfg.add_server_entry.assert_called_once()
 
@@ -173,7 +184,15 @@ class TestPersistEntry:
         fake_cfg.server_section.return_value = None
         with patch.object(srv, "plugin_config", fake_cfg):
             srv._persist_entry(
-                "srv", "echo", [], {}, "", None, "", None, None,
+                "srv",
+                "echo",
+                [],
+                {},
+                "",
+                None,
+                "",
+                None,
+                None,
             )
         entry = fake_cfg.add_server_entry.call_args[0][1]
         # ``enabled`` is the one always-present key, and it is not an empty
@@ -191,8 +210,15 @@ class TestPersistEntry:
         fake_cfg.server_section.return_value = "rest-api"
         with patch.object(srv, "plugin_config", fake_cfg):
             srv._persist_entry(
-                "github", "uvx", ["mcp-openapi-proxy"], {"A": "b"}, "", None,
-                "desc", None, None,
+                "github",
+                "uvx",
+                ["mcp-openapi-proxy"],
+                {"A": "b"},
+                "",
+                None,
+                "desc",
+                None,
+                None,
             )
         assert fake_cfg.add_server_entry.call_args.kwargs["section"] == "rest-api"
 
@@ -202,7 +228,15 @@ class TestPersistEntry:
         fake_cfg.server_section.return_value = None
         with patch.object(srv, "plugin_config", fake_cfg):
             srv._persist_entry(
-                "fresh", "echo", None, None, "", None, "", None, None,
+                "fresh",
+                "echo",
+                None,
+                None,
+                "",
+                None,
+                "",
+                None,
+                None,
             )
         assert fake_cfg.add_server_entry.call_args.kwargs["section"] == "mcp"
 
@@ -238,7 +272,9 @@ class TestMcpSetEnabled:
         pool.disconnect_server = AsyncMock()
         with (
             patch.object(srv, "_pool", pool),
-            patch.object(srv.plugin_config, "set_server_enabled", return_value=True) as persist,
+            patch.object(
+                srv.plugin_config, "set_server_enabled", return_value=True
+            ) as persist,
         ):
             result = await srv.mcp_set_enabled(name="live", enabled=False)
         parsed = _json.loads(result)
@@ -262,7 +298,9 @@ class TestMcpSetEnabled:
         pool.get_server.return_value = conn
         with (
             patch.object(srv, "_pool", pool),
-            patch.object(srv.plugin_config, "set_server_enabled", return_value=True) as persist,
+            patch.object(
+                srv.plugin_config, "set_server_enabled", return_value=True
+            ) as persist,
         ):
             result = await srv.mcp_set_enabled(name="live", enabled=True)
         parsed = _json.loads(result)
@@ -284,8 +322,14 @@ class TestAddServerToolRegistration:
         # The real function's parameters.  The helper had only (a, b) —
         # if the decorator is mis-bound these are all absent.
         for expected in (
-            "name", "command", "args", "env", "url",
-            "headers", "description", "enabled",
+            "name",
+            "command",
+            "args",
+            "env",
+            "url",
+            "headers",
+            "description",
+            "enabled",
         ):
             assert expected in props, f"missing param: {expected}"
         assert by_name["mcp_set"].parameters.get("required") == ["name"]
@@ -333,7 +377,7 @@ class TestAddServerToolRegistration:
         reserved = mcp_child_reserved_names()
         assert {"sharefile", "job-coding"} <= reserved
         for name in sorted(reserved):
-            result = await getattr(srv, "mcp_set")(name=name, command="echo")
+            result = await srv.mcp_set(name=name, command="echo")
             parsed = _json.loads(result)
             assert parsed.get("status") == "error", name
             assert "reserved" in parsed.get("error", ""), name
@@ -420,12 +464,15 @@ class TestMcpListFamily:
     @pytest.mark.asyncio
     async def test_rest_apis_are_not_listed(self, restore_root_logger):
         srv = _import_mcp_server()
-        out = await self._list(srv, [
-            {"name": "fs", "rest_api": False},
-            {"name": "github", "rest_api": True},
-            {"name": "mcp-registry", "rest_api": True},
-            {"name": "playwright", "rest_api": False},
-        ])
+        out = await self._list(
+            srv,
+            [
+                {"name": "fs", "rest_api": False},
+                {"name": "github", "rest_api": True},
+                {"name": "mcp-registry", "rest_api": True},
+                {"name": "playwright", "rest_api": False},
+            ],
+        )
         assert [s["name"] for s in out] == ["fs", "playwright"]
 
     @pytest.mark.asyncio
@@ -445,8 +492,17 @@ class TestMCPListToolsSingleRead:
     """
 
     @staticmethod
-    async def _list(srv, *, connected=True, live=None, live_raise="", autoload=False,
-                    limit=0, tool="mcp_list_tools", enabled=True):
+    async def _list(
+        srv,
+        *,
+        connected=True,
+        live=None,
+        live_raise="",
+        autoload=False,
+        limit=0,
+        tool="mcp_list_tools",
+        enabled=True,
+    ):
         """Call a listing tool with a patched pool (no real catalog store).
 
         ``connected`` here means "a tool list is held"; with none, the tool
@@ -459,7 +515,10 @@ class TestMCPListToolsSingleRead:
 
         conn = MagicMock()
         conn.config = ServerConfig(
-            name="fs", command="x", auto_load=autoload, enabled=enabled,
+            name="fs",
+            command="x",
+            auto_load=autoload,
+            enabled=enabled,
         )
         conn.has_tools = MagicMock(return_value=connected)
         conn.refresh_tools = AsyncMock(return_value=connected)
@@ -528,8 +587,8 @@ class TestMCPListToolsSingleRead:
         live = [self._live(f"op{i}") for i in range(30)]
         out = await self._list(srv, live=live, limit=5)
 
-        assert out["tool_count"] == 30      # the server's real total
-        assert len(out["tools"]) == 5       # what the caller was shown
+        assert out["tool_count"] == 30  # the server's real total
+        assert len(out["tools"]) == 5  # what the caller was shown
         assert out["truncated"] is True
         assert "tool_search" in out["note"]
 
@@ -544,12 +603,15 @@ class TestMCPListToolsSingleRead:
         out = await self._list(srv, live=live)
 
         assert len(out["tools"]) == gateway_config.DEFAULT_TOOL_LIST_LIMIT
-        assert gateway_config.tool_list_limit() == gateway_config.DEFAULT_TOOL_LIST_LIMIT
+        assert (
+            gateway_config.tool_list_limit() == gateway_config.DEFAULT_TOOL_LIST_LIMIT
+        )
         assert out["truncated"] is True
 
     @pytest.mark.asyncio
     async def test_a_disabled_server_is_refused_without_being_read(
-        self, restore_root_logger,
+        self,
+        restore_root_logger,
     ):
         """Reading IS connecting, so a switched-off server is never read.
 
@@ -576,7 +638,7 @@ class TestMCPListToolsSingleRead:
         assert out["status"] == "error"
         assert "is disabled" in out["error"]
         assert "mcp_set_enabled" in out["error"]
-        conn.refresh_tools.assert_not_awaited()   # the spawn never happened
+        conn.refresh_tools.assert_not_awaited()  # the spawn never happened
 
     @pytest.mark.asyncio
     async def test_the_internal_twin_is_uncapped(self, restore_root_logger):
@@ -593,7 +655,9 @@ class TestMCPListToolsSingleRead:
         assert "tool_search" not in out["note"]
 
     @pytest.mark.asyncio
-    async def test_the_internal_twin_is_hidden_from_the_model(self, restore_root_logger):
+    async def test_the_internal_twin_is_hidden_from_the_model(
+        self, restore_root_logger
+    ):
         """``__``-prefixed tools are filtered out of the model's tool set
         (``is_internal_tool``) — that prefix is the whole hiding mechanism."""
         from slife.server_utils import is_internal_tool
@@ -601,8 +665,8 @@ class TestMCPListToolsSingleRead:
         srv = _import_mcp_server()
         names = {t.name for t in await srv.mcp.list_tools()}
 
-        assert "__mcp_list_tools" in names      # registered for the host …
-        assert is_internal_tool("__mcp_list_tools")   # … and not for the model
+        assert "__mcp_list_tools" in names  # registered for the host …
+        assert is_internal_tool("__mcp_list_tools")  # … and not for the model
         assert not is_internal_tool("mcp_list_tools")
 
     @pytest.mark.asyncio
@@ -664,17 +728,18 @@ class TestBootConnectsEveryEnabled:
                 },
             },
         }
-        fake_config._servers_dict.side_effect = (
-            lambda raw: raw.get("mcp", {}).get("servers", {})
-            or raw.get("servers", {})
+        fake_config._servers_dict.side_effect = lambda raw: (
+            raw.get("mcp", {}).get("servers", {}) or raw.get("servers", {})
         )
         # No ``rest-api`` section in this config, and the set must be a real
         # iterable — the boot path asks once for the names placement says are
         # REST APIs.
         fake_config.rest_api_names.return_value = set()
-        fake_config.resolve_server_config.side_effect = (
-            lambda name, entry, **kw: ServerConfig(
-                name=name, command="echo", enabled=entry.get("enabled", True),
+        fake_config.resolve_server_config.side_effect = lambda name, entry, **kw: (
+            ServerConfig(
+                name=name,
+                command="echo",
+                enabled=entry.get("enabled", True),
             )
         )
         with (
@@ -686,7 +751,7 @@ class TestBootConnectsEveryEnabled:
         calls = {c[0][0].name: c.kwargs for c in pool.add_server.await_args_list}
         # enabled → transport up, tool list left to the first reader
         assert calls["up"] == {"read_tools": False}
-        assert calls["off"] == {"connect": False}      # disabled → register only
+        assert calls["off"] == {"connect": False}  # disabled → register only
 
 
 class TestNoCatalogAccess:
@@ -875,7 +940,8 @@ class TestSharedBodiesAreNotTools:
         from fastmcp.tools.function_tool import FunctionTool
 
         return {
-            c.name: c for c in srv.mcp.local_provider._components.values()
+            c.name: c
+            for c in srv.mcp.local_provider._components.values()
             if isinstance(c, FunctionTool)
         }
 

@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING
 
 from openai import AsyncOpenAI
 
+from slife.agent.llm_client import StreamChunk, TokenUsage, _safe_close_stream
 from slife.config import ModelConfig
-from slife.agent.llm_client import TokenUsage, StreamChunk, _safe_close_stream
 
 if TYPE_CHECKING:
     import asyncio
@@ -73,9 +73,7 @@ class OpenAIBackend:
             out.append(msg)
         return out
 
-    def _build_kwargs(
-        self, messages: list[dict], tools: list[dict] | None
-    ) -> dict:
+    def _build_kwargs(self, messages: list[dict], tools: list[dict] | None) -> dict:
         kwargs: dict = {
             "model": self.model_config.api_model,
             "messages": self._normalize_messages(messages),
@@ -143,6 +141,7 @@ class OpenAIBackend:
         # is what the agent loop and job llm.chat use; the batch contract is
         # text + usage only.
         from slife.agent.llm_client import _chat_response
+
         text = ""
         try:
             text = response.choices[0].message.content or ""
@@ -156,7 +155,7 @@ class OpenAIBackend:
         self,
         messages: list[dict],
         tools: list[dict] | None = None,
-        cancel_event: "asyncio.Event | None" = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> AsyncIterator[StreamChunk]:
         kwargs = self._build_kwargs(messages, tools)
         kwargs["stream"] = True
@@ -187,8 +186,10 @@ class OpenAIBackend:
                     elapsed = (_time.monotonic() - t0) * 1000
                     logger.debug(
                         "openai_stream_done prompt=%d completion=%d total=%d took_ms=%.0f",
-                        usage.prompt_tokens, usage.completion_tokens,
-                        usage.total_tokens, elapsed,
+                        usage.prompt_tokens,
+                        usage.completion_tokens,
+                        usage.total_tokens,
+                        elapsed,
                     )
                     yield StreamChunk(usage=usage)
                 if not event.choices:
@@ -201,13 +202,20 @@ class OpenAIBackend:
                 if delta.content:
                     yield StreamChunk(content=delta.content)
                 if delta.tool_calls:
-                    yield StreamChunk(tool_deltas=[
-                        {"index": tc.index, "id": tc.id,
-                         "function": {
-                             "name": tc.function.name if tc.function else None,
-                             "arguments": tc.function.arguments if tc.function else "",
-                         }}
-                        for tc in delta.tool_calls
-                    ])
+                    yield StreamChunk(
+                        tool_deltas=[
+                            {
+                                "index": tc.index,
+                                "id": tc.id,
+                                "function": {
+                                    "name": tc.function.name if tc.function else None,
+                                    "arguments": tc.function.arguments
+                                    if tc.function
+                                    else "",
+                                },
+                            }
+                            for tc in delta.tool_calls
+                        ]
+                    )
         finally:
             await _safe_close_stream(stream)

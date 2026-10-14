@@ -102,7 +102,8 @@ def load_sharefile_config(path: Path | None = None) -> SharefileConfig:
         # not take the plugin down with it.
         logger.warning(
             "sharefile_config_fallback reason=parse_error provider=%s err=%s",
-            DEFAULT_PROVIDER, e,
+            DEFAULT_PROVIDER,
+            e,
         )
         return SharefileConfig()
 
@@ -118,21 +119,28 @@ def load_sharefile_config(path: Path | None = None) -> SharefileConfig:
             except KeyError as e:
                 # An unresolved ${VAR} in one provider must not sink the rest.
                 logger.warning(
-                    "sharefile_provider_skip provider=%s unresolved_env=%s", name, e,
+                    "sharefile_provider_skip provider=%s unresolved_env=%s",
+                    name,
+                    e,
                 )
                 continue
 
     active = raw.get("active_provider")
-    active = str(active) if isinstance(active, str) and active.strip() else DEFAULT_PROVIDER
+    active = (
+        str(active) if isinstance(active, str) and active.strip() else DEFAULT_PROVIDER
+    )
     if active not in KNOWN_PROVIDERS:
         logger.warning(
             "sharefile_active_provider_unknown provider=%s fallback=%s known=%s",
-            active, DEFAULT_PROVIDER, sorted(KNOWN_PROVIDERS),
+            active,
+            DEFAULT_PROVIDER,
+            sorted(KNOWN_PROVIDERS),
         )
         active = DEFAULT_PROVIDER
 
     logger.info(
         "sharefile_config_loaded active_provider=%s configured=%s",
-        active, sorted(providers),
+        active,
+        sorted(providers),
     )
     return SharefileConfig(active_provider=active, providers=providers)

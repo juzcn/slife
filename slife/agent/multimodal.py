@@ -69,7 +69,9 @@ def include_image_url(source: str | Path) -> dict[str, Any] | None:
     if size > _IMAGE_MAX_BYTES:
         logger.warning(
             "attach_image_too_large path=%s bytes=%d cap=%d",
-            p, size, _IMAGE_MAX_BYTES,
+            p,
+            size,
+            _IMAGE_MAX_BYTES,
         )
         return None
 

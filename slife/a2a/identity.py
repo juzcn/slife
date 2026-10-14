@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NewType
 
@@ -47,41 +47,49 @@ class Channel:
     # ── Factories ────────────────────────────────────────────────────
 
     @classmethod
-    def human(cls) -> "Channel":
+    def human(cls) -> Channel:
         """Keyboard operator in the TUI."""
         return cls("human")
 
     @classmethod
-    def wechat(cls) -> "Channel":
+    def wechat(cls) -> Channel:
         """WeChat peer terminal."""
         return cls("wechat")
 
     @classmethod
     def subagent(
-        cls, name: str, task_id: str | None = None, scheduled_task: str = "",
-    ) -> "Channel":
+        cls,
+        name: str,
+        task_id: str | None = None,
+        scheduled_task: str = "",
+    ) -> Channel:
         """Local worker completion.
 
         *name* is the worker.  *scheduled_task* is the scheduled task the
         worker ran, when it ran one — the completion is then the task's, since
         which worker the pool handed it to is not the task's identity.
         """
-        return cls("subagent", {
-            "name": name, "task_id": task_id, "scheduled_task": scheduled_task,
-        })
+        return cls(
+            "subagent",
+            {
+                "name": name,
+                "task_id": task_id,
+                "scheduled_task": scheduled_task,
+            },
+        )
 
     @classmethod
-    def heartbeat(cls) -> "Channel":
+    def heartbeat(cls) -> Channel:
         """Internal autonomous heartbeat."""
         return cls("heartbeat")
 
     @classmethod
-    def a2a(cls, peer: str) -> "Channel":
+    def a2a(cls, peer: str) -> Channel:
         """A2A mesh peer; ``peer`` is the remote agent's name."""
         return cls("a2a", {"agent_name": peer})
 
     @classmethod
-    def system(cls) -> "Channel":
+    def system(cls) -> Channel:
         """slife itself (schedule trigger, etc.) — filtered from the TUI."""
         return cls("system")
 
@@ -133,7 +141,7 @@ class Channel:
         return self.kind, dict(self.data)
 
     @classmethod
-    def from_db(cls, identity: str, data: "str | dict | None" = None) -> "Channel":
+    def from_db(cls, identity: str, data: str | dict | None = None) -> Channel:
         """Rebuild a channel from a persisted row.
 
         ``identity`` is the ``turn.channel`` value: a known kind string,
@@ -158,10 +166,13 @@ class Channel:
             # An A2A peer whose name collides with a reserved kind string
             # ("human", "wechat", …) — restore it as a2a, not as that kind
             # (D8).  Strip the marker; keep any real payload fields.
-            return cls("a2a", {
-                "agent_name": identity,
-                **{k: v for k, v in parsed.items() if k != "a2a"},
-            })
+            return cls(
+                "a2a",
+                {
+                    "agent_name": identity,
+                    **{k: v for k, v in parsed.items() if k != "a2a"},
+                },
+            )
         if identity in ("human", "wechat", "subagent", "heartbeat", "a2a", "system"):
             return cls(identity, parsed)
         return cls("a2a", {"agent_name": identity, **parsed})
@@ -184,18 +195,18 @@ class AgentMessage:
     metadata: dict = field(default_factory=dict)
     # Text reply callback, optionally taking ``cancelled: bool = False``
     # so channels can signal cancellation to the sender.
-    on_reply: "Callable[..., Awaitable[None]] | None" = None
+    on_reply: Callable[..., Awaitable[None]] | None = None
     """Async callback invoked with the agent's response text.
     Set by input channels (WeChat, Telegram, etc.) to route replies
     back to the user.  Called after the agent loop completes."""
 
-    handler: "AgentEventHandler | None" = None
+    handler: AgentEventHandler | None = None
     """TUI handler for streaming agent output to the chat view.
     Set by the TUI input path so each message carries its own handler
     rather than relying on a global mutable registry.  Remote A2A
     messages leave this as None and fall back to the default factory."""
 
-    channel: "Channel" = field(default_factory=Channel.human)
+    channel: Channel = field(default_factory=Channel.human)
     """Typed source identity — the durable sender (human / wechat / subagent
     / heartbeat / a2a / system) that drives display and persistence.  Always
     set by producers; defaults to human for convenience."""

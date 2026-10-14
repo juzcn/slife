@@ -16,12 +16,17 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from typing import ClassVar
 
 import httpx2
 
-from slife.plugins.media.adapters.base import ArtifactSaver, MediaAdapterError, _HttpClientMixin
-from slife.plugins.media.config import ProviderConfig
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.plugins.media.adapters.base import (
+    ArtifactSaver,
+    MediaAdapterError,
+    _HttpClientMixin,
+)
+from slife.plugins.media.config import ProviderConfig
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +50,11 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
         self._init_http_client()
         self._saver = ArtifactSaver()
 
-
     # Canonical MIME types for audio inputs.  ``mimetypes.guess_type()`` is
     # platform-dependent (Windows maps ``.wav`` → ``audio/x-wav``, Linux →
     # ``audio/wav``) — pin the ones the DashScope multimodal endpoint accepts
     # so the Data URI is identical on every machine.
-    _AUDIO_MIME_BY_SUFFIX: dict[str, str] = {
+    _AUDIO_MIME_BY_SUFFIX: ClassVar[dict[str, str]] = {
         ".wav": "audio/wav",
         ".mp3": "audio/mpeg",
         ".ogg": "audio/ogg",
@@ -61,10 +65,7 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
 
     @classmethod
     def _audio_mime(cls, file_path: Path) -> str:
-        return (
-            cls._AUDIO_MIME_BY_SUFFIX.get(file_path.suffix.lower())
-            or "audio/wav"
-        )
+        return cls._AUDIO_MIME_BY_SUFFIX.get(file_path.suffix.lower()) or "audio/wav"
 
     @staticmethod
     def _to_data_uri(file_path: Path) -> str:
@@ -100,13 +101,20 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
         )
 
     async def _request(
-        self, method: str, url: str, *,
-        extra_headers: dict | None = None, json_body: dict | None = None,
+        self,
+        method: str,
+        url: str,
+        *,
+        extra_headers: dict | None = None,
+        json_body: dict | None = None,
     ) -> dict:
         client = await self._ensure_client()
         try:
             resp = await client.request(
-                method, url, headers=extra_headers, json=json_body,
+                method,
+                url,
+                headers=extra_headers,
+                json=json_body,
             )
         except httpx2.HTTPError as e:
             raise MediaAdapterError(
@@ -133,8 +141,12 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
     # ── Envelope helpers ─────────────────────────────────────────────
 
     async def _sync_generate(
-        self, model: str, content: list[dict], parameters: dict,
-        *, extra_headers: dict | None = None,
+        self,
+        model: str,
+        content: list[dict],
+        parameters: dict,
+        *,
+        extra_headers: dict | None = None,
     ) -> dict:
         body = {
             "model": model,
@@ -142,8 +154,10 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
             "parameters": parameters,
         }
         data = await self._request(
-            "POST", f"{self._config.base_url}{_SYNC_PATH}",
-            extra_headers=extra_headers, json_body=body,
+            "POST",
+            f"{self._config.base_url}{_SYNC_PATH}",
+            extra_headers=extra_headers,
+            json_body=body,
         )
         output = data.get("output")
         if not isinstance(output, dict):
@@ -169,7 +183,10 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
         return [item for item in content if isinstance(item, dict)]
 
     async def _async_submit(
-        self, model: str, input_data: dict, parameters: dict,
+        self,
+        model: str,
+        input_data: dict,
+        parameters: dict,
     ) -> str:
         body = {
             "model": model,
@@ -177,8 +194,10 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
             "parameters": parameters,
         }
         data = await self._request(
-            "POST", f"{self._config.base_url}{_VIDEO_PATH}",
-            extra_headers={"X-DashScope-Async": "enable"}, json_body=body,
+            "POST",
+            f"{self._config.base_url}{_VIDEO_PATH}",
+            extra_headers={"X-DashScope-Async": "enable"},
+            json_body=body,
         )
         task_id = (data.get("output") or {}).get("task_id")
         if not task_id:
@@ -217,8 +236,13 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
     # ── Capabilities ─────────────────────────────────────────────────
 
     async def generate_image(
-        self, *, model: str, prompt: str, size: str = "",
-        image: str | Path | None = None, outputs_dir: str = "",
+        self,
+        *,
+        model: str,
+        prompt: str,
+        size: str = "",
+        image: str | Path | None = None,
+        outputs_dir: str = "",
         extra_params: dict | None = None,
     ) -> str:
         body_content: list[dict] = [{"text": prompt}]
@@ -233,16 +257,21 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
             url = item.get("image")
             if url:
                 path = await self._saver.save_url(
-                    str(url), "image", outputs_dir=outputs_dir,
+                    str(url),
+                    "image",
+                    outputs_dir=outputs_dir,
                 )
                 return str(path)
-        raise MediaAdapterError(
-            f"No image in Bailian response: {str(output)[:300]}"
-        )
+        raise MediaAdapterError(f"No image in Bailian response: {str(output)[:300]}")
 
     async def generate_video(
-        self, *, model: str, prompt: str, image: str | Path | None = None,
-        outputs_dir: str = "", extra_params: dict | None = None,
+        self,
+        *,
+        model: str,
+        prompt: str,
+        image: str | Path | None = None,
+        outputs_dir: str = "",
+        extra_params: dict | None = None,
         deadline_s: float | None = None,
     ) -> str:
         params = dict(extra_params or {})
@@ -253,8 +282,11 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
             input_data[image_field] = ref
         task_id = await self._async_submit(model, input_data, params)
         # Call-time registry lookup (patchable): None = registry default.
-        limit = deadline_s if deadline_s is not None \
+        limit = (
+            deadline_s
+            if deadline_s is not None
             else _timeouts.timeouts.transport.media_deadline
+        )
         output = await self._async_poll(task_id, limit)
         url = output.get("video_url")
         if not url:
@@ -266,13 +298,21 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
                 f"No video_url in completed task: {str(output)[:300]}"
             )
         path = await self._saver.save_url(
-            str(url), "video", "mp4", outputs_dir=outputs_dir,
+            str(url),
+            "video",
+            "mp4",
+            outputs_dir=outputs_dir,
         )
         return str(path)
 
     async def text_to_speech(
-        self, *, model: str, text: str, voice: str = "",
-        outputs_dir: str = "", extra_params: dict | None = None,
+        self,
+        *,
+        model: str,
+        text: str,
+        voice: str = "",
+        outputs_dir: str = "",
+        extra_params: dict | None = None,
     ) -> str:
         # qwen-tts uses a flat input {text, voice, language_type, ...} —
         # NOT the chat messages envelope.  Non-streaming responses carry
@@ -282,7 +322,8 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
             input_data["voice"] = voice
         input_data.update(extra_params or {})
         data = await self._request(
-            "POST", f"{self._config.base_url}{_TTS_PATH}",
+            "POST",
+            f"{self._config.base_url}{_TTS_PATH}",
             json_body={"model": model, "input": input_data},
         )
         output = data.get("output") or {}
@@ -290,7 +331,9 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
         url = audio.get("url")
         if url:
             path = await self._saver.save_url(
-                str(url), "audio", outputs_dir=outputs_dir,
+                str(url),
+                "audio",
+                outputs_dir=outputs_dir,
             )
             return str(path)
         b64 = audio.get("data")
@@ -298,7 +341,10 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
             import base64
 
             path = self._saver.save_bytes(
-                base64.b64decode(b64), "audio", "wav", outputs_dir,
+                base64.b64decode(b64),
+                "audio",
+                "wav",
+                outputs_dir,
             )
             return str(path)
         raise MediaAdapterError(
@@ -306,7 +352,10 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
         )
 
     async def transcribe_audio(
-        self, *, model: str, audio_path: Path,
+        self,
+        *,
+        model: str,
+        audio_path: Path,
         extra_params: dict | None = None,
     ) -> str:
         # qwen-audio-3.0-asr-flash / fun-asr-flash use the multimodal
@@ -333,7 +382,8 @@ class DashScopeAIGCAdapter(_HttpClientMixin):
         if text:
             return str(text)
         texts = [
-            str(item["text"]) for item in self._message_content(output)
+            str(item["text"])
+            for item in self._message_content(output)
             if item.get("text")
         ]
         if not texts:

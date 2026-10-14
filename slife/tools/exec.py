@@ -13,11 +13,12 @@ import logging
 import math
 import os
 import sys
+from typing import ClassVar
 
-from slife.platform import _resolve_skill_script, kill_process_tree
-from slife.logfmt import sanitize_secrets
-from slife.tools.base import Tool
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.logfmt import sanitize_secrets
+from slife.platform import _resolve_skill_script, kill_process_tree
+from slife.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,11 @@ def _decode_stream(data: bytes, codec: str) -> str:
 
 
 def _merge_text(
-    head: bytes, tail: bytes, dropped: int, *, codec: str | None = None,
+    head: bytes,
+    tail: bytes,
+    dropped: int,
+    *,
+    codec: str | None = None,
 ) -> str:
     """Decode a bounded head+tail pair into one output string, marking the
     dropped middle explicitly inside the tool result (the tool-result policy
@@ -118,7 +123,7 @@ async def _read_stdout_stderr(process):
 class _CapturedRun:
     """Result of :func:`_run_captured` — merged bounded streams + exit code."""
 
-    __slots__ = ("stdout", "stderr", "returncode")
+    __slots__ = ("returncode", "stderr", "stdout")
 
     def __init__(self, stdout: str, stderr: str, returncode: int | None) -> None:
         self.stdout = stdout
@@ -182,7 +187,7 @@ async def _run_captured(
         if timeout is not None:
             read = asyncio.wait_for(read, timeout=timeout)
         out_h, out_t, out_d, err_h, err_t, err_d = await read
-    except (asyncio.TimeoutError, asyncio.CancelledError):
+    except (TimeoutError, asyncio.CancelledError):
         # Kill the whole tree — a bare process.kill() only kills the shell
         # and orphans children that keep writing to the console.
         await kill_process_tree(proc)
@@ -210,6 +215,7 @@ def _shell_launch(command: str) -> list[str] | str:
     """
     if os.name == "nt":
         from slife.platform import detect_current_shell
+
         if detect_current_shell() == "powershell":
             # -EncodedCommand (UTF-16LE base64) sidesteps all quoting issues
             # with arbitrary command strings.  Prepend $ProgressPreference so
@@ -229,8 +235,11 @@ def _shell_launch(command: str) -> list[str] | str:
             )
             encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
             return [
-                "powershell", "-NoProfile", "-NonInteractive",
-                "-EncodedCommand", encoded,
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+                encoded,
             ]
         # cmd: the command goes over VERBATIM, and that is only expressible as a
         # command line.  ``create_subprocess_exec`` must serialise an argv into
@@ -269,6 +278,7 @@ def _shell_output_codec() -> str:
     """
     if os.name == "nt":
         from slife.platform import detect_current_shell
+
         if detect_current_shell() == "powershell":
             return "utf-8"  # pinned by _shell_launch's -EncodedCommand preamble
         return locale.getpreferredencoding(False) or "utf-8"
@@ -301,11 +311,14 @@ class ShellTool(Tool):
     name = "execute_shell"
     category = "Execution"
     description = "Run a shell command. Returns stdout + stderr. Default timeout from the registry (work.shell)."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "command": {"type": "string", "description": "Shell command to execute."},
-            "timeout": {"type": "integer", "description": "Timeout in seconds; omit for the default (registry work.shell). A value ≤ 0 also falls back to the default."},
+            "timeout": {
+                "type": "integer",
+                "description": "Timeout in seconds; omit for the default (registry work.shell). A value ≤ 0 also falls back to the default.",
+            },
         },
         "required": ["command"],
     }
@@ -351,7 +364,9 @@ class ShellTool(Tool):
         # a direct caller who bypasses the loop gets the same semantics.
         if timeout <= 0:
             timeout = self.timeout
-        logger.debug("shell_exec cmd=%.200s timeout=%d", sanitize_secrets(command), timeout)
+        logger.debug(
+            "shell_exec cmd=%.200s timeout=%d", sanitize_secrets(command), timeout
+        )
 
         # Run the detected shell (not COMSPEC=cmd.exe on Windows) so the
         # command executes in the same shell the system prompt reports.
@@ -362,8 +377,12 @@ class ShellTool(Tool):
             # codec decodes per launcher branch — OEM for cmd.exe, UTF-8 for
             # the PowerShell branch, which pins its child's encoding.
             run = await _run_captured(launch, timeout=timeout)
-        except asyncio.TimeoutError:
-            logger.warning("shell_timeout timeout=%ds cmd=%.200s", timeout, sanitize_secrets(command))
+        except TimeoutError:
+            logger.warning(
+                "shell_timeout timeout=%ds cmd=%.200s",
+                timeout,
+                sanitize_secrets(command),
+            )
             return f"Error: Command timed out after {timeout}s"
 
         result = run.stdout
@@ -376,14 +395,19 @@ class ShellTool(Tool):
             # the difference (F7); the plain-output shape silently hid it.
             result += f"\n[exit {run.returncode}]"
 
-        logger.debug("shell_done exit=%d out_len=%d err_len=%d",
-                     run.returncode or 0, len(run.stdout), len(run.stderr))
+        logger.debug(
+            "shell_done exit=%d out_len=%d err_len=%d",
+            run.returncode or 0,
+            len(run.stdout),
+            len(run.stderr),
+        )
         return result
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # run_python_script
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def _parse_input(input_str: str) -> tuple[str, str]:
     """Split input into (script_or_code, json_args).
@@ -394,9 +418,8 @@ def _parse_input(input_str: str) -> tuple[str, str]:
     delimiter and must not split the path.
     """
     for i, ch in enumerate(input_str):
-        if ch in ("{", "["):
-            if i == 0 or input_str[i - 1].isspace():
-                return input_str[:i].strip(), input_str[i:].strip()
+        if ch in ("{", "[") and (i == 0 or input_str[i - 1].isspace()):
+            return input_str[:i].strip(), input_str[i:].strip()
     return input_str.strip(), ""
 
 
@@ -405,10 +428,8 @@ class RunPythonScriptTool(Tool):
 
     name = "run_python_script"
     category = "Execution"
-    description = (
-        "Run a Python script (path + JSON args) or inline code ('-c <code>')."
-    )
-    parameters = {
+    description = "Run a Python script (path + JSON args) or inline code ('-c <code>')."
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "script": {
@@ -453,13 +474,24 @@ class RunPythonScriptTool(Tool):
         if run.returncode != 0:
             if out:
                 return out
-            return f"Error (exit {run.returncode}): {err}" if err else f"Error (exit {run.returncode})"
-        return out if out else f"Script completed with no output. stderr: {err}" if err else "Script completed with no output."
+            return (
+                f"Error (exit {run.returncode}): {err}"
+                if err
+                else f"Error (exit {run.returncode})"
+            )
+        return (
+            out
+            if out
+            else f"Script completed with no output. stderr: {err}"
+            if err
+            else "Script completed with no output."
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # install_python_package
 # ═══════════════════════════════════════════════════════════════════════
+
 
 class InstallPythonPackageTool(Tool):
     """Install Python packages into slife's environment via uv pip install."""
@@ -467,7 +499,7 @@ class InstallPythonPackageTool(Tool):
     name = "install_python_package"
     category = "Execution"
     description = "Install PyPI packages into slife's environment via uv pip install."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "packages": {
@@ -493,7 +525,9 @@ class InstallPythonPackageTool(Tool):
         # begins with `-` (e.g. "--index-url https://attacker") would otherwise
         # be consumed as a uv flag and redirect the install to a hostile index.
         t = kwargs.get("timeout")
-        timeout = t if isinstance(t, int) and not isinstance(t, bool) and t > 0 else None
+        timeout = (
+            t if isinstance(t, int) and not isinstance(t, bool) and t > 0 else None
+        )
         timeout = timeout or _timeouts.timeouts.work.pip_install
         try:
             run = await _run_captured(
@@ -501,7 +535,7 @@ class InstallPythonPackageTool(Tool):
                 timeout=timeout,
                 codec="utf-8",
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("pip_install_timeout packages=%s", packages)
             return f"Error: pip install timed out after {timeout:g}s"
         out = run.stdout.strip()
@@ -512,4 +546,8 @@ class InstallPythonPackageTool(Tool):
             return out or f"✓ Installed: {', '.join(packages)}"
         else:
             logger.warning("pip_install_failed packages=%s err=%s", packages, err)
-            return f"Error installing {', '.join(packages)}:\n{err}" if err else f"Error installing {', '.join(packages)} (exit {run.returncode})"
+            return (
+                f"Error installing {', '.join(packages)}:\n{err}"
+                if err
+                else f"Error installing {', '.join(packages)} (exit {run.returncode})"
+            )

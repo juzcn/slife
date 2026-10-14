@@ -1,8 +1,5 @@
 """Tests for Slife.logfmt — structured logging, contextvars, timing, stderr."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
 import logging
 from datetime import datetime
@@ -11,21 +8,23 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from slife.logfmt import (
-    init_session_id,
-    set_session_id,
-    get_session_id,
-    request_scope,
     SessionFormatter,
+    drain_stderr,
     elapsed,
+    error_json,
+    get_session_id,
+    init_session_id,
+    ok_json,
     read_line_bounded,
     read_stderr_lines,
-    drain_stderr,
-    sanitize_secrets,
-    silence_noisy_loggers,
-    ok_json,
-    error_json,
+    request_scope,
     resolve_log_dir,
+    sanitize_secrets,
+    set_session_id,
+    silence_noisy_loggers,
 )
+
+pytestmark = pytest.mark.unit
 
 
 async def _collect_two(reader):
@@ -89,7 +88,13 @@ class TestRequestId:
     def _rid() -> str:
         fmt = SessionFormatter("%(asctime)s [r=%(rid)s] %(message)s")
         record = logging.LogRecord(
-            "test", logging.INFO, "path", 42, "msg", (), None,
+            "test",
+            logging.INFO,
+            "path",
+            42,
+            "msg",
+            (),
+            None,
         )
         return fmt.format(record).split("[r=")[1].split("]")[0]
 
@@ -124,7 +129,13 @@ class TestSessionFormatter:
         with request_scope():
             fmt = SessionFormatter("%(asctime)s [s=%(sid)s] [r=%(rid)s] %(message)s")
             record = logging.LogRecord(
-                "test", logging.INFO, "path", 42, "hello world", (), None,
+                "test",
+                logging.INFO,
+                "path",
+                42,
+                "hello world",
+                (),
+                None,
             )
             result = fmt.format(record)
             assert "hello world" in result
@@ -137,7 +148,13 @@ class TestSessionFormatter:
         # Can't easily reset request_id contextvar without proper token access
         fmt = SessionFormatter("%(asctime)s [s=%(sid)s] [r=%(rid)s] %(message)s")
         record = logging.LogRecord(
-            "test", logging.INFO, "path", 42, "test message", (), None,
+            "test",
+            logging.INFO,
+            "path",
+            42,
+            "test message",
+            (),
+            None,
         )
         result = fmt.format(record)
         assert "[s=--------]" in result
@@ -146,7 +163,13 @@ class TestSessionFormatter:
     def test_format_time_with_milliseconds(self):
         fmt = SessionFormatter()
         record = logging.LogRecord(
-            "test", logging.INFO, "path", 42, "test", (), None,
+            "test",
+            logging.INFO,
+            "path",
+            42,
+            "test",
+            (),
+            None,
         )
         record.created = 1234567890.123
         record.msecs = 123
@@ -156,7 +179,13 @@ class TestSessionFormatter:
     def test_format_time_with_custom_datefmt(self):
         fmt = SessionFormatter()
         record = logging.LogRecord(
-            "test", logging.INFO, "path", 42, "test", (), None,
+            "test",
+            logging.INFO,
+            "path",
+            42,
+            "test",
+            (),
+            None,
         )
         record.created = 1234567890.456
         record.msecs = 456
@@ -169,7 +198,13 @@ class TestSessionFormatter:
     def test_format_time_no_datefmt(self):
         fmt = SessionFormatter()
         record = logging.LogRecord(
-            "test", logging.INFO, "path", 42, "test", (), None,
+            "test",
+            logging.INFO,
+            "path",
+            42,
+            "test",
+            (),
+            None,
         )
         record.created = 1234567890.789
         record.msecs = 789
@@ -263,35 +298,42 @@ class TestReadStderrLines:
 
     @pytest.mark.asyncio
     async def test_reads_lines_until_eof(self):
-        proc = self._make_stderr_mock([
-            b"error: something went wrong\n",
-            b"warning: check config\n",
-        ])
+        proc = self._make_stderr_mock(
+            [
+                b"error: something went wrong\n",
+                b"warning: check config\n",
+            ]
+        )
         lines = [line async for line in read_stderr_lines(proc)]
         assert lines == ["error: something went wrong", "warning: check config"]
 
     @pytest.mark.asyncio
     async def test_empty_lines_skipped(self):
-        proc = self._make_stderr_mock([
-            b"real line\n",
-            b"\n",
-            b"  \n",
-            b"another line\n",
-        ])
+        proc = self._make_stderr_mock(
+            [
+                b"real line\n",
+                b"\n",
+                b"  \n",
+                b"another line\n",
+            ]
+        )
         lines = [line async for line in read_stderr_lines(proc)]
         assert lines == ["real line", "another line"]
 
     @pytest.mark.asyncio
     async def test_running_check_stops_early(self):
         running = [True, True, False]
+
         def check():
             return running.pop(0) if running else False
 
-        proc = self._make_stderr_mock([
-            b"line1\n",
-            b"line2\n",
-            b"line3\n",
-        ])
+        proc = self._make_stderr_mock(
+            [
+                b"line1\n",
+                b"line2\n",
+                b"line3\n",
+            ]
+        )
         lines = [line async for line in read_stderr_lines(proc, running_check=check)]
         assert len(lines) == 2
 
@@ -309,10 +351,12 @@ class TestReadStderrLines:
 
     @pytest.mark.asyncio
     async def test_decode_error_replacement(self):
-        proc = self._make_stderr_mock([
-            b"valid line\n",
-            b"\xff\xfeinvalid utf8\n",
-        ])
+        proc = self._make_stderr_mock(
+            [
+                b"valid line\n",
+                b"\xff\xfeinvalid utf8\n",
+            ]
+        )
         lines = [line async for line in read_stderr_lines(proc)]
         assert lines[0] == "valid line"
         assert "invalid utf8" in lines[1]  # errors='replace' handles it
@@ -324,7 +368,8 @@ class TestReadStderrLines:
 
     @pytest.mark.asyncio
     async def test_an_overlong_line_whose_newline_was_buffered_drops_only_itself(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         """The NEXT line must survive an over-long one.
 
@@ -345,7 +390,9 @@ class TestReadStderrLines:
         assert lines == ['{"id":"legit"}']
 
     @pytest.mark.asyncio
-    async def test_an_overlong_line_still_in_flight_is_fully_consumed(self, monkeypatch):
+    async def test_an_overlong_line_still_in_flight_is_fully_consumed(
+        self, monkeypatch
+    ):
         """The tail is still arriving — consume it, and stop at its newline.
 
         The over-long line's newline had NOT been buffered when the reader
@@ -360,7 +407,7 @@ class TestReadStderrLines:
         pending = asyncio.ensure_future(
             _collect_two(reader),
         )
-        await asyncio.sleep(0.01)          # let it hit the limit and clear
+        await asyncio.sleep(0.01)  # let it hit the limit and clear
         reader.feed_data(b"B" * 50 + b"\n" + b"next line\n")
         reader.feed_eof()
 
@@ -393,7 +440,7 @@ class TestReadStderrLines:
         reader.feed_data(b"after\n")
         reader.feed_eof()
         lines = [line async for line in read_stderr_lines(proc)]
-        assert reader._limit >= 300 * 1024  # noqa: SLF001
+        assert reader._limit >= 300 * 1024
         assert len(lines) == 2
         assert lines[0].startswith("Y" * 1024)
         assert "truncated" in lines[0]
@@ -409,14 +456,17 @@ class TestDrainStderr:
     @pytest.mark.asyncio
     async def test_drain_logs_each_line(self, caplog):
         """drain_stderr logs every non-empty line with the given prefix."""
+
         async def _mock_lines(process, running_check):
             yield "error: something went wrong"
             yield "info: recovery complete"
 
         logger = logging.getLogger("test_drain")
-        with patch("slife.logfmt.read_stderr_lines", _mock_lines):
-            with caplog.at_level(logging.DEBUG, logger="test_drain"):
-                await drain_stderr(None, "myserver", logger)
+        with (
+            patch("slife.logfmt.read_stderr_lines", _mock_lines),
+            caplog.at_level(logging.DEBUG, logger="test_drain"),
+        ):
+            await drain_stderr(None, "myserver", logger)
 
         assert len(caplog.records) == 2
         assert "[myserver] error: something went wrong" in caplog.text
@@ -425,15 +475,18 @@ class TestDrainStderr:
     @pytest.mark.asyncio
     async def test_drain_empty_lines_yield_nothing(self, caplog):
         """When read_stderr_lines yields nothing, no logs are emitted."""
+
         async def _mock_lines(process, running_check):
             # No yield — empty iterator
             if False:
                 yield
 
         logger = logging.getLogger("test_drain_empty")
-        with patch("slife.logfmt.read_stderr_lines", _mock_lines):
-            with caplog.at_level(logging.DEBUG, logger="test_drain_empty"):
-                await drain_stderr(None, "empty", logger)
+        with (
+            patch("slife.logfmt.read_stderr_lines", _mock_lines),
+            caplog.at_level(logging.DEBUG, logger="test_drain_empty"),
+        ):
+            await drain_stderr(None, "empty", logger)
 
         assert len(caplog.records) == 0
 
@@ -452,7 +505,9 @@ class TestSanitizeSecrets:
 
     def test_deepseek_style_sk_key_redacted(self):
         """DeepSeek style sk-* hex keys are redacted."""
-        result = sanitize_secrets("DEEPSEEK_API_KEY=sk-abcdef1234567890abcdef1234567890ab")
+        result = sanitize_secrets(
+            "DEEPSEEK_API_KEY=sk-abcdef1234567890abcdef1234567890ab"
+        )
         assert "sk-abcdef" not in result
         assert "<MASKED>" in result
 
@@ -471,7 +526,7 @@ class TestSanitizeSecrets:
     def test_bearer_auth_header_redacted(self):
         """Bearer Authorization headers are redacted."""
         result = sanitize_secrets(
-            'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0'
+            "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0"
         )
         assert "eyJhbGci" not in result
         assert "<MASKED>" in result
@@ -569,13 +624,11 @@ class TestSanitizeSecrets:
         quotes/braces of JSON and corrupt the line."""
         result = sanitize_secrets('{"api_key": "sk-abcdefghijklmnopqrstuvwx"}')
         assert "<MASKED>" in result
-        assert '}' in result  # closing brace survives
+        assert "}" in result  # closing brace survives
 
     def test_hex_token_32_chars_redacted(self):
         """Generic 32+ char hex-ish tokens are redacted."""
-        result = sanitize_secrets(
-            "Raw token: abcdef1234567890abcdef1234567890extra"
-        )
+        result = sanitize_secrets("Raw token: abcdef1234567890abcdef1234567890extra")
         assert "abcdef1234567890abcdef1234567890extra" not in result
         assert "<MASKED>" in result
 
@@ -656,9 +709,13 @@ class TestSilenceNoisyLoggers:
         with patch("logging.getLogger") as mock_get_logger:
             silence_noisy_loggers()
             # Check that setLevel(WARNING) was called for each default logger
-            assert mock_get_logger.call_count >= 11  # default _NOISY_LOGGER_NAMES length
+            assert (
+                mock_get_logger.call_count >= 11
+            )  # default _NOISY_LOGGER_NAMES length
             for call_args in mock_get_logger.call_args_list:
-                mock_get_logger.return_value.setLevel.assert_called_with(logging.WARNING)
+                mock_get_logger.return_value.setLevel.assert_called_with(
+                    logging.WARNING
+                )
 
     def test_fastmcp_loggers_silenced(self):
         """FastMCP is silenced like every other noisy library.
@@ -704,6 +761,7 @@ class TestOkJson:
         """Returns status: ok with no extras."""
         result = ok_json()
         import json
+
         data = json.loads(result)
         assert data == {"status": "ok"}
 
@@ -711,6 +769,7 @@ class TestOkJson:
         """Extra keys are included in the output."""
         result = ok_json(service="test", count=42)
         import json
+
         data = json.loads(result)
         assert data["status"] == "ok"
         assert data["service"] == "test"
@@ -720,6 +779,7 @@ class TestOkJson:
         """Keys with None values are omitted."""
         result = ok_json(name="present", missing=None, count=0, empty_str="")
         import json
+
         data = json.loads(result)
         assert data["name"] == "present"
         assert data["count"] == 0
@@ -730,6 +790,7 @@ class TestOkJson:
         """When all extras are None, only status: ok remains."""
         result = ok_json(a=None, b=None)
         import json
+
         data = json.loads(result)
         assert data == {"status": "ok"}
 
@@ -744,6 +805,7 @@ class TestErrorJson:
         """Returns status: error with required message."""
         result = error_json("something went wrong")
         import json
+
         data = json.loads(result)
         assert data["status"] == "error"
         assert data["error"] == "something went wrong"
@@ -752,6 +814,7 @@ class TestErrorJson:
         """Extra keys are included alongside the error message."""
         result = error_json("not found", code=404, detail="missing resource")
         import json
+
         data = json.loads(result)
         assert data["status"] == "error"
         assert data["error"] == "not found"
@@ -762,6 +825,7 @@ class TestErrorJson:
         """Extra keys with None values are omitted."""
         result = error_json("failed", reason="timeout", suggestion=None)
         import json
+
         data = json.loads(result)
         assert data["reason"] == "timeout"
         assert "suggestion" not in data
@@ -770,6 +834,7 @@ class TestErrorJson:
         """When all extras are None, only status and error remain."""
         result = error_json("boom", a=None, b=None)
         import json
+
         data = json.loads(result)
         assert data == {"status": "error", "error": "boom"}
 
@@ -777,6 +842,7 @@ class TestErrorJson:
         """Empty error message is allowed."""
         result = error_json("")
         import json
+
         data = json.loads(result)
         assert data["error"] == ""
 
@@ -792,5 +858,3 @@ class TestResolveLogDir:
         with patch("slife.paths.get_logs_dir", return_value=tmp_path):
             result = resolve_log_dir()
             assert result == tmp_path
-
-

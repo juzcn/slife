@@ -6,13 +6,15 @@ erased all 94 comment lines of ``tools.json5`` (the ``enabled``/``autoload``
 header and every section's notes) after an ``mcp_set``.
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
 from pathlib import Path
+
+import pytest
 
 from slife.tools._config_io import read_config, write_config
 from slife.tools._yaml_doc import render, render_document
 from tests.conftest import load_config_text
+
+pytestmark = pytest.mark.unit
 
 DOC = """\
 # ═══════════════════════════════════════════════════════════════

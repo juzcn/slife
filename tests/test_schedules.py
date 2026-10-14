@@ -7,8 +7,8 @@ import pytest
 
 from slife.schedules import ScheduleError, is_valid, next_run, previous_run
 
-
 # ── Validation ──────────────────────────────────────────────────────
+
 
 def test_valid_expressions():
     assert is_valid("0 9 * * *")
@@ -19,13 +19,13 @@ def test_valid_expressions():
 
 
 def test_invalid_expressions():
-    assert not is_valid("60 * * * *")    # minute out of range
-    assert not is_valid("0 24 * * *")    # hour out of range
-    assert not is_valid("0 9 * 13 *")    # month out of range
-    assert not is_valid("0 9 0 * *")     # dom out of range
-    assert not is_valid("0 x * * *")     # non-numeric
-    assert not is_valid("*/0 * * * *")   # step 0
-    assert not is_valid("0 9 * *")       # wrong field count
+    assert not is_valid("60 * * * *")  # minute out of range
+    assert not is_valid("0 24 * * *")  # hour out of range
+    assert not is_valid("0 9 * 13 *")  # month out of range
+    assert not is_valid("0 9 0 * *")  # dom out of range
+    assert not is_valid("0 x * * *")  # non-numeric
+    assert not is_valid("*/0 * * * *")  # step 0
+    assert not is_valid("0 9 * *")  # wrong field count
 
 
 def test_dow_7_sunday_accepted():
@@ -61,59 +61,83 @@ def test_bad_timezone_raises_schedule_error():
 
 # ── Next-run computation ────────────────────────────────────────────
 
+
 def test_every_minute():
-    assert next_run("* * * * *", datetime(2026, 1, 1, 0, 0, 0)) == \
-        datetime(2026, 1, 1, 0, 1, 0).astimezone()
+    assert (
+        next_run("* * * * *", datetime(2026, 1, 1, 0, 0, 0))
+        == datetime(2026, 1, 1, 0, 1, 0).astimezone()
+    )
 
 
 def test_hourly_at_minute_0():
-    assert next_run("0 * * * *", datetime(2026, 1, 1, 9, 0, 30)) == \
-        datetime(2026, 1, 1, 10, 0, 0).astimezone()
+    assert (
+        next_run("0 * * * *", datetime(2026, 1, 1, 9, 0, 30))
+        == datetime(2026, 1, 1, 10, 0, 0).astimezone()
+    )
 
 
 def test_daily_at_9():
-    assert next_run("0 9 * * *", datetime(2026, 1, 1, 8, 59)) == \
-        datetime(2026, 1, 1, 9, 0).astimezone()
-    assert next_run("0 9 * * *", datetime(2026, 1, 1, 9, 0, 1)) == \
-        datetime(2026, 1, 2, 9, 0).astimezone()
+    assert (
+        next_run("0 9 * * *", datetime(2026, 1, 1, 8, 59))
+        == datetime(2026, 1, 1, 9, 0).astimezone()
+    )
+    assert (
+        next_run("0 9 * * *", datetime(2026, 1, 1, 9, 0, 1))
+        == datetime(2026, 1, 2, 9, 0).astimezone()
+    )
 
 
 def test_strictly_after_on_tick():
     # exactly on the tick → next day, not the same instant
-    assert next_run("0 9 * * *", datetime(2026, 1, 1, 9, 0, 0)) == \
-        datetime(2026, 1, 2, 9, 0).astimezone()
+    assert (
+        next_run("0 9 * * *", datetime(2026, 1, 1, 9, 0, 0))
+        == datetime(2026, 1, 2, 9, 0).astimezone()
+    )
 
 
 def test_weekday_only():
     # every Monday 9am (dow=1). 2026-01-05 is a Monday.
-    assert next_run("0 9 * * 1", datetime(2026, 1, 1, 0, 0)) == \
-        datetime(2026, 1, 5, 9, 0).astimezone()
-    assert next_run("0 9 * * 1", datetime(2026, 1, 5, 10, 0)) == \
-        datetime(2026, 1, 12, 9, 0).astimezone()
+    assert (
+        next_run("0 9 * * 1", datetime(2026, 1, 1, 0, 0))
+        == datetime(2026, 1, 5, 9, 0).astimezone()
+    )
+    assert (
+        next_run("0 9 * * 1", datetime(2026, 1, 5, 10, 0))
+        == datetime(2026, 1, 12, 9, 0).astimezone()
+    )
 
 
 def test_dom_and_dow_or():
     # day 1 OR Monday (croniter default day_or=True). 2026-02-01 is Sunday.
-    assert next_run("0 9 1 * 1", datetime(2026, 1, 30, 0, 0)) == \
-        datetime(2026, 2, 1, 9, 0).astimezone()
+    assert (
+        next_run("0 9 1 * 1", datetime(2026, 1, 30, 0, 0))
+        == datetime(2026, 2, 1, 9, 0).astimezone()
+    )
 
 
 def test_monthly_on_1st():
-    assert next_run("0 9 1 * *", datetime(2026, 1, 15)) == \
-        datetime(2026, 2, 1, 9, 0).astimezone()
+    assert (
+        next_run("0 9 1 * *", datetime(2026, 1, 15))
+        == datetime(2026, 2, 1, 9, 0).astimezone()
+    )
 
 
 def test_leap_day():
-    assert next_run("0 9 29 2 *", datetime(2026, 3, 1)) == \
-        datetime(2028, 2, 29, 9, 0).astimezone()
+    assert (
+        next_run("0 9 29 2 *", datetime(2026, 3, 1))
+        == datetime(2028, 2, 29, 9, 0).astimezone()
+    )
 
 
 def test_stepped_minutes():
-    assert next_run("*/15 * * * *", datetime(2026, 1, 1, 9, 3)) == \
-        datetime(2026, 1, 1, 9, 15).astimezone()
+    assert (
+        next_run("*/15 * * * *", datetime(2026, 1, 1, 9, 3))
+        == datetime(2026, 1, 1, 9, 15).astimezone()
+    )
 
 
 # ── Timezone policy ─────────────────────────────────────────────────
+
 
 def test_naive_after_treated_local():
     r = next_run("0 9 * * *", datetime(2026, 1, 1, 8, 0))

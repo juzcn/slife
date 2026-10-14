@@ -11,16 +11,16 @@ import os
 import tempfile
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import filelock
 from ruamel.yaml.error import YAMLError
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.paths import get_config_path
 from slife.tools._yaml_doc import new_yaml, render_document
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from slife.config import Config
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 def now_iso() -> str:
     """Return current UTC time as ISO 8601 string."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def with_fetched_at(source: dict | None) -> dict | None:
@@ -158,6 +158,7 @@ def config_write_locked(fn):
     the loop and A could never resume to release it — nor could any heartbeat
     or timer.  See :func:`_acquire_config_lock`.
     """
+
     @functools.wraps(fn)
     async def _wrapped(self, **kwargs):
         path = getattr(self, "_config_path", None)
@@ -170,8 +171,9 @@ def config_write_locked(fn):
         finally:
             try:
                 lock.release()
-            except Exception:  # noqa: BLE001 — a release failure must not fail the edit
+            except Exception:
                 logger.debug("config_lock_release_failed path=%s", path, exc_info=True)
+
     return _wrapped
 
 
@@ -289,7 +291,9 @@ class _ConfigPathMixin:
         return None
 
     @classmethod
-    def from_config(cls, cfg: dict, config: "Config | None", ctx: "ToolContext | None" = None):  # pyright: ignore[reportIncompatibleMethodOverride]
+    def from_config(
+        cls, cfg: dict, config: "Config | None", ctx: "ToolContext | None" = None
+    ):  # pyright: ignore[reportIncompatibleMethodOverride]
         path = config._path if config else None
         tool = cls(config_path=path)
         if ctx is not None:

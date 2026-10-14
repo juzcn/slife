@@ -1,11 +1,9 @@
 """Tests for Slife.health — startup health collector."""
 
-import pytest; pytestmark = pytest.mark.unit
-
+from typing import ClassVar
+from unittest.mock import patch
 
 import pytest
-
-from unittest.mock import patch
 
 from slife.health import (
     _probe_version,
@@ -14,6 +12,8 @@ from slife.health import (
     record_active_model,
     record_host_facts,
 )
+
+pytestmark = pytest.mark.unit
 
 
 class TestRecord:
@@ -30,8 +30,13 @@ class TestRecord:
         assert "hint" not in entries[0]
 
     def test_record_with_all_fields(self):
-        record("embeddings", "warning", key="backend", value="gguf",
-               hint="llama-cpp-python not installed")
+        record(
+            "embeddings",
+            "warning",
+            key="backend",
+            value="gguf",
+            hint="llama-cpp-python not installed",
+        )
         entries = get_report()
         assert len(entries) == 1
         e = entries[0]
@@ -105,6 +110,7 @@ class TestRecordActiveModel:
     @staticmethod
     def _model(**overrides):
         from slife.config import ModelConfig
+
         fields = {
             "ref": "deepseek/deepseek-flash",
             "provider": "deepseek",
@@ -151,12 +157,18 @@ class TestRecordHostFacts:
     @staticmethod
     def _config():
         from slife.config import Config, ModelConfig
+
         return Config(
-            models=[ModelConfig(
-                ref="deepseek/deepseek-flash", provider="deepseek",
-                api_model="deepseek-flash", display_name="Flash",
-                api_key="sk-x", context_window=1000,
-            )],
+            models=[
+                ModelConfig(
+                    ref="deepseek/deepseek-flash",
+                    provider="deepseek",
+                    api_model="deepseek-flash",
+                    display_name="Flash",
+                    api_key="sk-x",
+                    context_window=1000,
+                )
+            ],
             active_model_ref="deepseek/deepseek-flash",
             tools=[],
         )
@@ -171,7 +183,7 @@ class TestRecordHostFacts:
 
         components = {e["component"] for e in get_report()}
         assert components == {"config", "model"}
-        assert probe.call_count == 1          # the toolchain half is started
+        assert probe.call_count == 1  # the toolchain half is started
         cfg = next(e for e in get_report() if e["component"] == "config")
         assert cfg["key"] == "path"
         assert cfg["value"].startswith("/tmp/slife.yaml (")
@@ -195,20 +207,24 @@ class TestProbeVersion:
     placeholder and prescribed a reinstall for all of them.
     """
 
-    _HINTS = dict(missing_hint="install it", exit_hint="reinstall it",
-                  error_hint="reinstall it")
+    _HINTS: ClassVar[dict] = {
+        "missing_hint": "install it",
+        "exit_hint": "reinstall it",
+        "error_hint": "reinstall it",
+    }
 
     @pytest.fixture(autouse=True)
     def _found(self, monkeypatch):
         """``which`` resolves, so the probe reaches the subprocess."""
         import shutil
+
         monkeypatch.setattr(shutil, "which", lambda name: "C:/nodejs/" + name)
 
     @staticmethod
     def _run(*, out: bytes = b"", err: bytes = b"", rc: int = 0):
         import subprocess
 
-        def run(cmd, stdout=None, stderr=None, timeout=None):
+        def run(cmd, stdout=None, stderr=None, timeout=None, check=None):
             if out:
                 stdout.write(out)
             if err:
@@ -219,21 +235,26 @@ class TestProbeVersion:
 
     def test_a_present_tool_reports_the_first_line_of_its_version(self, monkeypatch):
         import subprocess
+
         monkeypatch.setattr(
-            subprocess, "run", self._run(out=b"11.17.0\nsome extra line\n"),
+            subprocess,
+            "run",
+            self._run(out=b"11.17.0\nsome extra line\n"),
         )
         _probe_version("npm", **self._HINTS)
         e = get_report()[-1]
         assert (e["component"], e["level"], e["key"]) == ("npm", "ok", "version")
         assert e["value"] == "11.17.0"
-        assert "hint" not in e          # a healthy fact carries no remedy
+        assert "hint" not in e  # a healthy fact carries no remedy
 
     def test_a_warning_on_stderr_is_not_read_back_as_the_version(self, monkeypatch):
         """The version is stdout's; a tool that warns on stderr first (node
         does) must not have that warning reported as its version."""
         import subprocess
+
         monkeypatch.setattr(
-            subprocess, "run",
+            subprocess,
+            "run",
             self._run(out=b"11.17.0\n", err=b"(node:32068) Warning: something\n"),
         )
         _probe_version("npm", **self._HINTS)
@@ -241,16 +262,19 @@ class TestProbeVersion:
 
     def test_an_absent_tool_is_missing_not_an_error(self, monkeypatch):
         import shutil
+
         monkeypatch.setattr(shutil, "which", lambda name: None)
         _probe_version("npm", **self._HINTS)
         e = get_report()[-1]
         assert e["key"] == "missing" and e["hint"] == "install it"
 
     def test_a_non_zero_exit_reports_the_code_and_keeps_the_tool_s_own_output(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         """The child's stderr is the diagnostic; it used to be discarded."""
         import subprocess
+
         monkeypatch.setattr(subprocess, "run", self._run(err=b"boom\n", rc=1))
         _probe_version("npm", **self._HINTS)
         e = get_report()[-1]
@@ -262,7 +286,7 @@ class TestProbeVersion:
         must not prescribe a reinstall for a tool that is probably fine."""
         import subprocess
 
-        def run(cmd, stdout=None, stderr=None, timeout=None):
+        def run(cmd, stdout=None, stderr=None, timeout=None, check=None):
             raise subprocess.TimeoutExpired(cmd, timeout)
 
         monkeypatch.setattr(subprocess, "run", run)
@@ -274,11 +298,12 @@ class TestProbeVersion:
         assert e["hint"] != self._HINTS["error_hint"]
 
     def test_an_unexpected_error_carries_the_exception_not_a_placeholder(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         import subprocess
 
-        def run(cmd, stdout=None, stderr=None, timeout=None):
+        def run(cmd, stdout=None, stderr=None, timeout=None, check=None):
             raise OSError("no paging file")
 
         monkeypatch.setattr(subprocess, "run", run)
@@ -288,6 +313,3 @@ class TestProbeVersion:
         assert "unexpected error" not in e["value"]
         assert "OSError" in e["value"] and "no paging file" in e["value"]
         assert e["hint"] == "reinstall it"
-
-
-

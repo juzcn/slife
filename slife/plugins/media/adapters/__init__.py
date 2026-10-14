@@ -10,7 +10,7 @@ from slife.plugins.media.adapters.dashscope_aigc import DashScopeAIGCAdapter
 from slife.plugins.media.adapters.openai_compat import OpenAICompatAdapter
 from slife.plugins.media.config import MediaConfigError, ProviderConfig
 
-__all__ = ["ADAPTER_REGISTRY", "create_adapter", "MediaAdapter", "MediaAdapterError"]
+__all__ = ["ADAPTER_REGISTRY", "MediaAdapter", "MediaAdapterError", "create_adapter"]
 
 ADAPTER_REGISTRY: dict[str, type] = {
     "dashscope-aigc": DashScopeAIGCAdapter,

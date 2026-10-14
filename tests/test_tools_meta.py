@@ -2,6 +2,7 @@
 
 import json
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -21,7 +22,11 @@ from slife.tools.registry import ToolRegistry
 class _NativeA(Tool):
     name = "native_a"
     description = "a native tool"
-    parameters = {"type": "object", "properties": {"q": {"type": "string"}}, "required": []}
+    parameters: ClassVar[dict] = {
+        "type": "object",
+        "properties": {"q": {"type": "string"}},
+        "required": [],
+    }
     category = "System"
 
     async def execute(self, **kwargs) -> str:
@@ -72,13 +77,22 @@ async def ctx(db):
 
 # ── tool_search ────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_tool_search_filters_by_columns(db, ctx):
     await db.upsert_tool(
-        "svcA__search", category="mcp", source_id="svcA", load_status="unloaded",
+        "svcA__search",
+        category="mcp",
+        source_id="svcA",
+        load_status="unloaded",
         description="full-text search",
-        schema=json.dumps({"name": "search", "description": "find things",
-                            "inputSchema": {"type": "object", "properties": {}}}),
+        schema=json.dumps(
+            {
+                "name": "search",
+                "description": "find things",
+                "inputSchema": {"type": "object", "properties": {}},
+            }
+        ),
     )
     await db.upsert_tool("cli-foo", category="cli", description="foo cli")
     await db.upsert_tool("skill-xyz", category="skill", description="a skill")
@@ -107,7 +121,9 @@ async def test_tool_search_filters_by_columns(db, ctx):
 
 @pytest.mark.asyncio
 async def test_tool_search_grep_mode_and_effective_status(db, ctx):
-    await db.upsert_tool("grepme", category="builtin", status="disabled", description="zzz")
+    await db.upsert_tool(
+        "grepme", category="builtin", status="disabled", description="zzz"
+    )
     tool = ToolSearchTool()
     object.__setattr__(tool, "_ctx", ctx)
     payload = json.loads(await tool.execute(query="grepme", mode="grep"))
@@ -116,6 +132,7 @@ async def test_tool_search_grep_mode_and_effective_status(db, ctx):
 
 
 # ── func_tool_load / _func_tool_unload ─────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_tool_load_and_unload_roundtrip_opts(ctx):
@@ -139,8 +156,9 @@ async def test_tool_load_and_unload_roundtrip_opts(ctx):
 async def test_tool_load_refuses_meta_and_error(db, ctx):
     # The server is down: the verdict is the status column's runtime lane,
     # not a load status.
-    await db.upsert_tool("svcA__x", category="mcp", source_id="svcA",
-                         load_status="unloaded")
+    await db.upsert_tool(
+        "svcA__x", category="mcp", source_id="svcA", load_status="unloaded"
+    )
     await db.mark_source_error("svcA")
     t_load = FuncToolLoadTool()
     object.__setattr__(t_load, "_ctx", ctx)
@@ -162,11 +180,16 @@ def _turn_prompt_stub():
     class _Stub(Tool):
         name = "_turn_prompt"
         description = "stub"
-        parameters = {"type": "object", "properties": {}, "required": []}
+        parameters: ClassVar[dict] = {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }
         category = "Models"
 
         async def execute(self, **kwargs) -> str:
             return "pong"
+
     return _Stub()
 
 
@@ -181,16 +204,18 @@ async def test_a_column_filter_is_not_truncated_by_the_candidate_cutoff(db, ctx)
     """
     for i in range(40):
         await db.upsert_tool(
-            f"report_{i:02d}", category="mcp",
+            f"report_{i:02d}",
+            category="mcp",
             source_id="down" if i % 3 == 0 else "up",
-            description="report generator", load_status="unloaded",
+            description="report generator",
+            load_status="unloaded",
         )
     await db.mark_source_error("down")
     tool = ToolSearchTool()
     object.__setattr__(tool, "_ctx", ctx)
 
     payload = json.loads(await tool.execute(query="report", status="error", limit=10))
-    assert payload["count"] == 10          # a full page of qualifying rows
+    assert payload["count"] == 10  # a full page of qualifying rows
     assert all(r["status"] == "error" for r in payload["results"])
 
 
@@ -199,20 +224,35 @@ async def test_the_status_filter_selects_each_state(db, ctx):
     """``status`` is one string filter over the three states the column has —
     which is why the old ``enabled`` / ``unavailable`` boolean pair is gone:
     it asked the same question in two halves."""
-    await db.upsert_tool("flag-on", category="builtin", status="enabled", description="flagtest")
-    await db.upsert_tool("flag-off", category="builtin", status="disabled", description="flagtest")
-    await db.upsert_tool("flag-bad", category="mcp", source_id="down",
-                         description="flagtest", load_status="unloaded")
+    await db.upsert_tool(
+        "flag-on", category="builtin", status="enabled", description="flagtest"
+    )
+    await db.upsert_tool(
+        "flag-off", category="builtin", status="disabled", description="flagtest"
+    )
+    await db.upsert_tool(
+        "flag-bad",
+        category="mcp",
+        source_id="down",
+        description="flagtest",
+        load_status="unloaded",
+    )
     await db.mark_source_error("down")
     tool = ToolSearchTool()
     object.__setattr__(tool, "_ctx", ctx)
 
     names = lambda p: {r["name"] for r in json.loads(p)["results"]}
     assert names(await tool.execute(query="flagtest", status="enabled")) == {"flag-on"}
-    assert names(await tool.execute(query="flagtest", status="disabled")) == {"flag-off"}
+    assert names(await tool.execute(query="flagtest", status="disabled")) == {
+        "flag-off"
+    }
     assert names(await tool.execute(query="flagtest", status="error")) == {"flag-bad"}
     # No filter at all sees every state.
-    assert names(await tool.execute(query="flagtest")) == {"flag-on", "flag-off", "flag-bad"}
+    assert names(await tool.execute(query="flagtest")) == {
+        "flag-on",
+        "flag-off",
+        "flag-bad",
+    }
 
 
 class TestScoreBands:
@@ -225,15 +265,24 @@ class TestScoreBands:
     """
 
     @pytest.mark.asyncio
-    async def test_a_weak_match_carries_its_similarity_and_the_band_legend(self, monkeypatch):
+    async def test_a_weak_match_carries_its_similarity_and_the_band_legend(
+        self, monkeypatch
+    ):
         store = AsyncMock()
         store.search_keyword.return_value = []
         # Cosine distance ~1.0 = unrelated; the annotator maps it to ~0.0.
-        store.search_semantic.return_value = [{
-            "name": "playwright__browser_close", "description": "close the browser",
-            "category": "mcp", "source_id": "playwright", "schema": "{}",
-            "status": "enabled", "load_status": "unloaded", "distance": 0.99,
-        }]
+        store.search_semantic.return_value = [
+            {
+                "name": "playwright__browser_close",
+                "description": "close the browser",
+                "category": "mcp",
+                "source_id": "playwright",
+                "schema": "{}",
+                "status": "enabled",
+                "load_status": "unloaded",
+                "distance": 0.99,
+            }
+        ]
         catalog = MagicMock(store=store)
         tool = ToolSearchTool()
         object.__setattr__(tool, "_ctx", SimpleNamespace(catalog=catalog))
@@ -250,8 +299,9 @@ class TestScoreBands:
     async def test_a_keyword_only_hit_carries_no_similarity(self, db, ctx):
         """A hit the semantic leg did not score gets no number — inventing one
         would be a lie about a match nothing measured."""
-        await db.upsert_tool("translate_tool", category="builtin",
-                             description="translate text")
+        await db.upsert_tool(
+            "translate_tool", category="builtin", description="translate text"
+        )
         tool = ToolSearchTool()
         object.__setattr__(tool, "_ctx", ctx)
         payload = json.loads(await tool.execute(query="translate"))
@@ -282,14 +332,13 @@ class TestSearchDescription:
     @pytest.mark.asyncio
     async def test_a_hit_carries_the_description_whole(self, db, ctx):
         """Nothing is cut — not at the first period, not at a length cap."""
-        await db.upsert_tool("talky", category="builtin",
-                             description=self._FILE_READ)
+        await db.upsert_tool("talky", category="builtin", description=self._FILE_READ)
         tool = ToolSearchTool()
         object.__setattr__(tool, "_ctx", ctx)
         payload = json.loads(await tool.execute(query="talky"))
         row = payload["results"][0]
         assert row["description"] == self._FILE_READ
-        assert "GBK" in row["description"]      # the old cut dropped this
+        assert "GBK" in row["description"]  # the old cut dropped this
         assert "…" not in row["description"]
 
     @pytest.mark.asyncio

@@ -48,13 +48,14 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import httpx2
 
-from slife.net import is_fake_ip_answer
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.net import is_fake_ip_answer
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,10 @@ def _windows_ssh_fallbacks() -> tuple[Path, ...]:
     if sys.platform != "win32":
         return ()
     return (
-        Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "OpenSSH" / "ssh.exe",
+        Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        / "System32"
+        / "OpenSSH"
+        / "ssh.exe",
     )
 
 
@@ -128,6 +132,7 @@ def _import_ngrok() -> Any:
     """Import the official ngrok SDK (embeds the agent — no external binary)."""
     try:
         import ngrok
+
         return ngrok
     except ImportError:
         raise RuntimeError(
@@ -139,6 +144,7 @@ def _read_auth_token() -> str | None:
     """Read the ngrok auth token from the OS credential store or env var."""
     try:
         from credstore import get_credential  # pyright: ignore[reportMissingImports]
+
         token = get_credential("NGROK_AUTHTOKEN")
         if token:
             return token
@@ -182,7 +188,7 @@ def _ngrok_tunnel_alive(public_url: str) -> bool:
             if str(url).rstrip("/") == want:
                 return True
         return False
-    except Exception:
+    except Exception:  # noqa: BLE001 — a failed probe must not report the tunnel dead
         return True
 
 
@@ -227,7 +233,7 @@ class _TunnelProviderBase:
 
     def __init__(self) -> None:
         self._public_url: str | None = None
-        self._monitor_task: "asyncio.Task[None] | None" = None
+        self._monitor_task: asyncio.Task[None] | None = None
         self._monitor_retries: int = 0
         self._starting: bool = False  # guard against concurrent starts
         self._starting_at: float | None = None  # monotonic time of the in-flight start
@@ -372,7 +378,8 @@ class _TunnelProviderBase:
                     raise RuntimeError("Tunnel start already in progress")
                 logger.warning(
                     "tunnel_start_stale_superseded elapsed=%.0fs timeout=%.0fs",
-                    elapsed, _timeouts.timeouts.ready.tunnel_start,
+                    elapsed,
+                    _timeouts.timeouts.ready.tunnel_start,
                 )
             self._start_gen += 1
             gen = self._start_gen
@@ -397,7 +404,8 @@ class _TunnelProviderBase:
                         "tunnel_start_superseded_after_established "
                         "provider=%s url=%s — not publishing (a newer start "
                         "owns the tunnel)",
-                        self.label, url,
+                        self.label,
+                        url,
                     )
                     return self._public_url or ""
                 self._public_url = url
@@ -406,7 +414,9 @@ class _TunnelProviderBase:
                 self._failure_reason = ""
             logger.info(
                 "tunnel_started provider=%s port=%s url=%s",
-                self.label, port, url,
+                self.label,
+                port,
+                url,
             )
             return url
         except Exception as e:
@@ -430,14 +440,18 @@ class _TunnelProviderBase:
         for n in range(1, _MAX_RETRIES + 1):
             try:
                 return attempt()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — the retry ladder catches any start failure
                 last_error = e
                 self._after_failed_attempt()
                 if n < _MAX_RETRIES:
                     delay = _timeouts.timeouts.ready.sharefile_retry_delay * n
                     logger.warning(
                         "tunnel_retry provider=%s attempt=%d/%d delay=%.1fs err=%s",
-                        self.label, n, _MAX_RETRIES, delay, e,
+                        self.label,
+                        n,
+                        _MAX_RETRIES,
+                        delay,
+                        e,
                     )
                     time.sleep(delay)
 
@@ -458,7 +472,9 @@ class _TunnelProviderBase:
         self._teardown()
         if self._public_url is None:
             return
-        logger.info("tunnel_disconnected provider=%s url=%s", self.label, self._public_url)
+        logger.info(
+            "tunnel_disconnected provider=%s url=%s", self.label, self._public_url
+        )
         self._drop_url()
 
     def _drop_url(self) -> None:
@@ -490,7 +506,9 @@ class _TunnelProviderBase:
         """
         from slife.threads import run_daemon
 
-        await asyncio.sleep(_timeouts.timeouts.ready.sharefile_retry_delay)  # let the daemon-thread handshake finish
+        await asyncio.sleep(
+            _timeouts.timeouts.ready.sharefile_retry_delay
+        )  # let the daemon-thread handshake finish
 
         # When the current unreachable stretch began, so a transport that
         # heals itself is not respawned out from under its own recovery.
@@ -503,7 +521,9 @@ class _TunnelProviderBase:
                     if down_since is not None:
                         logger.info(
                             "tunnel_recovered provider=%s url=%s after=%.0fs",
-                            self.label, self._public_url, time.monotonic() - down_since,
+                            self.label,
+                            self._public_url,
+                            time.monotonic() - down_since,
                         )
                         down_since = None
                     await asyncio.sleep(_timeouts.timeouts.pacing.sharefile_health)
@@ -521,7 +541,8 @@ class _TunnelProviderBase:
                     down_since = time.monotonic()
                     logger.warning(
                         "tunnel_unreachable provider=%s url=%s",
-                        self.label, self._public_url,
+                        self.label,
+                        self._public_url,
                     )
                 elapsed = time.monotonic() - down_since
                 if elapsed < _timeouts.timeouts.ready.tunnel_heal:
@@ -529,7 +550,9 @@ class _TunnelProviderBase:
                     continue
                 logger.warning(
                     "tunnel_lost provider=%s url=%s elapsed=%.0fs — restarting",
-                    self.label, self._public_url, elapsed,
+                    self.label,
+                    self._public_url,
+                    elapsed,
                 )
                 self._teardown()
                 self._drop_url()
@@ -548,11 +571,14 @@ class _TunnelProviderBase:
             # No tunnel — (re)start.
             try:
                 await run_daemon(self.start, port, name=f"{self.label}-tunnel-health")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — health monitor tolerates any start failure
                 self._monitor_retries += 1
                 logger.warning(
                     "tunnel_restart_failed provider=%s port=%s err=%s retries=%d",
-                    self.label, port, e, self._monitor_retries,
+                    self.label,
+                    port,
+                    e,
+                    self._monitor_retries,
                 )
                 await asyncio.sleep(_timeouts.timeouts.ready.sharefile_retry_delay)
                 continue
@@ -604,7 +630,9 @@ class NgrokTunnel(_TunnelProviderBase):
             # different machines) can share the same ngrok dev domain — ngrok
             # load-balances across all online agents.
             self._listener = self._ngrok.forward(
-                f"localhost:{port}", authtoken=token, pooling_enabled=True,
+                f"localhost:{port}",
+                authtoken=token,
+                pooling_enabled=True,
             )
             return str(self._listener.url()).rstrip("/")
 
@@ -616,7 +644,7 @@ class NgrokTunnel(_TunnelProviderBase):
         try:
             self._ngrok.disconnect(self._public_url)
             logger.info("tunnel_disconnected provider=ngrok url=%s", self._public_url)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — teardown must never raise
             logger.warning("tunnel_disconnect_error err=%s", e)
         self._listener = None
 
@@ -890,8 +918,10 @@ class _CliTunnelProvider(_TunnelProviderBase):
         self._proc = proc
 
         self._reader = threading.Thread(
-            target=self._read_output, args=(proc,),
-            name=f"{self.label}-reader", daemon=True,
+            target=self._read_output,
+            args=(proc,),
+            name=f"{self.label}-reader",
+            daemon=True,
         )
         self._reader.start()
 
@@ -963,7 +993,9 @@ class _CliTunnelProvider(_TunnelProviderBase):
                 # records that: without it a tunnel that is up but unreachable
                 # leaves no trace anywhere in the log.
                 logger.debug(
-                    "tunnel_output provider=%s line=%s", self.label, line.rstrip()[:300],
+                    "tunnel_output provider=%s line=%s",
+                    self.label,
+                    line.rstrip()[:300],
                 )
                 self._note_connections(line)
                 self._note_metrics(line)
@@ -981,7 +1013,9 @@ class _CliTunnelProvider(_TunnelProviderBase):
                 elif url != self._public_url:
                     logger.info(
                         "tunnel_url_rotated provider=%s old=%s new=%s",
-                        self.label, self._public_url, url,
+                        self.label,
+                        self._public_url,
+                        url,
                     )
                     self._public_url = url
                     os.environ[_TUNNEL_URL_ENV] = url
@@ -1064,14 +1098,20 @@ class LocalhostRunTunnel(_CliTunnelProvider):
             "-T",  # no pseudo-tty — keep stdout line-oriented and parseable
             # Never prompt: batch mode + accept-new let an unattended daemon
             # connect on a first run without a TTY to answer a host-key prompt.
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "BatchMode=yes",
-            "-o", "ServerAliveInterval=30",
-            "-o", "ServerAliveCountMax=3",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=3",
             # If the forward cannot be set up (e.g. the remote port is taken),
             # exit instead of holding a session that tunnels nothing.
-            "-o", "ExitOnForwardFailure=yes",
-            "-R", f"{self._remote_port}:localhost:{port}",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-R",
+            f"{self._remote_port}:localhost:{port}",
             f"{self._user}@{self._host}",
         ]
 
@@ -1079,7 +1119,7 @@ class LocalhostRunTunnel(_CliTunnelProvider):
         idx = line.find(_LHR_MARKER)
         if idx == -1:
             return None
-        match = _LHR_URL_RE.search(line[idx + len(_LHR_MARKER):])
+        match = _LHR_URL_RE.search(line[idx + len(_LHR_MARKER) :])
         return match.group(0).rstrip("/") if match else None
 
     def _missing_binary_error(self) -> str:
@@ -1191,8 +1231,10 @@ class CloudflareQuickTunnel(_CliTunnelProvider):
             "tunnel",
             # Don't let a background self-update swap the binary under us.
             "--no-autoupdate",
-            "--protocol", self._protocol,
-            "--url", f"http://localhost:{port}",
+            "--protocol",
+            self._protocol,
+            "--url",
+            f"http://localhost:{port}",
         ]
 
     def _parse_url(self, line: str) -> str | None:
@@ -1226,6 +1268,7 @@ def create_provider(name: str, options: dict | None = None) -> TunnelProvider:
     if name != DEFAULT_PROVIDER:
         logger.warning(
             "sharefile_provider_unknown provider=%s fallback=%s",
-            name, DEFAULT_PROVIDER,
+            name,
+            DEFAULT_PROVIDER,
         )
     return NgrokTunnel()

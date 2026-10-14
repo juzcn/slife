@@ -39,8 +39,8 @@ class Job:
 
     name: str
     description: str
-    fn: object        # the original job function (schema + logic)
-    path: Path        # absolute source file path
+    fn: object  # the original job function (schema + logic)
+    path: Path  # absolute source file path
 
 
 #: Prefix every job's TOOL name carries — ``translate`` is exposed to the LLM as
@@ -59,7 +59,7 @@ def tool_name(job_name: str) -> str:
 
 def bare_name(exposed: str) -> str:
     """The job name behind an exposed tool name; *exposed* unchanged if bare."""
-    return exposed[len(JOB_TOOL_PREFIX):] if exposed.startswith(JOB_TOOL_PREFIX) else exposed
+    return exposed.removeprefix(JOB_TOOL_PREFIX)
 
 
 def load_module(path: Path) -> types.ModuleType:
@@ -83,10 +83,12 @@ def load_module(path: Path) -> types.ModuleType:
     try:
         source = path.read_text(encoding="utf-8")
         code = compile(source, str(path), "exec")
-        exec(code, module.__dict__)
+        exec(code, module.__dict__)  # noqa: S102 — job files are user code, by design
     except Exception as e:
         sys.modules.pop(modname, None)
-        raise JobLoadError(f"Importing {path.name} failed: {type(e).__name__}: {e}") from e
+        raise JobLoadError(
+            f"Importing {path.name} failed: {type(e).__name__}: {e}"
+        ) from e
     return module
 
 
@@ -106,12 +108,14 @@ def collect_jobs(module: types.ModuleType) -> list[Job]:
             continue
         if getattr(obj, "__module__", None) != modname:
             continue
-        jobs.append(Job(
-            name=name,
-            description=inspect.getdoc(obj) or "",
-            fn=obj,
-            path=Path(getattr(module, "_job_file_path", "")),
-        ))
+        jobs.append(
+            Job(
+                name=name,
+                description=inspect.getdoc(obj) or "",
+                fn=obj,
+                path=Path(getattr(module, "_job_file_path", "")),
+            )
+        )
     return jobs
 
 
@@ -131,6 +135,6 @@ def scan_jobs_dir(jobs_dir: Path) -> list[Job]:
             module = load_module(path)
             module._job_file_path = str(path.resolve())  # type: ignore[attr-defined]
             jobs.extend(collect_jobs(module))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — a broken job file is skipped, never fatal
             logger.warning("job_file_skip path=%s err=%s", path.name, e)
     return jobs

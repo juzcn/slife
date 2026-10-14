@@ -99,8 +99,7 @@ def test_no_role_gate_outside_the_table():
     enumeration; the guard keeps it the only one.
     """
     offenders = [
-        gate for gate in _role_gates()
-        if gate.split(":", 1)[0] not in IDENTITY_USES
+        gate for gate in _role_gates() if gate.split(":", 1)[0] not in IDENTITY_USES
     ]
     assert not offenders, (
         "role gate(s) outside slife/agent/roles.py — declare a capability in "
@@ -128,7 +127,8 @@ def test_the_guard_recognises_every_role_spelling():
             id(kw.value) for kw in ast.walk(tree) if isinstance(kw, ast.keyword)
         }
         reads = [
-            node for node in ast.walk(tree)
+            node
+            for node in ast.walk(tree)
             if (isinstance(node, ast.Attribute) and node.attr == spelling)
             and id(node) not in keyword_values
         ]
@@ -179,8 +179,8 @@ def test_the_two_roles_differ_by_exactly_the_declared_capabilities(sample_config
     main, worker = _services(sample_config)
 
     # The loop's policy grants.
-    assert main.agent_loop.stream_max_retries is not None      # the ladder
-    assert worker.agent_loop.stream_max_retries == 0           # fail fast
+    assert main.agent_loop.stream_max_retries is not None  # the ladder
+    assert worker.agent_loop.stream_max_retries == 0  # fail fast
     assert worker.agent_loop.stream_timeout is not None
 
     # The inbox's: persistence, the startup gate, the history store.
@@ -281,12 +281,15 @@ def test_a_worker_history_is_one_shot_and_seeded_per_task(sample_config):
     store = worker.inbox._histories
     first = store.get_or_create(AgentName("worker"))
     assert first.messages == [] or first.messages[0]["role"] == "system"
-    assert len(first.messages) <= 1                       # empty but for the prompt
+    assert len(first.messages) <= 1  # empty but for the prompt
 
-    second = store.get_or_create(AgentName("worker"), seed=[
-        {"role": "system", "content": "ignored"},
-        {"role": "user", "content": "earlier"},
-    ])
+    second = store.get_or_create(
+        AgentName("worker"),
+        seed=[
+            {"role": "system", "content": "ignored"},
+            {"role": "user", "content": "earlier"},
+        ],
+    )
     # The clone is seeded, then repaired to a consistent history: it ends on a
     # user message, so a closing assistant line is added (the same invariant
     # restore and a rebuild enforce — a provider rejects a history whose roles
@@ -295,16 +298,21 @@ def test_a_worker_history_is_one_shot_and_seeded_per_task(sample_config):
     assert second.messages[1]["content"] == "earlier"
     # A later task gets its own history, seeded from ITS clone — never the one
     # already handed out.
-    third = store.get_or_create(AgentName("worker"), seed=[
-        {"role": "user", "content": "another task's context"},
-    ])
+    third = store.get_or_create(
+        AgentName("worker"),
+        seed=[
+            {"role": "user", "content": "another task's context"},
+        ],
+    )
     assert third is not second
     assert third.messages[1]["content"] == "another task's context"
 
 
 @pytest.mark.asyncio
 async def test_the_owner_maintains_the_rows_and_the_worker_only_reads(
-    sample_config, tmp_path, monkeypatch,
+    sample_config,
+    tmp_path,
+    monkeypatch,
 ):
     """Catalog ownership is a grant, and its effect is on the shared file.
 
@@ -314,7 +322,8 @@ async def test_the_owner_maintains_the_rows_and_the_worker_only_reads(
     gate, so a worker wrote the shared catalog while the docs said otherwise.)
     """
     monkeypatch.setattr(
-        "slife.paths.get_tools_db_path", lambda: tmp_path / "tools.db",
+        "slife.paths.get_tools_db_path",
+        lambda: tmp_path / "tools.db",
     )
     main = AgentService(sample_config, role=Role.MAIN)
     worker = AgentService(sample_config, role=Role.WORKER)
@@ -356,10 +365,7 @@ def test_the_semantic_surfaces_share_one_contract():
     """
     surface = {"query_ready", "embed_query", "reason"}
     for cls in (SemanticManager, SemanticReader):
-        missing = {
-            name for name in surface
-            if not hasattr(cls, name)
-        }
+        missing = {name for name in surface if not hasattr(cls, name)}
         assert not missing, f"{cls.__name__} is missing {sorted(missing)}"
 
 
@@ -373,8 +379,8 @@ def test_readiness_and_reason_are_one_answer_per_surface():
     """
     store = SimpleNamespace()
     reader = SemanticReader(store, EmbeddingsConfig())
-    assert reader.reason == ""            # nothing asked yet
-    assert reader._embedder.available is False   # no endpoint configured
+    assert reader.reason == ""  # nothing asked yet
+    assert reader._embedder.available is False  # no endpoint configured
 
 
 def test_catalog_service_defaults_to_no_semantic_surface():

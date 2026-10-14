@@ -1,8 +1,5 @@
 """Tests for slife/server_utils.py — shared server logging setup."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
 import logging
 import os
@@ -13,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import slife.server_utils as server_utils
+from slife import server_utils
 from slife.server_utils import (
     create_plugin_server,
     run_plugin_server,
@@ -21,6 +18,7 @@ from slife.server_utils import (
     shutdown_server_logging,
 )
 
+pytestmark = pytest.mark.unit
 
 # ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -54,9 +52,11 @@ def _run_with_mocks(log_dir, session_id=""):
     mock_fh_cls = MagicMock(return_value=mock_handler)
 
     env = {"SLIFE_SESSION_ID": session_id} if session_id else {}
-    with patch.dict(os.environ, env, clear=True):
-        with patch("slife.server_utils.logging.FileHandler", mock_fh_cls):
-            log_path = setup_server_logging("test_svc", log_dir=log_dir)
+    with (
+        patch.dict(os.environ, env, clear=True),
+        patch("slife.server_utils.logging.FileHandler", mock_fh_cls),
+    ):
+        log_path = setup_server_logging("test_svc", log_dir=log_dir)
 
     return log_path, mock_handler
 
@@ -91,9 +91,11 @@ class TestSetupServerLogging:
         with patch("slife.server_utils.set_session_id") as mock_set:
             mock_handler = MagicMock()
             mock_fh_cls = MagicMock(return_value=mock_handler)
-            with patch.dict(os.environ, {"SLIFE_SESSION_ID": "abc123"}):
-                with patch("slife.server_utils.logging.FileHandler", mock_fh_cls):
-                    setup_server_logging("svc", log_dir=tmp_path / "logs")
+            with (
+                patch.dict(os.environ, {"SLIFE_SESSION_ID": "abc123"}),
+                patch("slife.server_utils.logging.FileHandler", mock_fh_cls),
+            ):
+                setup_server_logging("svc", log_dir=tmp_path / "logs")
             mock_set.assert_called_once_with("abc123")
 
     def test_no_session_id_skips_set(self, tmp_path):
@@ -107,9 +109,13 @@ class TestSetupServerLogging:
         contract the main process exports for plugin children."""
         mock_handler = MagicMock()
         mock_fh_cls = MagicMock(return_value=mock_handler)
-        with patch.dict(os.environ, {"SLIFE_LOG_DIR": str(tmp_path / "env_logs")}, clear=True):
-            with patch("slife.server_utils.logging.FileHandler", mock_fh_cls):
-                log_path = setup_server_logging("svc")
+        with (
+            patch.dict(
+                os.environ, {"SLIFE_LOG_DIR": str(tmp_path / "env_logs")}, clear=True
+            ),
+            patch("slife.server_utils.logging.FileHandler", mock_fh_cls),
+        ):
+            log_path = setup_server_logging("svc")
         assert log_path.parent == tmp_path / "env_logs"
 
     def test_file_handler_uses_session_formatter(self, tmp_path):
@@ -226,10 +232,13 @@ class TestPluginReadySignal:
             yield
             order.append("inner-exit")
 
-        with patch("slife.server_utils._ready_callback",
-                   lambda: order.append("signal")):
+        with patch(
+            "slife.server_utils._ready_callback", lambda: order.append("signal")
+        ):
             created, _, _ = create_plugin_server(
-                "slife-test", "test", lifespan=inner,
+                "slife-test",
+                "test",
+                lifespan=inner,
             )
 
             async def _serve():
@@ -244,8 +253,9 @@ class TestPluginReadySignal:
         """A plugin with no lifespan still signals (no slow work to wait for)."""
         order = []
 
-        with patch("slife.server_utils._ready_callback",
-                   lambda: order.append("signal")):
+        with patch(
+            "slife.server_utils._ready_callback", lambda: order.append("signal")
+        ):
             created, _, _ = create_plugin_server("slife-test", "test")
 
             async def _serve():

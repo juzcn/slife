@@ -12,21 +12,21 @@ Covers:
   messages on the Anthropic wire (which rejects them).
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
 import asyncio
 import json
+from types import SimpleNamespace
+from typing import ClassVar
+from unittest.mock import patch
 
 import pytest
 
-from types import SimpleNamespace
-from unittest.mock import patch
-
-from slife.agent.message_history import MessageHistory
 from slife.agent.loop import AgentLoop, ToolCallInfo
+from slife.agent.message_history import MessageHistory
 from slife.tools.base import Tool
 from slife.tools.factory import create_tools_from_config
 from slife.tools.registry import ToolRegistry
+
+pytestmark = pytest.mark.unit
 
 
 def _registry():
@@ -112,7 +112,8 @@ class TestCheckNewInput:
         content = '[A2A:{"from": "jack", "task_id": "cid-1"}] do X'
         ctx = ToolContext()
         ctx.extract_injectable = lambda: AgentMessage(  # instance attr, not bound
-            source=AgentName("jack"), content=content,
+            source=AgentName("jack"),
+            content=content,
         )
         reg.get("_check_new_input")._ctx = ctx
 
@@ -130,9 +131,12 @@ class TestCheckNewInput:
         from slife.a2a.identity import AgentMessage, AgentName
 
         content = '[A2A:{"from": "jack", "task_id": "cid-1"}] do X'
-        reg = self._ctx_registry(lambda: AgentMessage(
-            source=AgentName("jack"), content=content,
-        ))
+        reg = self._ctx_registry(
+            lambda: AgentMessage(
+                source=AgentName("jack"),
+                content=content,
+            )
+        )
         loop = _loop(reg)
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("working…")
@@ -187,7 +191,9 @@ class TestTurnPrompt:
     @pytest.mark.asyncio
     async def test_renders_status_with_kwargs(self):
         reg = _registry()
-        out = await reg.execute("_turn_prompt", context_window=131072, last_context_tokens=50000)
+        out = await reg.execute(
+            "_turn_prompt", context_window=131072, last_context_tokens=50000
+        )
         assert "Context usage" in out
         assert "50,000" in out
         assert "(38.1%)" in out
@@ -204,8 +210,9 @@ class TestTurnPrompt:
         reg = _registry()
         out = await reg.execute(
             "_turn_prompt",
-            schedule_status=[{"name": "daily", "due_at": "2026-08-25T09:00:00",
-                              "status": "failed"}],
+            schedule_status=[
+                {"name": "daily", "due_at": "2026-08-25T09:00:00", "status": "failed"}
+            ],
         )
         assert "Scheduled runs not settled" in out
         assert "daily @ 2026-08-25T09:00:00 (failed)" in out
@@ -264,18 +271,23 @@ class TestRecallRebuild:
     "could not ask" is what made those two indistinguishable.
     """
 
-    TURN = {
+    TURN: ClassVar[dict] = {
         "rowid": 7,
         "user_message": "recalled question",
         "messages": '[{"role": "assistant", "content": "recalled reply"}]',
         "created_at": "2026-09-01T10:00:00+08:00",
     }
+
     @staticmethod
     def _loop(**kwargs):
         return AgentLoop(
-            llm_client=_ReplyLLM(kwargs.get("reply", '{"recall": {"since": "yesterday"}}')),
+            llm_client=_ReplyLLM(
+                kwargs.get("reply", '{"recall": {"since": "yesterday"}}')
+            ),
             tool_registry=_registry(),
-            context_window=1000, context_ceiling=0.8, context_floor=0.2,
+            context_window=1000,
+            context_ceiling=0.8,
+            context_floor=0.2,
             rebuild_message=kwargs.get("rebuild", True),
             recall_turns=kwargs.get("recall"),
             turns_by_ids=kwargs.get("turns_by_ids"),
@@ -328,7 +340,10 @@ class TestRecallRebuild:
             return True
 
         loop = self._loop(
-            reply='{"context": "clear"}', recall=recall, set=save, clear=clear,
+            reply='{"context": "clear"}',
+            recall=recall,
+            set=save,
+            clear=clear,
         )
         assert await loop._recall_and_rebuild(conv, "new input") is True
 
@@ -351,14 +366,14 @@ class TestRecallRebuild:
         lose it silently — the case a save that returned no rowid leaves
         behind.  It rides through the rebuild.
         """
-        conv = self._history()                    # untracked: the in-flight shape
+        conv = self._history()  # untracked: the in-flight shape
         tail = [dict(m) for m in conv.messages[1:]]
         cleared: list[bool] = []
 
         async def recall(*_a, **_k):
             return []
 
-        async def save(ids):                      # pragma: no cover - must not run
+        async def save(ids):  # pragma: no cover - must not run
             raise AssertionError("no stored turn is kept, so nothing is written")
 
         async def clear():
@@ -366,7 +381,10 @@ class TestRecallRebuild:
             return True
 
         loop = self._loop(
-            reply='{"context": "clear"}', recall=recall, set=save, clear=clear,
+            reply='{"context": "clear"}',
+            recall=recall,
+            set=save,
+            clear=clear,
         )
         assert await loop._recall_and_rebuild(conv, "new input") is True
 
@@ -419,9 +437,14 @@ class TestRecallRebuild:
         dropped.
         """
         return [
-            {"rowid": i, "user_message": f"question {i}",
-             "messages": json.dumps([{"role": "assistant", "content": f"reply {i}"}]),
-             "created_at": "2026-09-01T10:00:00+08:00"}
+            {
+                "rowid": i,
+                "user_message": f"question {i}",
+                "messages": json.dumps(
+                    [{"role": "assistant", "content": f"reply {i}"}]
+                ),
+                "created_at": "2026-09-01T10:00:00+08:00",
+            }
             for i in ids
         ]
 
@@ -444,17 +467,19 @@ class TestRecallRebuild:
             return True
 
         loop = self._loop(
-            reply='{"context": [3]}', recall=recall,
-            turns_by_ids=turns_by_ids, set=save,
+            reply='{"context": [3]}',
+            recall=recall,
+            turns_by_ids=turns_by_ids,
+            set=save,
         )
         assert await loop._recall_and_rebuild(conv, "new input") is True
 
-        assert any(
-            "question 3" in str(m.get("content")) for m in conv.messages
-        ), "the turn it named is there"
-        assert not any(
-            "question 5" in str(m.get("content")) for m in conv.messages
-        ), "and the one it did not name is gone"
+        assert any("question 3" in str(m.get("content")) for m in conv.messages), (
+            "the turn it named is there"
+        )
+        assert not any("question 5" in str(m.get("content")) for m in conv.messages), (
+            "and the one it did not name is gone"
+        )
         assert persisted == [[3]]
         assert asked == [], "a keep-list with no recall asks the store for nothing"
 
@@ -492,7 +517,11 @@ class TestRecallRebuild:
         seen: list[dict] = []
 
         async def recall(
-            query="", since=None, until=None, anchor=None, reserved_tokens=0,
+            query="",
+            since=None,
+            until=None,
+            anchor=None,
+            reserved_tokens=0,
         ):
             seen.append({"since": since, "reserved_tokens": reserved_tokens})
             return [7]
@@ -507,15 +536,15 @@ class TestRecallRebuild:
         loop = self._loop(recall=recall, turns_by_ids=turns_by_ids, set=save)
         assert await loop._recall_and_rebuild(conv, "new input") is True
 
-        assert any(
-            "question 3" in str(m.get("content")) for m in conv.messages
-        ), "what the decision kept is still there"
-        assert any(
-            "question 5" in str(m.get("content")) for m in conv.messages
-        ), "all of it, not just the newest"
-        assert any(
-            "question 7" in str(m.get("content")) for m in conv.messages
-        ), "and what it recalled was added to it"
+        assert any("question 3" in str(m.get("content")) for m in conv.messages), (
+            "what the decision kept is still there"
+        )
+        assert any("question 5" in str(m.get("content")) for m in conv.messages), (
+            "all of it, not just the newest"
+        )
+        assert any("question 7" in str(m.get("content")) for m in conv.messages), (
+            "and what it recalled was added to it"
+        )
         assert persisted == [[3, 5, 7]], "chronologically"
         assert seen[0]["since"] == "yesterday", "the bound reaches the store"
         assert seen[0]["reserved_tokens"] > 0, (
@@ -531,7 +560,11 @@ class TestRecallRebuild:
         seen: list[dict] = []
 
         async def recall(
-            query="", since=None, until=None, anchor=None, reserved_tokens=0,
+            query="",
+            since=None,
+            until=None,
+            anchor=None,
+            reserved_tokens=0,
         ):
             seen.append({"reserved_tokens": reserved_tokens})
             return [7]
@@ -545,16 +578,16 @@ class TestRecallRebuild:
 
         loop = self._loop(
             reply='{"context": "clear", "recall": {"query": "x"}}',
-            recall=recall, turns_by_ids=turns_by_ids, set=save,
+            recall=recall,
+            turns_by_ids=turns_by_ids,
+            set=save,
         )
         assert await loop._recall_and_rebuild(conv, "new input") is True
 
-        assert not any(
-            "question 3" in str(m.get("content")) for m in conv.messages
-        ), "the turns in hand were explicitly dropped"
-        assert any(
-            "question 7" in str(m.get("content")) for m in conv.messages
+        assert not any("question 3" in str(m.get("content")) for m in conv.messages), (
+            "the turns in hand were explicitly dropped"
         )
+        assert any("question 7" in str(m.get("content")) for m in conv.messages)
         assert persisted == [[7]]
         assert seen[0]["reserved_tokens"] == 0, (
             "nothing is kept, so the recall may use the whole floor"
@@ -608,8 +641,9 @@ class TestRecallRebuild:
             cleared.append(True)
             return True
 
-        loop = self._loop(recall=recall, turns_by_ids=turns_by_ids, set=save,
-                          clear=clear)
+        loop = self._loop(
+            recall=recall, turns_by_ids=turns_by_ids, set=save, clear=clear
+        )
         assert await loop._recall_and_rebuild(conv, "new input") is False
         assert conv.messages == before
         assert persisted == [] and cleared == [], (
@@ -638,9 +672,7 @@ class TestRecallRebuild:
         assert await loop._recall_and_rebuild(conv, "new input") is True
 
         assert conv.messages[0] == {"role": "system", "content": "SYS"}
-        assert any(
-            "recalled question" in str(m.get("content")) for m in conv.messages
-        )
+        assert any("recalled question" in str(m.get("content")) for m in conv.messages)
         assert persisted == [[7]], "the rebuilt set is persisted for the next restart"
 
     @pytest.mark.asyncio
@@ -691,7 +723,9 @@ class TestRecallDiscriminator:
         return AgentLoop(
             llm_client=llm,
             tool_registry=_registry(),
-            context_window=1000, context_ceiling=0.8, context_floor=0.2,
+            context_window=1000,
+            context_ceiling=0.8,
+            context_floor=0.2,
             rebuild_message=True,
             recall_available=recall_available,
         )
@@ -709,7 +743,9 @@ class TestRecallDiscriminator:
         assert args == {
             "keep": None,
             "recall": {
-                "query": "首经贸 新闻", "since": None, "until": None,
+                "query": "首经贸 新闻",
+                "since": None,
+                "until": None,
                 "anchor": None,
             },
         }
@@ -737,18 +773,20 @@ class TestRecallDiscriminator:
         sent = llm.sent[0]
         assert [m["role"] for m in sent] == ["system", "user", "assistant", "user"]
         assert sent[0]["content"] == "SYS"
-        assert sent[1]["content"] == "old question", "the context is the decision's input"
+        assert sent[1]["content"] == "old question", (
+            "the context is the decision's input"
+        )
         assert sent[2]["content"] == "old reply"
         assert "查一下首经贸新闻" in sent[3]["content"]
         # The reply surface is stated in the instruction itself
         # (system_prompt.RECALL_REPLY) — there is no LLM-facing tool schema to
         # quote any more, and these are the two fields the loop whitelists out
         # of the reply, with recall's own three keys nested inside.
-        assert "\"context\"" in sent[3]["content"]
-        assert "\"recall\"" in sent[3]["content"]
-        assert "\"query\"" in sent[3]["content"]
-        assert "\"since\"" in sent[3]["content"]
-        assert "\"until\"" in sent[3]["content"]
+        assert '"context"' in sent[3]["content"]
+        assert '"recall"' in sent[3]["content"]
+        assert '"query"' in sent[3]["content"]
+        assert '"since"' in sent[3]["content"]
+        assert '"until"' in sent[3]["content"]
 
     @pytest.mark.asyncio
     async def test_the_context_goes_out_without_the_runtime_turn_ids(self):
@@ -759,16 +797,23 @@ class TestRecallDiscriminator:
         otherwise reach the provider."""
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("old question")
-        conv.messages[-1]["_turn_id"] = 7          # as restore/trim stamp it
+        conv.messages[-1]["_turn_id"] = 7  # as restore/trim stamp it
         conv.add_assistant_message("old reply")
         llm = self._FakeLLM(self.REPLY)
 
         await self._loop(llm)._discriminate_recall(conv, "查一下首经贸新闻")
 
-        assert [m["role"] for m in llm.sent[0]] == ["system", "user", "assistant", "user"]
+        assert [m["role"] for m in llm.sent[0]] == [
+            "system",
+            "user",
+            "assistant",
+            "user",
+        ]
         assert "_turn_id" not in llm.sent[0][1]
         assert llm.sent[0][1]["content"] == "old question"
-        assert conv.messages[1].get("_turn_id") == 7, "the live context keeps its mapping"
+        assert conv.messages[1].get("_turn_id") == 7, (
+            "the live context keeps its mapping"
+        )
 
     @pytest.mark.asyncio
     async def test_an_unreachable_store_means_no_call(self, caplog):
@@ -787,9 +832,7 @@ class TestRecallDiscriminator:
 
         assert args is None
         assert llm.sent == [], "no store to ask, no discriminator call"
-        assert any(
-            "store_unavailable" in r.getMessage() for r in caplog.records
-        )
+        assert any("store_unavailable" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.asyncio
     async def test_no_gate_wired_still_asks(self):
@@ -805,7 +848,9 @@ class TestRecallDiscriminator:
         assert args == {
             "keep": None,
             "recall": {
-                "query": "首经贸 新闻", "since": None, "until": None,
+                "query": "首经贸 新闻",
+                "since": None,
+                "until": None,
                 "anchor": None,
             },
         }
@@ -824,7 +869,8 @@ class TestRecallDiscriminator:
             await self._loop(llm)._discriminate_recall(conv, "查一下首经贸新闻")
 
         line = next(
-            r.getMessage() for r in caplog.records
+            r.getMessage()
+            for r in caplog.records
             if "recall_discriminated" in r.getMessage()
         )
         assert "query=首经贸 新闻" in line
@@ -845,8 +891,7 @@ class TestRecallDiscriminator:
 
         assert args is None
         assert any(
-            "recall_discriminator_unparsed" in r.getMessage()
-            for r in caplog.records
+            "recall_discriminator_unparsed" in r.getMessage() for r in caplog.records
         )
 
 
@@ -861,30 +906,48 @@ class TestTrimAfterSave:
     @staticmethod
     def _cfg():
         from slife.config import Config, ModelConfig
+
         return Config(
-            models=[ModelConfig(ref="t/m", provider="t", api_model="m",
-                                display_name="M", api_key="k",
-                                context_window=200, supports_vision=False)],
-            active_model_ref="t/m", tools=[], agent_name="test",
+            models=[
+                ModelConfig(
+                    ref="t/m",
+                    provider="t",
+                    api_model="m",
+                    display_name="M",
+                    api_key="k",
+                    context_window=200,
+                    supports_vision=False,
+                )
+            ],
+            active_model_ref="t/m",
+            tools=[],
+            agent_name="test",
         )
 
     @staticmethod
     def _conv(turns):
         conv = MessageHistory(system_prompt="SYS")
         for i in range(turns):
-            conv.add_user_message(f"第{i}轮：一段比较长的用户输入内容，用来撑大Context usage估计。")
+            conv.add_user_message(
+                f"第{i}轮：一段比较长的用户输入内容，用来撑大Context usage估计。"
+            )
             # Every saved turn carries its turn rowid on its opening user
             # message (set at save, re-stamped on restore) — the trim reads
             # them to drop the evicted turns from the persisted list.
             conv.messages[-1]["_turn_id"] = i + 1
-            conv.add_assistant_message(f"这是第{i}轮的回复，也需要一定长度以参与 token 估算。")
+            conv.add_assistant_message(
+                f"这是第{i}轮的回复，也需要一定长度以参与 token 估算。"
+            )
         return conv
 
     @staticmethod
     def _loop(conv, cfg, **kwargs):
         return AgentLoop(
-            llm_client=None, tool_registry=create_tools_from_config(),
-            context_window=200, context_ceiling=0.8, context_floor=0.2,
+            llm_client=None,
+            tool_registry=create_tools_from_config(),
+            context_window=200,
+            context_ceiling=0.8,
+            context_floor=0.2,
             rebuild_message=kwargs.get("rebuild", False),
             drop_context_turns=kwargs.get("drop"),
         )
@@ -892,8 +955,10 @@ class TestTrimAfterSave:
     async def _prime_usage(self, loop, conv):
         """Simulate the just-finished API call's real usage for this conv."""
         from slife.agent.llm_client import TokenUsage
+
         loop._usage_by_history[id(conv)] = TokenUsage(
-            prompt_tokens=conv.count_tokens(), total_tokens=conv.count_tokens(),
+            prompt_tokens=conv.count_tokens(),
+            total_tokens=conv.count_tokens(),
         )
 
     @pytest.mark.asyncio
@@ -908,7 +973,9 @@ class TestTrimAfterSave:
         # oldest turns removed (each turn carries one user message)
         assert len([m for m in conv.messages if m.get("role") == "user"]) < 12
         # trim note appended to the last assistant message
-        assert "oldest turns have been removed from context" in conv.messages[-1].get("content", "")
+        assert "oldest turns have been removed from context" in conv.messages[-1].get(
+            "content", ""
+        )
         # no tool-call pair was produced (internal mechanism, not a tool)
         assert not any(m.get("tool_calls") for m in conv.messages)
 
@@ -926,7 +993,9 @@ class TestTrimAfterSave:
         await loop._trim_context(conv)
 
         assert len([m for m in conv.messages if m.get("role") == "user"]) < 12
-        assert "oldest turns have been removed from context" in conv.messages[-1].get("content", "")
+        assert "oldest turns have been removed from context" in conv.messages[-1].get(
+            "content", ""
+        )
 
     @pytest.mark.asyncio
     async def test_no_trim_when_under_ceiling(self):
@@ -938,7 +1007,10 @@ class TestTrimAfterSave:
         await loop._trim_context(conv)
 
         assert len([m for m in conv.messages if m.get("role") == "user"]) == 1
-        assert not any("oldest turns have been removed from context" in (m.get("content") or "") for m in conv.messages)
+        assert not any(
+            "oldest turns have been removed from context" in (m.get("content") or "")
+            for m in conv.messages
+        )
 
     @pytest.mark.asyncio
     async def test_drops_evicted_turn_ids(self):
@@ -976,7 +1048,10 @@ class TestTrimAfterSave:
         # The marker is consumed and nothing was trimmed.
         assert loop._just_restored_history is None
         assert len([m for m in conv.messages if m.get("role") == "user"]) == 12
-        assert not any("oldest turns have been removed from context" in (m.get("content") or "") for m in conv.messages)
+        assert not any(
+            "oldest turns have been removed from context" in (m.get("content") or "")
+            for m in conv.messages
+        )
 
     @pytest.mark.asyncio
     async def test_second_turn_after_restore_trims(self):
@@ -992,7 +1067,9 @@ class TestTrimAfterSave:
         await self._prime_usage(loop, conv)
         await loop._trim_context(conv)
         assert len([m for m in conv.messages if m.get("role") == "user"]) < 12
-        assert "oldest turns have been removed from context" in conv.messages[-1].get("content", "")
+        assert "oldest turns have been removed from context" in conv.messages[-1].get(
+            "content", ""
+        )
 
 
 class TestTheWorkerWindowBound:
@@ -1006,28 +1083,46 @@ class TestTheWorkerWindowBound:
     @staticmethod
     def _cfg():
         from slife.config import Config, ModelConfig
+
         return Config(
-            models=[ModelConfig(ref="t/m", provider="t", api_model="m",
-                                display_name="M", api_key="k",
-                                context_window=200, supports_vision=False)],
-            active_model_ref="t/m", tools=[], agent_name="test",
+            models=[
+                ModelConfig(
+                    ref="t/m",
+                    provider="t",
+                    api_model="m",
+                    display_name="M",
+                    api_key="k",
+                    context_window=200,
+                    supports_vision=False,
+                )
+            ],
+            active_model_ref="t/m",
+            tools=[],
+            agent_name="test",
         )
 
     @staticmethod
     def _conv(turns):
         conv = MessageHistory(system_prompt="SYS")
         for i in range(turns):
-            conv.add_user_message(f"第{i}轮：一段比较长的用户输入内容，用来撑大Context usage估计。")
-            conv.add_assistant_message(f"这是第{i}轮的回复，也需要一定长度以参与 token 估算。")
+            conv.add_user_message(
+                f"第{i}轮：一段比较长的用户输入内容，用来撑大Context usage估计。"
+            )
+            conv.add_assistant_message(
+                f"这是第{i}轮的回复，也需要一定长度以参与 token 估算。"
+            )
         return conv
 
     @staticmethod
     def _loop(cfg, **kwargs):
         from slife.agent.llm_client import LLMClient
+
         return AgentLoop(
             llm_client=LLMClient(cfg.active_model),
             tool_registry=create_tools_from_config(),
-            context_window=200, context_ceiling=0.8, context_floor=0.2,
+            context_window=200,
+            context_ceiling=0.8,
+            context_floor=0.2,
             persist_turns=kwargs.get("persist_turns", True),
         )
 
@@ -1090,6 +1185,7 @@ class TestConsecutiveUserFix:
 
     def _anthropic_roles(self, conv):
         from slife.agent.llm_backends.anthropic import AnthropicBackend
+
         _, msgs = AnthropicBackend._oa_msgs_to_anthropic(conv.to_openai_messages())
         return [m["role"] for m in msgs]
 
@@ -1108,12 +1204,16 @@ class TestConsecutiveUserFix:
 
         # Turn 1: user message + harness _turn_prompt, then cancelled (no reply).
         conv.add_user_message("第一轮：帮我搜一下X")
-        await loop._auto_invoke("_turn_prompt", loop._turn_prompt_kwargs(conv, conv.count_tokens()), conv)
+        await loop._auto_invoke(
+            "_turn_prompt", loop._turn_prompt_kwargs(conv, conv.count_tokens()), conv
+        )
         conv._ensure_turn_consistent("")
 
         # Turn 2: the next user message + fresh _turn_prompt.
         conv.add_user_message("第二轮：继续")
-        await loop._auto_invoke("_turn_prompt", loop._turn_prompt_kwargs(conv, conv.count_tokens()), conv)
+        await loop._auto_invoke(
+            "_turn_prompt", loop._turn_prompt_kwargs(conv, conv.count_tokens()), conv
+        )
 
         self._assert_alternating(conv, "cancelled-then-next")
 
@@ -1124,7 +1224,9 @@ class TestConsecutiveUserFix:
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
 
-        await loop._auto_invoke("_turn_prompt", loop._turn_prompt_kwargs(conv, conv.count_tokens()), conv)
+        await loop._auto_invoke(
+            "_turn_prompt", loop._turn_prompt_kwargs(conv, conv.count_tokens()), conv
+        )
 
         last = conv.messages[-2:]
         assert last[0]["role"] == "assistant"
@@ -1139,14 +1241,15 @@ class TestConsecutiveUserFix:
         reg = _registry()
         loop = _loop(reg)
         loop._schedule_provider = lambda: [
-            {"name": "daily", "due_at": "2026-08-25T09:00:00",
-             "status": "missed"},
+            {"name": "daily", "due_at": "2026-08-25T09:00:00", "status": "missed"},
         ]
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
 
         await loop._auto_invoke(
-            "_turn_prompt", loop._turn_prompt_kwargs(conv, conv.count_tokens()), conv,
+            "_turn_prompt",
+            loop._turn_prompt_kwargs(conv, conv.count_tokens()),
+            conv,
         )
 
         assert "Scheduled runs not settled" in conv.messages[-1]["content"]
@@ -1160,14 +1263,15 @@ class TestConsecutiveUserFix:
         reg = _registry()
         loop = _loop(reg)
         loop._a2a_stale_provider = lambda: [
-            {"task_id": "ec604319", "peer": "jack",
-             "since": "2026-09-19T06:39:07Z"},
+            {"task_id": "ec604319", "peer": "jack", "since": "2026-09-19T06:39:07Z"},
         ]
         conv = MessageHistory(system_prompt="SYS")
         conv.add_user_message("hi")
 
         await loop._auto_invoke(
-            "_turn_prompt", loop._turn_prompt_kwargs(conv, conv.count_tokens()), conv,
+            "_turn_prompt",
+            loop._turn_prompt_kwargs(conv, conv.count_tokens()),
+            conv,
         )
 
         content = conv.messages[-1]["content"]
@@ -1184,7 +1288,9 @@ class TestConsecutiveUserFix:
         conv.add_user_message("hi")
 
         await loop._auto_invoke(
-            "_turn_prompt", loop._turn_prompt_kwargs(conv, conv.count_tokens()), conv,
+            "_turn_prompt",
+            loop._turn_prompt_kwargs(conv, conv.count_tokens()),
+            conv,
         )
         assert "died with the previous process" not in conv.messages[-1]["content"]
 
@@ -1227,8 +1333,11 @@ class TestConsecutiveUserFix:
         conv.add_assistant_message(
             "",
             tool_calls=[
-                {"id": "orphan1", "type": "function",
-                 "function": {"name": "search", "arguments": "{}"}},
+                {
+                    "id": "orphan1",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": "{}"},
+                },
             ],
         )
 
@@ -1242,7 +1351,6 @@ class TestConsecutiveUserFix:
         assert "interrupted" in conv.messages[3]["content"]
         # closing assistant keeps roles alternating
         assert conv.messages[-1]["role"] == "assistant"
-
 
 
 class TestRecallNotNeeded:
@@ -1262,6 +1370,7 @@ class TestRecallNotNeeded:
         async def chat(self, messages, **_kwargs):
             self.sent.append([dict(m) for m in messages])
             from types import SimpleNamespace
+
             msg = SimpleNamespace(content=self.reply)
             return SimpleNamespace(choices=[SimpleNamespace(message=msg)]), None
 
@@ -1274,12 +1383,15 @@ class TestRecallNotNeeded:
 
         sim = kwargs.get("set") or []
         loop = AgentLoop(
-            llm_client=self._FakeLLM(reply), tool_registry=_registry(),
-            context_window=1000, context_ceiling=0.8, context_floor=0.2,
+            llm_client=self._FakeLLM(reply),
+            tool_registry=_registry(),
+            context_window=1000,
+            context_ceiling=0.8,
+            context_floor=0.2,
             rebuild_message=True,
             recall_turns=recall,
             turns_by_ids=kwargs.get("turns_by_ids"),
-            set_context_turns=lambda ids: sim.append(list(ids)) or True,  # noqa: E731
+            set_context_turns=lambda ids: sim.append(list(ids)) or True,
             clear_context_turns=kwargs.get("clear"),
         )
         return loop, asked, sim
@@ -1402,12 +1514,12 @@ class TestRecallReplyParsing:
         [
             "not json at all",
             "",
-            '{"context": "nonsense"}',      # neither clear, keep, nor a list
-            '{"context": ["a"]}',           # ids that are not ids
-            '{"context": true}',            # a bool is not a list of ids
-            '{"context": 3}',               # a bare id is not a list
-            '{"recall": "x"}',              # not an object
-            '{"recall": {"query": 5}}',     # not a string
+            '{"context": "nonsense"}',  # neither clear, keep, nor a list
+            '{"context": ["a"]}',  # ids that are not ids
+            '{"context": true}',  # a bool is not a list of ids
+            '{"context": 3}',  # a bare id is not a list
+            '{"recall": "x"}',  # not an object
+            '{"recall": {"query": 5}}',  # not a string
             '{"context": 3, "recall": {"since": "today"}}',
             # An anchor the store does not know.  Read as the default, this
             # would answer the window's *other* end while the decision said
@@ -1442,7 +1554,7 @@ class _BlockingTool(Tool):
 
     name = "blocker"
     description = "Blocks until cancelled."
-    parameters = {"type": "object", "properties": {}, "required": []}
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
 
     def __init__(self, started: asyncio.Event):
         self._started = started
@@ -1477,7 +1589,7 @@ class TestToolPreemption:
         registry = ToolRegistry()
         registry.register(tool)
         loop = _loop(registry)
-        loop.tool_timeout = 3600          # the tool's own bound is not reached
+        loop.tool_timeout = 3600  # the tool's own bound is not reached
 
         history = MessageHistory(system_prompt="SYS")
         history.add_user_message("go")
@@ -1511,10 +1623,16 @@ class TestToolPreemption:
 
         history = MessageHistory(system_prompt="SYS")
         history.add_user_message("go")
-        history.add_assistant_message(content=None, tool_calls=[{
-            "id": "c1", "type": "function",
-            "function": {"name": "blocker", "arguments": "{}"},
-        }])
+        history.add_assistant_message(
+            content=None,
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "blocker", "arguments": "{}"},
+                }
+            ],
+        )
         call = ToolCallInfo(id="c1", name="blocker", arguments={})
 
         batch = asyncio.create_task(

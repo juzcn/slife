@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 import pytest_asyncio
 
-from slife.tools.catalog import CatalogStore, SERVER_CATEGORIES
+from slife.tools.catalog import SERVER_CATEGORIES, CatalogStore
 from slife.tools.catalog_service import (
     JOB_PLUGIN_NAME,
     JOB_PLUGIN_OWN_TOOLS,
@@ -41,19 +41,28 @@ async def svc(db):
 
 def _plugin_rows(plugin, tools, *, load_status="unloaded", status="enabled"):
     """The rows ``_mirror_plugin_tools_catalog`` builds for one plugin."""
-    return [{
-        "name": name,
-        "description": "",
-        "category": plugin_category(plugin, name),
-        "source_id": plugin,
-        "schema": json.dumps({"name": name, "description": "",
-                              "inputSchema": {"type": "object", "properties": {}}}),
-        "status": status,
-        "load_status": load_status,
-    } for name in tools]
+    return [
+        {
+            "name": name,
+            "description": "",
+            "category": plugin_category(plugin, name),
+            "source_id": plugin,
+            "schema": json.dumps(
+                {
+                    "name": name,
+                    "description": "",
+                    "inputSchema": {"type": "object", "properties": {}},
+                }
+            ),
+            "status": status,
+            "load_status": load_status,
+        }
+        for name in tools
+    ]
 
 
 # ── Category: a job vs the plugin's own tool ────────────────────────
+
 
 def test_plugin_category_splits_jobs_from_the_plugins_own_tools():
     assert plugin_category(JOB_PLUGIN_NAME, "job-translate") == "job"
@@ -98,13 +107,22 @@ def test_catalog_category_routes_a_plugin_proxy():
         tool._route = route
         return tool
 
-    assert catalog_category(proxy("turn_search", "memdb", ProxyRoute.DIRECT)) == "plugin"
-    assert catalog_category(proxy("job-translate", JOB_PLUGIN_NAME, ProxyRoute.DIRECT)) == "job"
-    assert catalog_category(proxy("job-list", JOB_PLUGIN_NAME, ProxyRoute.DIRECT)) == "plugin"
+    assert (
+        catalog_category(proxy("turn_search", "memdb", ProxyRoute.DIRECT)) == "plugin"
+    )
+    assert (
+        catalog_category(proxy("job-translate", JOB_PLUGIN_NAME, ProxyRoute.DIRECT))
+        == "job"
+    )
+    assert (
+        catalog_category(proxy("job-list", JOB_PLUGIN_NAME, ProxyRoute.DIRECT))
+        == "plugin"
+    )
     assert catalog_category(proxy("gh__search", "gh", ProxyRoute.EXTERNAL)) == "mcp"
 
 
 # ── Row shape and load semantics ────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_plugin_rows_are_searchable_born_unloaded(db, svc):
@@ -138,6 +156,7 @@ async def test_plugin_tool_disabled_in_its_section_reports_disabled(db, svc):
 
 
 # ── Plugin down / up ────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_plugin_down_marks_its_rows_and_ready_clears_them(db, svc):
@@ -176,15 +195,16 @@ async def test_plugin_restart_does_not_re_derive_the_load_state(db, svc):
     row saying exactly what it said before.
     """
     # Both born loaded — what an autoloaded plugin's rows look like.
-    await db.reconcile(_plugin_rows("memdb", ["turn_search", "turn_count"],
-                                    load_status="loaded"))
-    await svc.unload_tool("turn_count")            # the model's call
+    await db.reconcile(
+        _plugin_rows("memdb", ["turn_search", "turn_count"], load_status="loaded")
+    )
+    await svc.unload_tool("turn_count")  # the model's call
 
     await svc.mark_source_error("memdb")
     await svc.mark_plugin_connected("memdb")
 
-    assert await svc.effective_status("turn_count") == "unloaded"   # kept
-    assert await svc.effective_status("turn_search") == "loaded"    # kept
+    assert await svc.effective_status("turn_count") == "unloaded"  # kept
+    assert await svc.effective_status("turn_search") == "loaded"  # kept
 
 
 @pytest.mark.asyncio
@@ -193,16 +213,30 @@ async def test_plugin_rows_are_spared_by_the_unconfigured_source_purge(db, svc):
     plugin rows carry a source_id too, so without the category scoping every
     plugin tool would be deleted on every boot and every gateway reconcile."""
     await db.reconcile(_plugin_rows("memdb", ["turn_search"]))
-    await db.reconcile([
-        {"name": "gh__search", "description": "", "category": "mcp",
-         "source_id": "gh", "schema": "", "status": None,
-         "load_status": "unloaded"},
-        {"name": "gone__tool", "description": "", "category": "mcp",
-         "source_id": "gone", "schema": "", "status": None,
-         "load_status": "unloaded"},
-    ])
+    await db.reconcile(
+        [
+            {
+                "name": "gh__search",
+                "description": "",
+                "category": "mcp",
+                "source_id": "gh",
+                "schema": "",
+                "status": None,
+                "load_status": "unloaded",
+            },
+            {
+                "name": "gone__tool",
+                "description": "",
+                "category": "mcp",
+                "source_id": "gone",
+                "schema": "",
+                "status": None,
+                "load_status": "unloaded",
+            },
+        ]
+    )
 
-    assert await db.list_source_ids() == {"gh", "gone"}          # servers only
+    assert await db.list_source_ids() == {"gh", "gone"}  # servers only
     assert await db.list_source_ids(categories=None) == {"gh", "gone", "memdb"}
 
     purged = await svc.purge_unconfigured_sources({"gh"})
@@ -216,11 +250,19 @@ async def test_gateway_death_does_not_touch_plugin_rows(db, svc):
     """``plugin`` is a source owner, not an EXTERNAL one: the gateway dying
     must mark the external rows, never memdb's."""
     await db.reconcile(_plugin_rows("memdb", ["turn_search"]))
-    await db.reconcile([
-        {"name": "gh__search", "description": "", "category": "mcp",
-         "source_id": "gh", "schema": "", "status": None,
-         "load_status": "unloaded"},
-    ])
+    await db.reconcile(
+        [
+            {
+                "name": "gh__search",
+                "description": "",
+                "category": "mcp",
+                "source_id": "gh",
+                "schema": "",
+                "status": None,
+                "load_status": "unloaded",
+            },
+        ]
+    )
 
     marked = await svc.mark_all_external_error()
 

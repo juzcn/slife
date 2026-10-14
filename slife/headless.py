@@ -131,7 +131,7 @@ async def _boot(service: AgentService, config: Config) -> str:
         if turns:
             try:
                 restore_context(service, turns, service.message_history, "")
-            except Exception:
+            except Exception:  # noqa: BLE001 — restore is best-effort; restore_context already logged the traceback, the agent must still start
                 # Already logged where it happened; the agent runs on what it
                 # has, as the TUI does.
                 logger.warning("headless_restore_failed turns=%d", len(turns))
@@ -158,7 +158,7 @@ async def _boot(service: AgentService, config: Config) -> str:
     async def _start(name: str, module: str) -> None:
         try:
             statuses[name] = await service.start_plugin_server(name, module)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — plugin isolation: one plugin's spawn failure must not abort the others
             # The spawn hang-guard surfaces as a bare ``TimeoutError`` whose
             # ``str()`` is empty, and every plugin can hit it — without a
             # fallback the reason line says nothing at all about why, which is
@@ -183,7 +183,9 @@ async def _boot(service: AgentService, config: Config) -> str:
             logger.debug("plugin_skipped name=%s", name)
         elif not _warn(name, "never became ready", "", config):
             return t(
-                "required_failed", name=name, reason="plugin never became ready",
+                "required_failed",
+                name=name,
+                reason="plugin never became ready",
             )
 
     await service.start_subagent()

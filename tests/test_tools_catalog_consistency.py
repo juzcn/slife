@@ -10,6 +10,7 @@ connects).  All deterministic — no network, no child processes.
 
 import json
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import AsyncMock
 
 import pytest
@@ -25,7 +26,7 @@ from tests.test_tools_catalog import count_tool_vectors
 class _NativeShell(Tool):
     name = "execute_shell"
     description = "run a shell command"
-    parameters = {"type": "object", "properties": {}, "required": []}
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
     category = "Execution"
 
     async def execute(self, **kwargs) -> str:
@@ -35,7 +36,7 @@ class _NativeShell(Tool):
 class _NativeToolList(Tool):
     name = "system_tools_list"
     description = "list the registered native tools"
-    parameters = {"type": "object", "properties": {}, "required": []}
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
     category = "System"
 
     async def execute(self, **kwargs) -> str:
@@ -106,18 +107,24 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("SLIFE_TOOLS_DB", str(tmp_path / "tools.db"))
     monkeypatch.setenv("TOOLS_FILE", str(tools_path))
     from slife.plugins.mcp_gateway import config as _cfg
+
     _cfg.set_config_path(str(tools_path))  # pin the gateway config resolver
     yield tmp_path
 
 
 def _descriptor(name: str, description: str) -> str:
-    return json.dumps({
-        "name": name, "description": description,
-        "inputSchema": {"type": "object", "properties": {}},
-    })
+    return json.dumps(
+        {
+            "name": name,
+            "description": description,
+            "inputSchema": {"type": "object", "properties": {}},
+        }
+    )
 
 
-async def _mirror_server(catalog: ToolCatalogService, server: str, tools: list[str]) -> None:
+async def _mirror_server(
+    catalog: ToolCatalogService, server: str, tools: list[str]
+) -> None:
     """What the reconcile does when a server connects: mirror its tool rows.
 
     The category comes from tools.yaml (``_server_category``), never from a
@@ -160,7 +167,7 @@ async def test_empty_db_opens_and_seeds(_isolate):
     snap = await svc.snapshot_loaded()
     assert snap == set(ALWAYS_LOADED)
     assert (await store.get_tool("execute_shell"))["load_status"] == "unloaded"
-    assert await store.list_source_ids() == set()     # no server has connected
+    assert await store.list_source_ids() == set()  # no server has connected
     await store.close()
 
 
@@ -182,7 +189,7 @@ async def test_a_hand_edited_cli_entry_lands_without_a_restart(_isolate, sample_
         svc = ToolCatalogService(store, write_owner=True)
         service = AgentService(sample_config)
         service._catalog = svc
-        service._tool_ctx.catalog = svc      # the mirrors write through the ctx
+        service._tool_ctx.catalog = svc  # the mirrors write through the ctx
 
         # First pass primes the mtimes (and mirrors the seeded `mycmd`).
         await service._refresh_local_rows_if_changed(svc)
@@ -202,20 +209,18 @@ async def test_a_hand_edited_cli_entry_lands_without_a_restart(_isolate, sample_
             encoding="utf-8",
         )
         stamp = tools_path.stat().st_mtime + 10
-        os.utime(tools_path, (stamp, stamp))   # a human edit is never instant
+        os.utime(tools_path, (stamp, stamp))  # a human edit is never instant
 
         await service._refresh_local_rows_if_changed(svc)
 
         assert "cli:byhand" in await store.names_by_category("cli")
         # …and an unchanged file is a no-op (two stats, nothing rewritten).
         before = [
-            dict(r) for r in await store.scan_effective()
-            if r["category"] == "cli"
+            dict(r) for r in await store.scan_effective() if r["category"] == "cli"
         ]
         await service._refresh_local_rows_if_changed(svc)
         after = [
-            dict(r) for r in await store.scan_effective()
-            if r["category"] == "cli"
+            dict(r) for r in await store.scan_effective() if r["category"] == "cli"
         ]
         assert before == after
     finally:
@@ -224,7 +229,9 @@ async def test_a_hand_edited_cli_entry_lands_without_a_restart(_isolate, sample_
 
 @pytest.mark.asyncio
 async def test_a_broken_skill_is_re_checked_without_an_mtime_move(
-    _isolate, sample_config, monkeypatch,
+    _isolate,
+    sample_config,
+    monkeypatch,
 ):
     """A skill's ``error`` comes from the source, so the source has to be
     re-read — the mtime gate alone would leave the row ``error`` until the
@@ -251,15 +258,17 @@ async def test_a_broken_skill_is_re_checked_without_an_mtime_move(
         await service._refresh_local_rows_if_changed(svc)
         row = await store.get_tool("skill:broken")
         assert row is not None and row["status"] == "error"
-        assert row["schema"] == "n/a"          # no text to index
+        assert row["schema"] == "n/a"  # no text to index
 
         # The fix: it becomes a file.  Only the FILE moved, so the directory's
         # mtime is pinned back — the error-recheck is the only thing that can
         # notice.
         import os
+
         (skills_dir / "broken" / "SKILL.md").rmdir()
         (skills_dir / "broken" / "SKILL.md").write_text(
-            "---\nname: broken\ndescription: fixed\n---\nbody\n", encoding="utf-8",
+            "---\nname: broken\ndescription: fixed\n---\nbody\n",
+            encoding="utf-8",
         )
         stamp = skills_dir.stat().st_mtime - 10
         os.utime(skills_dir, (stamp, stamp))
@@ -286,7 +295,11 @@ async def test_a_config_disabled_builtin_gets_a_row_marked_disabled(_isolate):
     class _DisabledNative(Tool):
         name = "native_off"
         description = "a builtin the config switched off"
-        parameters = {"type": "object", "properties": {}, "required": []}
+        parameters: ClassVar[dict] = {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }
         category = "System"
 
         async def execute(self, **kwargs) -> str:
@@ -296,12 +309,14 @@ async def test_a_config_disabled_builtin_gets_a_row_marked_disabled(_isolate):
     await store.open()
     try:
         svc = ToolCatalogService(
-            store, write_owner=True, disabled_builtins=("native_off",),
+            store,
+            write_owner=True,
+            disabled_builtins=("native_off",),
         )
         await svc.sync_system_tools([_NativeShell(), _DisabledNative()])
 
         row = await store.get_tool("native_off")
-        assert row is not None                    # yaml names it → the db has it
+        assert row is not None  # yaml names it → the db has it
         assert row["status"] == "disabled"
         assert await svc.effective_status("native_off") == "disabled"
         assert "native_off" not in await svc.snapshot_loaded()
@@ -329,7 +344,11 @@ async def test_the_boot_seed_sweeps_the_builtins_the_code_dropped(_isolate):
     class _RetiredNative(Tool):
         name = "native_retired"
         description = "a builtin since deleted from the code"
-        parameters = {"type": "object", "properties": {}, "required": []}
+        parameters: ClassVar[dict] = {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }
         category = "System"
 
         async def execute(self, **kwargs) -> str:
@@ -338,7 +357,11 @@ async def test_the_boot_seed_sweeps_the_builtins_the_code_dropped(_isolate):
     class _OffNative(Tool):
         name = "native_off"
         description = "a builtin the config switched off"
-        parameters = {"type": "object", "properties": {}, "required": []}
+        parameters: ClassVar[dict] = {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }
         category = "System"
 
         async def execute(self, **kwargs) -> str:
@@ -348,11 +371,14 @@ async def test_the_boot_seed_sweeps_the_builtins_the_code_dropped(_isolate):
     await store.open()
     try:
         svc = ToolCatalogService(
-            store, write_owner=True, disabled_builtins=("native_off",),
+            store,
+            write_owner=True,
+            disabled_builtins=("native_off",),
         )
         # the version of the code that still had the class
         await svc.sync_system_tools(
-            [_NativeShell(), _OffNative(), _RetiredNative()], own_builtins=True,
+            [_NativeShell(), _OffNative(), _RetiredNative()],
+            own_builtins=True,
         )
         assert await store.get_tool("native_retired") is not None
         await _mirror_server(svc, "svcA", ["x"])
@@ -362,8 +388,8 @@ async def test_the_boot_seed_sweeps_the_builtins_the_code_dropped(_isolate):
         await svc.sync_system_tools([_NativeShell(), _OffNative()], own_builtins=True)
         delta = store.end_ops()
 
-        assert await store.get_tool("native_retired") is None   # no claimant left
-        assert delta.removed == 1                  # what the sync line prints
+        assert await store.get_tool("native_retired") is None  # no claimant left
+        assert delta.removed == 1  # what the sync line prints
         # `enabled: false` is not death — the seed handed its instance over
         row = await store.get_tool("native_off")
         assert row is not None and row["status"] == "disabled"
@@ -385,7 +411,11 @@ async def test_an_unscoped_sync_without_the_flag_keeps_vanished_builtins(_isolat
     class _PartialNative(Tool):
         name = "native_partial"
         description = "a builtin one caller's list happens not to carry"
-        parameters = {"type": "object", "properties": {}, "required": []}
+        parameters: ClassVar[dict] = {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }
         category = "System"
 
         async def execute(self, **kwargs) -> str:
@@ -396,7 +426,7 @@ async def test_an_unscoped_sync_without_the_flag_keeps_vanished_builtins(_isolat
     try:
         svc = ToolCatalogService(store, write_owner=True)
         await svc.sync_system_tools([_NativeShell(), _PartialNative()])
-        await svc.sync_system_tools([_NativeShell()])      # no flag
+        await svc.sync_system_tools([_NativeShell()])  # no flag
         assert await store.get_tool("native_partial") is not None
     finally:
         await store.close()
@@ -413,8 +443,9 @@ async def test_nothing_external_is_usable_before_a_connect(_isolate):
     store = CatalogStore(_isolate / "tools.db")
     await store.open()
     svc = ToolCatalogService(store, write_owner=True)
-    await store.upsert_tool("serper__search", category="mcp", source_id="serper",
-                            load_status="loaded")
+    await store.upsert_tool(
+        "serper__search", category="mcp", source_id="serper", load_status="loaded"
+    )
 
     await svc.mark_all_external_error()
 
@@ -450,7 +481,7 @@ async def test_connect_mirrors_unloaded_and_disconnect_marks_error(_isolate):
 
     await svc.mark_source_error("serper")
     snap = await svc.snapshot_loaded()
-    assert "serper__search" not in snap            # gone from the tool list
+    assert "serper__search" not in snap  # gone from the tool list
     assert await svc.effective_status("serper__search") == "error"
     assert (await store.get_tool("serper__search"))["load_status"] == "loaded"
     # the OTHER server is untouched by its neighbour's outage
@@ -496,10 +527,16 @@ async def test_purge_unconfigured_sources(_isolate):
     await store.open()
     svc = ToolCatalogService(store, write_owner=True)
     await _mirror_server(svc, "serper", ["search"])
-    await store.upsert_tool("ghost__x", category="mcp", source_id="ghost",
-                            schema=_descriptor("x", "x"), load_status="unloaded")
+    await store.upsert_tool(
+        "ghost__x",
+        category="mcp",
+        source_id="ghost",
+        schema=_descriptor("x", "x"),
+        load_status="unloaded",
+    )
 
     from slife.plugins.mcp_gateway import config as _cfg
+
     purged = await svc.purge_unconfigured_sources(set(_cfg.servers()))
 
     assert purged == {"ghost"}
@@ -518,8 +555,8 @@ async def test_a_tool_a_server_stopped_publishing_loses_its_row(_isolate):
     catalog row, or ``tool_search`` goes on offering it and ``func_tool_load``
     materializes a proxy with nothing behind it."""
     from types import SimpleNamespace
-    from slife.agent.roles import Role, caps_for
 
+    from slife.agent.roles import Role, caps_for
     from slife.agent.service import AgentService
 
     store = CatalogStore(_isolate / "tools.db")
@@ -528,24 +565,28 @@ async def test_a_tool_a_server_stopped_publishing_loses_its_row(_isolate):
         svc = ToolCatalogService(store, write_owner=True)
         stub = SimpleNamespace(_catalog=svc, caps=caps_for(Role.MAIN))
         listed = [
-            {"name": t, "description": f"{t} desc",
-             "inputSchema": {"type": "object", "properties": {}}}
+            {
+                "name": t,
+                "description": f"{t} desc",
+                "inputSchema": {"type": "object", "properties": {}},
+            }
             for t in ("search", "scrape")
         ]
         await AgentService._upsert_external_catalog_rows(
-            stub, "serper", listed, category="mcp")
+            stub, "serper", listed, category="mcp"
+        )
         assert await store.get_tool("serper__scrape") is not None
-        await store.replace_embedding_chunks(
-            {"doc_id": "serper__scrape"}, [[0.1, 0.2]])
+        await store.replace_embedding_chunks({"doc_id": "serper__scrape"}, [[0.1, 0.2]])
         assert await count_tool_vectors(store) == 1
 
         # the server republishes only `search`
         await AgentService._upsert_external_catalog_rows(
-            stub, "serper", listed[:1], category="mcp")
+            stub, "serper", listed[:1], category="mcp"
+        )
 
         assert await store.get_tool("serper__scrape") is None
         assert await svc.effective_status("serper__scrape") is None
-        assert await count_tool_vectors(store) == 0        # vectors went too
+        assert await count_tool_vectors(store) == 0  # vectors went too
         # …and the survivors are untouched: a sibling's removal is not a reason
         # to reset what the model loaded
         assert await store.get_tool("serper__search") is not None
@@ -565,8 +606,8 @@ async def test_an_empty_listing_never_purges_a_servers_rows(_isolate):
     second line of defence, so a future caller cannot turn the purge into a
     wipe by handing it an empty set."""
     from types import SimpleNamespace
-    from slife.agent.roles import Role, caps_for
 
+    from slife.agent.roles import Role, caps_for
     from slife.agent.service import AgentService
 
     store = CatalogStore(_isolate / "tools.db")
@@ -577,7 +618,8 @@ async def test_an_empty_listing_never_purges_a_servers_rows(_isolate):
         await _mirror_server(svc, "serper", ["search", "scrape"])
 
         await AgentService._upsert_external_catalog_rows(
-            stub, "serper", [], category="mcp")
+            stub, "serper", [], category="mcp"
+        )
 
         assert await store.get_tool("serper__search") is not None
         assert await store.get_tool("serper__scrape") is not None
@@ -603,8 +645,8 @@ async def test_row_state_survives_a_restart(_isolate):
     await store.open()
     svc = ToolCatalogService(store, write_owner=True)
     await _mirror_server(svc, "serper", ["search", "scrape"])
-    await svc.load_tool("serper__search")            # user intent: loaded
-    await svc.mark_source_error("serper")            # …then the server died
+    await svc.load_tool("serper__search")  # user intent: loaded
+    await svc.mark_source_error("serper")  # …then the server died
     await store.close()
 
     store2 = CatalogStore(db)
@@ -651,9 +693,13 @@ async def test_connectivity_projection_follows_check(_isolate, sample_config):
         states = {"serper": True, "weather": False}
 
         async def _check(*_a, **_kw):
-            return json.dumps({"servers": [
-                {"name": name, "tools_ok": ok} for name, ok in states.items()
-            ]})
+            return json.dumps(
+                {
+                    "servers": [
+                        {"name": name, "tools_ok": ok} for name, ok in states.items()
+                    ]
+                }
+            )
 
         client.call_tool = _check
 
@@ -673,7 +719,8 @@ async def test_connectivity_projection_follows_check(_isolate, sample_config):
 
 @pytest.mark.asyncio
 async def test_switching_a_server_off_keeps_its_rows_and_the_load_state(
-    _isolate, sample_config,
+    _isolate,
+    sample_config,
 ):
     """One column, two lanes: the config switch and the liveness verdict.
 
@@ -706,15 +753,15 @@ async def test_switching_a_server_off_keeps_its_rows_and_the_load_state(
         await service._mark_server_connectivity(client, {"serper"}, {"serper": False})
 
         row = await store.get_tool("serper__search")
-        assert row["status"] == "disabled"    # the switch
-        assert row["load_status"] == "loaded"      # the model's decision, untouched
+        assert row["status"] == "disabled"  # the switch
+        assert row["load_status"] == "loaded"  # the model's decision, untouched
         assert effective_from_row(row) == "disabled"
 
         # Switched back on while still down: now it IS the liveness verdict
         # — and the row still remembers that the model had loaded it.
         await service._mark_server_connectivity(client, {"serper"}, {"serper": True})
         row = await store.get_tool("serper__search")
-        assert row["status"] == "error"       # back on, and now the liveness verdict
+        assert row["status"] == "error"  # back on, and now the liveness verdict
         assert effective_from_row(row) == "error"
         assert row["load_status"] == "loaded"
     finally:
@@ -749,7 +796,9 @@ async def test_connectivity_probe_failure_is_not_a_verdict(_isolate, sample_conf
 
 @pytest.mark.asyncio
 async def test_a_check_that_never_answers_is_not_a_verdict_either(
-    _isolate, sample_config, monkeypatch,
+    _isolate,
+    sample_config,
+    monkeypatch,
 ):
     """The probe is bounded like every other gateway await in the pass.
 
@@ -783,7 +832,8 @@ async def test_a_check_that_never_answers_is_not_a_verdict_either(
         client.call_tool = _never_answers
 
         states = await asyncio.wait_for(
-            service._mark_server_connectivity(client, {"serper"}), timeout=5.0,  # noqa-timeout
+            service._mark_server_connectivity(client, {"serper"}),
+            timeout=5.0,  # noqa-timeout
         )
 
         assert states.pending == frozenset()  # no verdict, and nothing to wait on
@@ -803,8 +853,8 @@ async def test_a_check_that_never_answers_is_not_a_verdict_either(
 async def test_gateway_child_exit_marks_external_tools_error(_isolate):
     """The watchdog's exit hook is the crash path for the connectivity mark."""
     from types import SimpleNamespace
-    from slife.agent.roles import Role, caps_for
 
+    from slife.agent.roles import Role, caps_for
     from slife.agent.service import AgentService
 
     store = CatalogStore(_isolate / "tools.db")

@@ -41,7 +41,7 @@ async def restore_session(
 
     try:
         plan = restore_context(app.service, turns, history, assistant_prefix)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — restore is best-effort; restore_context already logged the traceback, so show a red line and return
         # The red line reaches the reader; ``restore_context`` already logged
         # the traceback for whoever has to explain it.  Returning normally
         # also means the caller's own handler never sees the exception, so

@@ -37,6 +37,7 @@ def baidu_news(query: str = "", count: int = 5, freshness: str = "") -> str:
             errors="replace",
             timeout=60,
             env={**os.environ},
+            check=False,
         )
     except FileNotFoundError as e:
         return f"Error: python not found: {e}"
@@ -83,7 +84,13 @@ def _find_search_script() -> str | None:
     """Locate skills/baidu-search/scripts/search.py under the data/workspace dirs."""
     candidates = [
         os.path.join(os.getcwd(), "skills", "baidu-search", "scripts", "search.py"),
-        os.path.join(os.path.dirname(os.getcwd()), "skills", "baidu-search", "scripts", "search.py"),
+        os.path.join(
+            os.path.dirname(os.getcwd()),
+            "skills",
+            "baidu-search",
+            "scripts",
+            "search.py",
+        ),
         os.path.expanduser("~/.slife/skills/baidu-search/scripts/search.py"),
     ]
     for cand in candidates:

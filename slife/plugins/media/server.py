@@ -39,6 +39,7 @@ from slife.plugins.media.config import (
 )
 from slife.server_utils import create_plugin_server, run_plugin_server
 
+
 @asynccontextmanager
 async def _media_lifespan(_app):
     """Complete-MCP-lifecycle declaration for the media plugin.
@@ -60,7 +61,9 @@ async def _media_lifespan(_app):
                 await adapter.close()
             except Exception:
                 logger.debug(
-                    "media_adapter_close_failed provider=%s", pid, exc_info=True,
+                    "media_adapter_close_failed provider=%s",
+                    pid,
+                    exc_info=True,
                 )
         _adapters.clear()
 
@@ -151,7 +154,10 @@ _FAILURE_MESSAGE_CHARS = 240
 
 
 def _record_call(
-    pid: str, kind: str, model: str, e: Exception | None = None,
+    pid: str,
+    kind: str,
+    model: str,
+    e: Exception | None = None,
 ) -> None:
     """Record one call's outcome for ``(pid, kind)``.
 
@@ -205,32 +211,24 @@ def _validate_image_size(size: str) -> str | None:
     m = re.match(r"^(\d+)\s*[xX*]\s*(\d+)$", s)
     if not m:
         return (
-            "Error: Invalid image size %r. Expected the form 'WIDTH*HEIGHT' "
-            "with positive integers, e.g. '1024*1024'." % (size,)
+            f"Error: Invalid image size {size!r}. Expected the form 'WIDTH*HEIGHT' "
+            "with positive integers, e.g. '1024*1024'."
         )
     w, h = int(m.group(1)), int(m.group(2))
     pixels = w * h
     if pixels < _IMAGE_MIN_PIXELS:
         return (
-            "Error: Image size %r is too small (%d total pixels). Bailian "
-            "requires total pixels between %d and %d "
-            "(about %dx%d to %dx%d)." % (
-                size, pixels, _IMAGE_MIN_PIXELS, _IMAGE_MAX_PIXELS,
-                768, 768, 4096, 4096,
-            )
+            f"Error: Image size {size!r} is too small ({pixels} total pixels). "
+            f"Bailian requires total pixels between {_IMAGE_MIN_PIXELS} and "
+            f"{_IMAGE_MAX_PIXELS} (about 768x768 to 4096x4096)."
         )
     if pixels > _IMAGE_MAX_PIXELS:
         return (
-            "Error: Image size %r is too large (%d total pixels). Bailian "
-            "requires total pixels between %d and %d "
-            "(about %dx%d to %dx%d)." % (
-                size, pixels, _IMAGE_MIN_PIXELS, _IMAGE_MAX_PIXELS,
-                768, 768, 4096, 4096,
-            )
+            f"Error: Image size {size!r} is too large ({pixels} total pixels). "
+            f"Bailian requires total pixels between {_IMAGE_MIN_PIXELS} and "
+            f"{_IMAGE_MAX_PIXELS} (about 768x768 to 4096x4096)."
         )
     return None
-
-
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -245,7 +243,10 @@ def _validate_image_size(size: str) -> str | None:
     ),
 )
 async def generate_image(
-    prompt: str, model: str = "", size: str = "", image: str = "",
+    prompt: str,
+    model: str = "",
+    size: str = "",
+    image: str = "",
     folder: str = "",
 ) -> str:
     """Generate an image from a text prompt.
@@ -280,13 +281,24 @@ async def generate_image(
             extra_params=entry.params,
         )
         _record_call(pid, "image", entry.model)
-        logger.info("media_image_generated provider=%s model=%s path=%s",
-                    pid, entry.model, result)
+        logger.info(
+            "media_image_generated provider=%s model=%s path=%s",
+            pid,
+            entry.model,
+            result,
+        )
         return result
     except Exception as e:
         _record_call(pid, "image", model_label or model, e)
-        if not isinstance(e, (MediaConfigError, MediaAdapterError,
-                              FileNotFoundError, NotImplementedError)):
+        if not isinstance(
+            e,
+            (
+                MediaConfigError,
+                MediaAdapterError,
+                FileNotFoundError,
+                NotImplementedError,
+            ),
+        ):
             logger.exception("generate_image_failed")
         return _error(e)
 
@@ -299,9 +311,14 @@ async def generate_image(
     ),
 )
 async def generate_video(
-    prompt: str, model: str = "", image: str = "",
-    resolution: str = "", ratio: str = "", duration: int = 0,
-    folder: str = "", timeout: float | None = None,
+    prompt: str,
+    model: str = "",
+    image: str = "",
+    resolution: str = "",
+    ratio: str = "",
+    duration: int = 0,
+    folder: str = "",
+    timeout: float | None = None,
 ) -> str:
     """Generate a video from a text prompt.
 
@@ -345,13 +362,24 @@ async def generate_video(
             deadline_s=deadline_s,
         )
         _record_call(pid, "video", entry.model)
-        logger.info("media_video_generated provider=%s model=%s path=%s",
-                    pid, entry.model, result)
+        logger.info(
+            "media_video_generated provider=%s model=%s path=%s",
+            pid,
+            entry.model,
+            result,
+        )
         return result
     except Exception as e:
         _record_call(pid, "video", model_label or model, e)
-        if not isinstance(e, (MediaConfigError, MediaAdapterError,
-                              FileNotFoundError, NotImplementedError)):
+        if not isinstance(
+            e,
+            (
+                MediaConfigError,
+                MediaAdapterError,
+                FileNotFoundError,
+                NotImplementedError,
+            ),
+        ):
             logger.exception("generate_video_failed")
         return _error(e)
 
@@ -363,7 +391,10 @@ async def generate_video(
     ),
 )
 async def text_to_speech(
-    text: str, model: str = "", voice: str = "", folder: str = "",
+    text: str,
+    model: str = "",
+    voice: str = "",
+    folder: str = "",
 ) -> str:
     """Synthesize speech from text.
 
@@ -392,22 +423,31 @@ async def text_to_speech(
             extra_params=entry.params,
         )
         _record_call(pid, "tts", entry.model)
-        logger.info("media_tts_synthesized provider=%s model=%s path=%s",
-                    pid, entry.model, result)
+        logger.info(
+            "media_tts_synthesized provider=%s model=%s path=%s",
+            pid,
+            entry.model,
+            result,
+        )
         return result
     except Exception as e:
         _record_call(pid, "tts", model_label or model, e)
-        if not isinstance(e, (MediaConfigError, MediaAdapterError,
-                              FileNotFoundError, NotImplementedError)):
+        if not isinstance(
+            e,
+            (
+                MediaConfigError,
+                MediaAdapterError,
+                FileNotFoundError,
+                NotImplementedError,
+            ),
+        ):
             logger.exception("text_to_speech_failed")
         return _error(e)
 
 
 @mcp.tool(
     name="transcribe_audio",
-    description=(
-        "Transcribe speech from an audio file; returns the transcript."
-    ),
+    description=("Transcribe speech from an audio file; returns the transcript."),
 )
 async def transcribe_audio(path: str, model: str = "") -> str:
     """Transcribe speech from an audio file.
@@ -442,13 +482,24 @@ async def transcribe_audio(path: str, model: str = "") -> str:
             extra_params=entry.params,
         )
         _record_call(pid, "asr", entry.model)
-        logger.info("media_audio_transcribed provider=%s model=%s chars=%d",
-                    pid, entry.model, len(result))
+        logger.info(
+            "media_audio_transcribed provider=%s model=%s chars=%d",
+            pid,
+            entry.model,
+            len(result),
+        )
         return result
     except Exception as e:
         _record_call(pid, "asr", model_label or model, e)
-        if not isinstance(e, (MediaConfigError, MediaAdapterError,
-                              FileNotFoundError, NotImplementedError)):
+        if not isinstance(
+            e,
+            (
+                MediaConfigError,
+                MediaAdapterError,
+                FileNotFoundError,
+                NotImplementedError,
+            ),
+        ):
             logger.exception("transcribe_audio_failed")
         return _error(e)
 
@@ -473,7 +524,10 @@ async def __check() -> str:
     entries.  Facts only — no levels, no remediation hints.
     """
     result: dict = {
-        "configured": False, "error": "", "providers": [], "calls": [],
+        "configured": False,
+        "error": "",
+        "providers": [],
+        "calls": [],
     }
     try:
         cfg = _ensure_config()
@@ -482,14 +536,16 @@ async def __check() -> str:
         result["configured"] = True
         for pid in sorted(cfg.providers):
             p = cfg.providers[pid]
-            result["providers"].append({
-                "id": pid,
-                "api": p.api,
-                "kinds": sorted({m.kind for m in p.models}),
-                "has_api_key": bool(p.api_key),
-            })
+            result["providers"].append(
+                {
+                    "id": pid,
+                    "api": p.api,
+                    "kinds": sorted({m.kind for m in p.models}),
+                    "has_api_key": bool(p.api_key),
+                }
+            )
         result["calls"] = _call_facts()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — health probe reports facts, never raises
         logger.warning("media_check_failed err=%s", e)
         result["error"] = str(e)
     return json.dumps(result, ensure_ascii=False, indent=2)

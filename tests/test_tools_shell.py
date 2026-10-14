@@ -1,17 +1,15 @@
 """Tests for Slife.tools.shell — shell command execution tool."""
 
-from contextlib import contextmanager
-
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
 import base64
-import pytest
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from slife.tools.exec import ShellTool, _shell_launch, _shell_output_codec
 
+pytestmark = pytest.mark.unit
 
 
 @contextmanager
@@ -61,8 +59,6 @@ class _HangingStream:
     async def __anext__(self):
         await asyncio.sleep(3600)  # pragma: no cover
         raise StopAsyncIteration
-
-
 
 
 # ── Tool metadata ─────────────────────────────────────────────────────
@@ -257,7 +253,8 @@ class TestShellArgv:
         """Detected powershell → powershell -EncodedCommand (quote-proof)."""
         monkeypatch.setattr("os.name", "nt")
         with patch(
-            "slife.platform.detect_current_shell", return_value="powershell",
+            "slife.platform.detect_current_shell",
+            return_value="powershell",
         ) as mock_detect:
             argv = _shell_launch("Get-Date")
         mock_detect.assert_called_once_with()
@@ -281,10 +278,11 @@ class TestShellArgv:
         """
         monkeypatch.setattr("os.name", "nt")
         with patch(
-            "slife.platform.detect_current_shell", return_value="cmd",
+            "slife.platform.detect_current_shell",
+            return_value="cmd",
         ):
             launch = _shell_launch('echo "x"')
-        assert launch == 'echo "x"'            # verbatim; nothing escaped
+        assert launch == 'echo "x"'  # verbatim; nothing escaped
         assert '"' in launch and "\\" not in launch
 
     def test_posix_uses_shell(self, monkeypatch):

@@ -66,7 +66,10 @@ _DAY_WORDS: dict[str, int] = {"yesterday": -1, "today": 0, "tomorrow": 1}
 #: Calendar periods ``last``/``this`` may name, as name -> months per period
 #: (``week`` is 0: weeks are day-based, see :func:`_shift_period`).
 _PERIOD_MONTHS: dict[str, int] = {
-    "week": 0, "month": 1, "quarter": 3, "year": 12,
+    "week": 0,
+    "month": 1,
+    "quarter": 3,
+    "year": 12,
 }
 
 _PERIOD_RE = re.compile(r"^(last|this)\s+(week|month|quarter|year)$")
@@ -110,7 +113,7 @@ def _resolve_period(which: str, period: str, role: str, today: date) -> date:
     current = _period_start(today, period)
     if which == "this":
         first = current
-    else:                                   # "last" — the period before
+    else:  # "last" — the period before
         first = _shift_period(current, period, -1)
     if role == "until":
         return _shift_period(first, period, 1) - timedelta(days=1)

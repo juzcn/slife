@@ -15,10 +15,10 @@ connects immediately.
 
 import json
 import logging
+from typing import ClassVar
 from urllib.parse import urlparse
 
 from slife.plugins.mcp_gateway import config as mcp_gateway_config
-
 from slife.tools._config_io import _ConfigPathMixin, format_source_info
 from slife.tools.base import Tool
 
@@ -38,9 +38,7 @@ def _validate_http_url(url: str, what: str) -> str:
     except ValueError:
         parsed = None
     if parsed is None or parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ValueError(
-            f"{what} must be an http(s) URL with a host, got {url!r}"
-        )
+        raise ValueError(f"{what} must be an http(s) URL with a host, got {url!r}")
     return url
 
 
@@ -78,7 +76,7 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
         "Register/update a REST API from an OpenAPI spec (upsert; generates "
         "typed per-endpoint tools)."
     )
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "name": {
@@ -117,13 +115,19 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
 
         is_update = name in mcp_gateway_config.list_rest_apis()
         mcp_gateway_config.save_rest_api(
-            name=name, spec_url=spec_url, base_url=base_url,
-            api_key=api_key, description=description,
+            name=name,
+            spec_url=spec_url,
+            base_url=base_url,
+            api_key=api_key,
+            description=description,
         )
         logger.info("rest_api_saved name=%s spec=%s", name, spec_url)
 
         entry = mcp_gateway_config.build_rest_api_entry(
-            spec_url, base_url, api_key, description,
+            spec_url,
+            base_url,
+            api_key,
+            description,
         )
 
         action = "Updated" if is_update else "Registered"
@@ -152,7 +156,7 @@ class RestApiSetTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatible
                     },
                 )
                 result_lines.append(f"\n{mcp_result}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — MCP client call: the gateway/proxy can fail in several ways; degrade to a warning
                 logger.warning("rest_api_mcp_connect_failed name=%s err=%s", name, e)
                 result_lines.append(
                     f"\nConfig saved but connect failed: {e}. "
@@ -170,7 +174,7 @@ class RestApiRemoveTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompati
     name = "rest_api_remove"
     category = "REST API"
     description = "Unregister a REST API. Disconnects and removes from config."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "API name, from rest_api_list."},
@@ -190,7 +194,7 @@ class RestApiRemoveTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompati
         if mcp is not None:
             try:
                 await mcp.call_tool("__mcp_remove", {"name": name})  # type: ignore[union-attr]
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — MCP client call: best-effort disconnect; failure degrades to a warning
                 logger.warning("rest_api_remove_mcp_failed name=%s err=%s", name, e)
 
         return f"[OK] Removed REST API '{name}'."
@@ -200,7 +204,7 @@ class RestApiListTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncompatibl
     name = "rest_api_list"
     category = "REST API"
     description = "List registered REST APIs with specs, base URLs, and auth."
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {},
         "required": [],
@@ -235,7 +239,9 @@ def _format_operations(name: str, data: dict) -> str:
     for tool in tools:
         desc = (tool.get("description") or "").strip().splitlines()
         summary = desc[0] if desc else ""
-        lines.append(f"- {tool.get('name', '?')}" + (f" — {summary}" if summary else ""))
+        lines.append(
+            f"- {tool.get('name', '?')}" + (f" — {summary}" if summary else "")
+        )
     if len(tools) < total:
         lines.append(
             f"\n{total - len(tools)} more operations not listed — "
@@ -262,7 +268,7 @@ class RestApiListToolsTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncomp
         f"Capped at mcp.tool_list_limit ({mcp_gateway_config.DEFAULT_TOOL_LIST_LIMIT}) "
         "— use tool_search to find a specific one."
     )
-    parameters = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "API name, from rest_api_list."},
@@ -294,9 +300,10 @@ class RestApiListToolsTool(_ConfigPathMixin, Tool):  # type: ignore[reportIncomp
         cap = limit if limit else mcp_gateway_config.tool_list_limit()
         try:
             raw = await mcp.call_tool(  # type: ignore[union-attr]
-                "__mcp_list_tools", {"server": name, "limit": cap},
+                "__mcp_list_tools",
+                {"server": name, "limit": cap},
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — MCP client call: the gateway/proxy can fail in several ways; reported to the model
             logger.warning("rest_api_list_tools_failed name=%s err=%s", name, e)
             return f"[ERROR] Could not list '{name}'s operations: {e}"
 
@@ -329,8 +336,10 @@ class RestApiSetEnabledTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIn
 
     name = "rest_api_set_enabled"
     category = "REST API"
-    description = "Enable or disable a REST API (enable connects it, disable disconnects it)."
-    parameters = {
+    description = (
+        "Enable or disable a REST API (enable connects it, disable disconnects it)."
+    )
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "API name, from rest_api_list."},
@@ -351,8 +360,10 @@ class RestApiSetEnabledTool(_ConfigPathMixin, Tool):  # pyright: ignore[reportIn
         mcp = getattr(ctx, "mcp_client", None) if ctx is not None else None
         if mcp is not None:
             try:
-                await mcp.call_tool("__mcp_set_enabled", {"name": name, "enabled": enabled})  # type: ignore[union-attr]
-            except Exception as e:
+                await mcp.call_tool(
+                    "__mcp_set_enabled", {"name": name, "enabled": enabled}
+                )  # type: ignore[union-attr]
+            except Exception as e:  # noqa: BLE001 — MCP client call: best-effort enable/disable; failure degrades to a warning
                 logger.warning("rest_api_set_mcp_failed name=%s err=%s", name, e)
 
         state = "enabled" if enabled else "disabled"

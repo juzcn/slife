@@ -3,6 +3,7 @@ no-instance refusals, and the worker (subagent) sharing semantics at the
 service level."""
 
 import json
+from typing import ClassVar
 
 import pytest
 import pytest_asyncio
@@ -17,7 +18,7 @@ from slife.tools.whitelist import META_WHITELIST
 class _Native(Tool):
     name = "native_a"
     description = "a native tool"
-    parameters = {"type": "object", "properties": {}, "required": []}
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
     category = "System"
 
     async def execute(self, **kwargs) -> str:
@@ -27,7 +28,7 @@ class _Native(Tool):
 class _NativeB(Tool):
     name = "native_b"
     description = "another native tool"
-    parameters = {"type": "object", "properties": {}, "required": []}
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
     category = "Execution"
 
     async def execute(self, **kwargs) -> str:
@@ -37,7 +38,7 @@ class _NativeB(Tool):
 class _NativeC(Tool):
     name = "native_c"
     description = "third native tool"
-    parameters = {"type": "object", "properties": {}, "required": []}
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
     category = "Execution"
 
     async def execute(self, **kwargs) -> str:
@@ -47,7 +48,7 @@ class _NativeC(Tool):
 class _TurnPromptStub(Tool):
     name = "_turn_prompt"
     description = "stub"
-    parameters = {"type": "object", "properties": {}, "required": []}
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
     category = "Models"
 
     async def execute(self, **kwargs) -> str:
@@ -64,6 +65,7 @@ async def db(tmp_path):
 
 # ── Seed / snapshot ────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_seed_defaults_new_rows_unloaded_except_whitelist(db):
     """Discovery alone never injects: a NEW row is unloaded unless it is
@@ -72,20 +74,20 @@ async def test_seed_defaults_new_rows_unloaded_except_whitelist(db):
     await svc.sync_system_tools([_Native(), _NativeB(), _TurnPromptStub()])
 
     loaded = set(await db.loaded_names())
-    assert loaded == {"native_b", "_turn_prompt"}   # the autoload + the whitelist
+    assert loaded == {"native_b", "_turn_prompt"}  # the autoload + the whitelist
     snap = await svc.snapshot_loaded()
     assert "native_b" in snap
-    assert "native_a" not in snap                        # not loaded by seeding
-    assert META_WHITELIST <= snap                        # always injectable
+    assert "native_a" not in snap  # not loaded by seeding
+    assert META_WHITELIST <= snap  # always injectable
 
 
 @pytest.mark.asyncio
 async def test_seed_preserves_user_unload_across_re_seed(db):
     svc = ToolCatalogService(db, write_owner=True)
     await svc.sync_system_tools([_Native()])
-    ok, _ = await svc.load_tool("native_a")              # the model loads it
+    ok, _ = await svc.load_tool("native_a")  # the model loads it
     assert ok
-    await svc.unload_tool("native_a")                    # …and unloads it again
+    await svc.unload_tool("native_a")  # …and unloads it again
     # A later seed re-upserts the row but must NOT reset the state: the sync
     # mirrors WHICH tools are registered, never what the model decided.
     await svc.sync_system_tools([_Native()])
@@ -101,7 +103,7 @@ async def test_autoload_entry_overrides_the_db_status(db):
     await svc.sync_system_tools([_Native(), _NativeB()])
     assert await db.get_effective("native_b") == "loaded"
 
-    await svc.unload_tool("native_b")                    # the model unloads it
+    await svc.unload_tool("native_b")  # the model unloads it
     assert await db.get_effective("native_b") == "unloaded"
     await svc.sync_system_tools([_Native(), _NativeB()])  # config wins again
     assert await db.get_effective("native_b") == "loaded"
@@ -119,11 +121,18 @@ async def test_autoload_override_writes_nothing_when_already_loaded(db):
     stored = await db.get_tool("native_b")
 
     # The very same row again — nothing moved, so nothing is written.
-    result = await db.reconcile([{
-        "name": "native_b", "description": stored["description"],
-        "category": "builtin", "schema": stored["schema"],
-        "load_status": "loaded", "override_status": True,
-    }])
+    result = await db.reconcile(
+        [
+            {
+                "name": "native_b",
+                "description": stored["description"],
+                "category": "builtin",
+                "schema": stored["schema"],
+                "load_status": "loaded",
+                "override_status": True,
+            }
+        ]
+    )
     assert result["skipped"] == 1
     assert (await db.get_tool("native_b"))["last_loaded"] == stored["last_loaded"]
 
@@ -133,8 +142,13 @@ async def test_a_server_autoload_covers_its_whole_tool_set(db):
     """mcp/rest-api have no per-tool autoload: the flag is on the SERVER entry,
     so one decision owns every row of that server."""
     svc = ToolCatalogService(db, write_owner=True, autoload_servers=("svcA",))
-    tools = [{"name": "x", "description": "d",
-              "inputSchema": {"type": "object", "properties": {}}}]
+    tools = [
+        {
+            "name": "x",
+            "description": "d",
+            "inputSchema": {"type": "object", "properties": {}},
+        }
+    ]
     await svc.mirror_external_tools("svcA", tools, category="mcp")
     assert await db.get_effective("svcA__x") == "loaded"
 
@@ -161,6 +175,7 @@ async def test_skill_and_cli_rows_have_no_status_to_override(db):
 
 
 # ── Load / unload matrix ───────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_load_unload_refusal_matrix(db):
@@ -196,20 +211,25 @@ async def test_load_unload_refusal_matrix(db):
 @pytest.mark.asyncio
 async def test_load_refuses_disabled_and_error(db):
     svc = ToolCatalogService(db, write_owner=True)
-    await db.upsert_tool("native_dis", category="builtin", status="disabled",
-                        load_status="unloaded")
+    await db.upsert_tool(
+        "native_dis", category="builtin", status="disabled", load_status="unloaded"
+    )
     ok, msg = await svc.load_tool("native_dis")
     assert not ok and "disabled" in msg
 
     # An external tool whose server is down reads `error` — the runtime's own
     # lane of the status column, so the row keeps what the model decided.
-    await db.upsert_tool("svcA__x", category="mcp", source_id="svcA", load_status="loaded")
+    await db.upsert_tool(
+        "svcA__x", category="mcp", source_id="svcA", load_status="loaded"
+    )
     await db.mark_source_error("svcA")
     ok, msg = await svc.load_tool("svcA__x")
     # One line, and no switch offered: `error` is not a state enable can fix.
     assert not ok and msg.endswith("its status is error.")
 
-    await db.upsert_tool("svcB__x", category="mcp", source_id="svcB", load_status="unloaded")
+    await db.upsert_tool(
+        "svcB__x", category="mcp", source_id="svcB", load_status="unloaded"
+    )
     ok, msg = await svc.load_tool("svcB__x")
     assert ok
 
@@ -233,10 +253,20 @@ async def test_injected_schema_comes_from_catalog_not_instance(db):
 
     # Overwrite the DB row's schema with a DIFFERENT descriptor.
     await db.upsert_tool(
-        "native_a", category="builtin", status="enabled", load_status="loaded",
-        schema=json.dumps({"name": "native_a", "description": "a native tool",
-                            "inputSchema": {"type": "object",
-                                            "properties": {"q": {"type": "string"}}}}),
+        "native_a",
+        category="builtin",
+        status="enabled",
+        load_status="loaded",
+        schema=json.dumps(
+            {
+                "name": "native_a",
+                "description": "a native tool",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                },
+            }
+        ),
     )
 
     loop = SimpleNamespace(
@@ -252,8 +282,12 @@ async def test_injected_schema_comes_from_catalog_not_instance(db):
     # the pure mapper: absent/garbage schema → None (caller falls back)
     assert _function_from_schema("x", "") is None
     assert _function_from_schema("x", "{not json") is None
-    ok = _function_from_schema("x", '{"name":"x","description":"d","inputSchema":{"type":"object"}}')
-    assert ok["function"]["name"] == "x" and ok["function"]["parameters"] == {"type": "object"}
+    ok = _function_from_schema(
+        "x", '{"name":"x","description":"d","inputSchema":{"type":"object"}}'
+    )
+    assert ok["function"]["name"] == "x" and ok["function"]["parameters"] == {
+        "type": "object"
+    }
 
     # T1b: the passed REGISTRY name wins over a bare descriptor name — an
     # external mcp/rest-api row stores {name: <bare server tool>} while the
@@ -269,15 +303,20 @@ async def test_injected_schema_comes_from_catalog_not_instance(db):
 
 # ── Eviction policy ────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_autoload_server_tools_are_born_loaded_and_protected(db):
     """A server entry's ``autoload: true`` covers tools whose names the config
     cannot know: its mirrored rows land loaded, and eviction leaves them be."""
     svc = ToolCatalogService(
-        db, threshold=1, write_owner=True, autoload_servers=("eager",),
+        db,
+        threshold=1,
+        write_owner=True,
+        autoload_servers=("eager",),
     )
     _tool_row = {
-        "name": "search", "description": "search",
+        "name": "search",
+        "description": "search",
         "inputSchema": {"type": "object", "properties": {}},
     }
     await svc.mirror_external_tools("eager", [_tool_row])
@@ -297,10 +336,13 @@ async def test_autoload_server_tools_are_born_loaded_and_protected(db):
 @pytest.mark.asyncio
 async def test_evict_to_threshold_respects_whitelist_and_owner(db):
     svc = ToolCatalogService(
-        db, threshold=2, write_owner=True, autoload=("native_a",),
+        db,
+        threshold=2,
+        write_owner=True,
+        autoload=("native_a",),
     )
     await svc.sync_system_tools([_Native(), _NativeB(), _NativeC()])
-    for name in ("native_b", "native_c"):        # the model loads the rest
+    for name in ("native_b", "native_c"):  # the model loads the rest
         ok, _ = await svc.load_tool(name)
         assert ok
     assert len(await db.loaded_names()) == 3
@@ -316,6 +358,7 @@ async def test_evict_to_threshold_respects_whitelist_and_owner(db):
 
 
 # ── registry call refusals (a name with no execution instance) ─────
+
 
 @pytest.mark.asyncio
 async def test_registry_execute_hints_with_catalog(db):
@@ -336,7 +379,9 @@ async def test_registry_execute_hints_with_catalog(db):
     assert await registry.execute("native_a") == "ok-native_a"
     # 3. catalog-known but not in the pool → NO instance, so the state is
     # named: the row exists, the object to run does not.
-    await db.upsert_tool("svcA__gh", category="mcp", source_id="svcA", load_status="unloaded")
+    await db.upsert_tool(
+        "svcA__gh", category="mcp", source_id="svcA", load_status="unloaded"
+    )
     assert await registry.execute("svcA__gh") == "Error: tool 'svcA__gh' is not loaded."
     # 3b. its server is down → the row says `error`, and the gate names that
     # rather than pretending the tool is merely unloaded.
@@ -345,8 +390,9 @@ async def test_registry_execute_hints_with_catalog(db):
     # 3c. switched off in the config → named as DISABLED, not as unloaded:
     # "load it" is the wrong move for a tool the user turned off, and the row
     # that says so is exactly what lets the model suggest enabling it.
-    await db.upsert_tool("off__x", category="builtin", load_status="unloaded",
-                         status="disabled")
+    await db.upsert_tool(
+        "off__x", category="builtin", load_status="unloaded", status="disabled"
+    )
     assert "is disabled" in await registry.execute("off__x")
     # 4. unknown everywhere → historical string
     assert await registry.execute("nope") == "Error: Unknown tool 'nope'"
@@ -361,6 +407,7 @@ async def test_registry_execute_without_catalog_keeps_historical(db):
 
 
 # ── Worker shares the same state (subagent = worker, same db) ───────
+
 
 @pytest.mark.asyncio
 async def test_worker_reads_shared_loaded_set_and_can_flip_status(tmp_path):
@@ -383,14 +430,16 @@ async def test_worker_reads_shared_loaded_set_and_can_flip_status(tmp_path):
     assert "native_a" in snap and "native_b" in snap
 
     # worker may load/unload (shared mechanism) — but never reseeds/evicts
-    ok, _ = await worker.load_tool("native_b")   # flips it in the shared db
+    ok, _ = await worker.load_tool("native_b")  # flips it in the shared db
     assert ok
     assert await worker.evict_to_threshold() == []  # policy is agent's
 
     await agent_store.close()
     await worker_store.close()
 
+
 # ── Non-function row mirror (skill / cli) ──────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_sync_category_mirrors_and_purges(db):
@@ -398,16 +447,23 @@ async def test_sync_category_mirrors_and_purges(db):
     purge the vanished one — and no load state, ever."""
     svc = ToolCatalogService(db, write_owner=True)
 
-    purged = await svc.sync_category("skill", {
-        "deploy": {"description": "Ship it", "schema": "# Deploy\nrun x", "status": "enabled"},
-        "quiet": {"description": "hush", "schema": "# Quiet", "status": "disabled"},
-    })
+    purged = await svc.sync_category(
+        "skill",
+        {
+            "deploy": {
+                "description": "Ship it",
+                "schema": "# Deploy\nrun x",
+                "status": "enabled",
+            },
+            "quiet": {"description": "hush", "schema": "# Quiet", "status": "disabled"},
+        },
+    )
     assert purged == []
 
     row = await db.get_tool("skill:deploy")
-    assert row["category"] == "skill"                     # the category IS the kind
-    assert row["load_status"] == "n/a"                    # skills have no load state
-    assert "# Deploy" in row["schema"]              # SKILL.md, as stored
+    assert row["category"] == "skill"  # the category IS the kind
+    assert row["load_status"] == "n/a"  # skills have no load state
+    assert "# Deploy" in row["schema"]  # SKILL.md, as stored
     assert (await db.get_tool("skill:quiet"))["status"] == "disabled"
     # discoverable exactly like a function tool, and never injected
     # Searchable by its bare words, stored under its namespaced name.
@@ -415,10 +471,17 @@ async def test_sync_category_mirrors_and_purges(db):
     assert "deploy" not in await svc.snapshot_loaded()
 
     # a skill that left the dir loses its row (the §8.5 "清理干净" contract)
-    purged = await svc.sync_category("skill", {
-        "deploy": {"description": "Ship it", "schema": "# Deploy\nrun x", "status": "enabled"},
-    })
-    assert purged == ["skill:quiet"]      # row names are namespaced
+    purged = await svc.sync_category(
+        "skill",
+        {
+            "deploy": {
+                "description": "Ship it",
+                "schema": "# Deploy\nrun x",
+                "status": "enabled",
+            },
+        },
+    )
+    assert purged == ["skill:quiet"]  # row names are namespaced
     assert await db.get_tool("skill:quiet") is None
     assert await db.get_tool("skill:deploy") is not None
 
@@ -426,7 +489,9 @@ async def test_sync_category_mirrors_and_purges(db):
 @pytest.mark.asyncio
 async def test_sync_category_cli_rows_have_no_schema(db):
     svc = ToolCatalogService(db, write_owner=True)
-    await svc.sync_category("cli", {"gh": {"description": "GitHub CLI", "schema": None}})
+    await svc.sync_category(
+        "cli", {"gh": {"description": "GitHub CLI", "schema": None}}
+    )
 
     row = await db.get_tool("cli:gh")
     assert row["category"] == "cli"
@@ -440,7 +505,9 @@ async def test_sync_category_cli_rows_have_no_schema(db):
 async def test_sync_category_refuses_load_and_unload(db):
     """A skill row is a row, not a function tool: the load verbs refuse it."""
     svc = ToolCatalogService(db, write_owner=True)
-    await svc.sync_category("skill", {"deploy": {"description": "Ship it", "schema": "# Deploy"}})
+    await svc.sync_category(
+        "skill", {"deploy": {"description": "Ship it", "schema": "# Deploy"}}
+    )
 
     ok, msg = await svc.load_tool("skill:deploy")
     assert not ok and "no load/unload state" in msg and "skill" in msg

@@ -1,5 +1,14 @@
 # Slife
 
+> ### 已经有 v2 了 —— [**juzcn/slife2**](https://github.com/juzcn/slife2)
+>
+> 这个智能体的推倒重来版本。目标相同，架构不同：**每个 plugin 都是独立的
+> MCP server 进程**，安装时全量装齐而非打包内置——密钥只存在于需要它的那个
+> 进程里，agent 主循环不引入任何 provider SDK。
+>
+> 本仓库（v1）仍在维护、仍可安装。重构发生的地方是 slife2；如果你是新用户，
+> 建议先看那边。
+
 **终端 AI 智能体** — 基于函数调用循环的最小化框架。与 LLM 对话，它能调用工具、永久记忆每一轮对话、协调其他智能体。
 
 ```
@@ -48,7 +57,7 @@ credstore copy DEEPSEEK_API_KEY BAILIAN_API_KEY
 
 ## 安装
 
-**零前提、开箱即用。** 安装脚本拉取最新的 `main`，**从源码**构建 slife（工作区 wheel——不用 PyPI，永远是当前最新代码），并用 uv 装进一个隔离的工具 venv。它会自动安装缺失的东西——uv、Node.js（`npx`）、bun、Mosquitto——再把随附的配置、skills 与示例 jobs 铺到位，于是首次用户即可拥有完整工具集——本地 embeddings、外部 MCP 服务器、yt-dlp、browser-harness、A2A 网格——无需手工配置任何东西。在 WSL 上使用 Linux 原生运行时（Windows 可执行文件无法经 WSL interop 接收自定义环境变量）。
+**零前提、开箱即用。** 安装脚本拉取最新的 `main`，**从源码**构建 slife（构建它自己的 wheel——拿的是最新的 `main`，不是 PyPI 上的发行版），并用 uv 装进一个隔离的工具 venv。它会自动安装缺失的东西——uv、Node.js（`npx`）、bun、Mosquitto——再把随附的配置、skills 与示例 jobs 铺到位，于是首次用户即可拥有完整工具集——本地 embeddings、外部 MCP 服务器、yt-dlp、browser-harness、A2A 网格——无需手工配置任何东西。在 WSL 上使用 Linux 原生运行时（Windows 可执行文件无法经 WSL interop 接收自定义环境变量）。
 
 **语义 embedding 后端和模型刻意不属于安装的一部分**——后端依赖特定环境（CPU / CUDA / Metal），模型下载约 2 GB，所以这是由用户执行的步骤。按下面的 **[语义记忆搜索 — 安装指南](#semantic-memory-search--installation-guide)** 操作：安装一个后端、下载模型权重、配置 `HF_HUB_CACHE` / `BGE_M3_GGUF_PATH`，然后确认服务就绪。
 
@@ -66,7 +75,7 @@ credstore copy DEEPSEEK_API_KEY BAILIAN_API_KEY
 | `ssh` | 随系统提供（Windows：可选的 *OpenSSH 客户端* 功能） | `sharefile` 的 `localhost.run` 隧道 provider——**仅检测**；启用 Windows 功能需要管理员权限 |
 | `unzip`（Linux） | 包管理器 | bun 安装器依赖 |
 
-**默认安装以下内容：**`yt-dlp` 与 `browser-harness`（两者都被 `--core` 跳过）、Mosquitto 与 `cloudflared`（除非 `--core`，否则会尝试）、从随包默认值铺设的**四份配置**（`slife.yaml`、`tools.yaml` 和 `sharefile.yaml` → `~/.slife/`，`local_embed.yaml` → `~/.local-embed/`），以及随附 skills（`~/.slife/skills/`）和示例 jobs（`~/.slife/jobs/`）。
+**默认安装以下内容：**`yt-dlp` 与 `browser-harness`（两者都被 `--core` 跳过）、Mosquitto 与 `cloudflared`（除非 `--core`，否则会尝试）、从随包默认值铺设的**三份配置**（`slife.yaml`、`tools.yaml` 和 `sharefile.yaml` → `~/.slife/`），以及随附 skills（`~/.slife/skills/`）和示例 jobs（`~/.slife/jobs/`）。
 
 如果某个运行时装不上，安装器**警告并继续**——slife 本身仍会安装，只是需要该运行时的功能不可用。举例来说，在一台比 **glibc 2.28 / libstdc++ 3.4.29** 更老的 Linux 机器上，Node 的 no-root tarball 回退方案跑不起来（安装器会报告缺失的 `GLIBC_2.28` / `GLIBCXX_3.4.xx` 符号）。受支持的路线**不是**装旧版 Node——而是装一个为你的发行版构建的 Node（例如 HPC 集群上的 `module load nodejs`，或发行版自带的包）。装好后再重跑这个安装器——它会检测到已有的 `npx` 并跳过自己的 Node 安装。
 
@@ -130,7 +139,7 @@ uv run pytest
 uv run pytest --cov --cov-report=term-missing
 ```
 
-`uv sync` 是**精确同步**：它会把检出目录的 `.venv` 对齐到 lock，而 lock 里没有任何 embedding 后端（它们是按平台手动安装的——见[重新加入后端（手动安装）](local-embed/README.md#re-adding-a-backend-manual-installs)）。如果你想在开发 venv 里保留 `llama-cpp-python` 或 `sentence-transformers` 做真实端到端运行，要么用 `uv sync --inexact`，要么同步后重新装上后端。
+`uv sync` 是**精确同步**：它会把检出目录的 `.venv` 对齐到 lock，而 lock 里没有任何 embedding 后端（它们是按平台手动安装的——见[重新加入后端（手动安装）](https://github.com/juzcn/local-embed/blob/main/README.md#re-adding-a-backend-manual-installs)）。如果你想在开发 venv 里保留 `llama-cpp-python` 或 `sentence-transformers` 做真实端到端运行，要么用 `uv sync --inexact`，要么同步后重新装上后端。
 
 从源码树运行时，数据文件留在项目目录里；任何已安装的副本一律使用 `~/.slife/`。
 
@@ -171,18 +180,18 @@ powershell -ExecutionPolicy Bypass -Command "irm https://gitee.com/juzcn/slife/r
 
 ### 相关工具
 
-除 slife 本身外，本仓库还附带三个独立包，各自带一键安装器：
+slife 用到的三个工具本身就是独立项目，各有自己的仓库和一键安装器：
 
 | 包 | 安装 | 用途 |
 |---------|---------|---------|
 | `slife` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/install.sh \| bash` | 智能体（本 README） |
-| `credstore` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/credstore/install.sh \| bash` | 跨平台凭据存储 |
-| `cc-switch` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/cc-switch/install.sh \| bash` | 生成 `~/.claude/settings.json` |
-| `local-embed` | `curl -fsSL https://raw.githubusercontent.com/juzcn/slife/main/local-embed/install.sh \| bash` | 本地嵌入端点服务 |
+| `credstore` | `curl -fsSL https://raw.githubusercontent.com/juzcn/credstore/main/install.sh \| bash` | 跨平台凭据存储 |
+| `cc-switch` | `curl -fsSL https://raw.githubusercontent.com/juzcn/cc-switch/main/install.sh \| bash` | 生成 `~/.claude/settings.json` |
+| `local-embed` | `curl -fsSL https://raw.githubusercontent.com/juzcn/local-embed/main/install.sh \| bash` | 本地嵌入端点服务 |
 
-安装 slife 依赖 [credstore](credstore/README.md)——它**不会**安装 cc-switch。详见 [cc-switch](cc-switch/README.md)、[credstore](credstore/README.md) 和 [local-embed](local-embed/README.md) 各自的 README。
+安装 slife 会从 PyPI 拉取 [credstore](https://github.com/juzcn/credstore) 和 [local-embed](https://github.com/juzcn/local-embed) 作为普通依赖；它**不会**安装 [cc-switch](https://github.com/juzcn/cc-switch)。这三个包原本都是本仓库的子目录。
 
-其中两个也**内置**在 slife 里：MCP 网关是内部插件，`local-embed` 同样是——Slife 会替你启动它，或者直接使用你自己启动的那个实例，而不再起第二个。
+MCP 网关仍是 slife **内部**的插件；local-embed 则由 slife 作为子进程驱动——要么替你启动它，要么接管你自己启动的那个实例，而不再起第二个。
 
 <a id="configuration" name="configuration"></a>
 
@@ -213,7 +222,7 @@ env:
 2. **继续用 credstore 的 cryptfile 模式管理，但注入到环境变量**——照常存储凭据，然后把它们推入环境让 Slife 能看到：`credstore inject DEEPSEEK_API_KEY BAILIAN_API_KEY`（cryptfile-only 模式下会询问主密码），然后重启 shell 或 `eval "$(credstore inject DEEPSEEK_API_KEY)"`。
 3. **明文写在配置文件里**（容忍，但不推荐）——`slife.yaml` 中的字面量 `api_key` 能工作，但密钥会明文落在磁盘上（`~/.slife/slife.yaml`，chmod 0600）。
 
-`credstore` 本身在 cryptfile-only 模式下功能完整（`set-password`、`set`、`get -p`、`inject`、`status`——见 [credstore/README.md](credstore/README.md)）。
+`credstore` 本身在 cryptfile-only 模式下功能完整（`set-password`、`set`、`get -p`、`inject`、`status`——见 [credstore 的 README](https://github.com/juzcn/credstore)）。
 
 ### 模型供应商
 
@@ -438,7 +447,7 @@ A2A 让彼此独立的智能体——同一台机器上或跨机器——互相�
 且每一环都是 fail-open：后端缺失时关键词核心照常可用。
 
 **完整指南——各平台后端安装、权重、`local_embed.yaml`、验证、排障：**
-**[local-embed/README.md](local-embed/README.md)**——`local-embed` 服务就是 slife 嵌入时打交道的那个端点，那份文件就是它的手册。
+**[local-embed 的 README](https://github.com/juzcn/local-embed)**——`local-embed` 服务就是 slife 嵌入时打交道的那个端点，那里是它的手册。
 
 <a id="usage-reference" name="usage-reference"></a>
 ## 使用方法参考
@@ -493,7 +502,7 @@ slife --headless --agent jack myconf.yaml     # 指定配置文件
 
 | 属于单个 agent | 共享 |
 |---|---|
-| 对话记录数据库 `<agent>.db`、记忆文件 `<agent>.files/`、工具目录 `<agent>.tools.db`、A2A 入站台账 `a2a_inbound_<agent>.yaml`、微信会话 `wechat_<agent>.yaml`、日志与会话标记的文件名 | `slife.yaml`、`tools.yaml`、`sharefile.yaml`、`local_embed.yaml`、`skills/`、`jobs/`、整个 `logs/` 目录 |
+| 对话记录数据库 `<agent>.db`、记忆文件 `<agent>.files/`、工具目录 `<agent>.tools.db`、A2A 入站台账 `a2a_inbound_<agent>.yaml`、微信会话 `wechat_<agent>.yaml`、日志与会话标记的文件名 | `slife.yaml`、`tools.yaml`、`sharefile.yaml`、`skills/`、`jobs/`、整个 `logs/` 目录 |
 
 共享配置就是共享**状态**，这也是这种布局的代价：
 

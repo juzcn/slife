@@ -25,13 +25,20 @@ from typing import Literal
 
 from slife.agent.message_history import TokenizerUnavailable, estimate_turn_tokens
 from slife.plugins.memdb.recall import (
-    RecallPolicy, fit_budget, fit_window, gate_turns,
+    RecallPolicy,
+    fit_budget,
+    fit_window,
+    gate_turns,
 )
-from slife.plugins.memdb.store import SessionStore
 from slife.plugins.memdb.search import (
-    hybrid_hint, rename_rowid_to_turn_id, run_hybrid, run_search, turn_legs,
+    hybrid_hint,
+    rename_rowid_to_turn_id,
+    run_hybrid,
+    run_search,
+    turn_legs,
 )
 from slife.plugins.memdb.semantic import SemanticManager
+from slife.plugins.memdb.store import SessionStore
 from slife.server_utils import create_plugin_server, warm_after_ready
 from slife.timeutil import BOUND_GRAMMAR, InvalidTimeBound
 
@@ -123,14 +130,10 @@ def _recall_policy() -> RecallPolicy:
             # compacts to.  Both modes therefore hold the context at the same
             # size, so flipping `rebuild_message` changes how the context is
             # chosen, never how big it is.
-            token_budget=int(
-                cfg.active_model.context_window * cfg.context_floor
-            ),
+            token_budget=int(cfg.active_model.context_window * cfg.context_floor),
             # ...and the ceiling is where the window forces the context down,
             # which is the bound the union of kept + recalled has to respect.
-            ceiling_tokens=int(
-                cfg.active_model.context_window * cfg.context_ceiling
-            ),
+            ceiling_tokens=int(cfg.active_model.context_window * cfg.context_ceiling),
         )
     except Exception:
         logger.warning("recall_policy_defaulted", exc_info=True)
@@ -222,7 +225,10 @@ warm_after_ready(mcp, _warm_semantic, name="semantic")
 # ═══════════════════════════════════════════════════════════════════════
 
 
-@mcp.tool(name="__memory_save_turn", description="Save a turn. Internal — called by the agent loop.")
+@mcp.tool(
+    name="__memory_save_turn",
+    description="Save a turn. Internal — called by the agent loop.",
+)
 async def __memory_save_turn(
     user_message: str = "",
     messages: list[dict] | None = None,
@@ -243,11 +249,14 @@ async def __memory_save_turn(
         async with _get_init_lock():
             store = await _ensure_store_locked()
             rowid = await store.save_turn(
-                user_message=user_message, messages=messages,
+                user_message=user_message,
+                messages=messages,
                 token_count=token_count,
                 context_tokens=context_tokens,
-                who_helped=who_helped, what_model=what_model,
-                channel=channel, channel_data=channel_data,
+                who_helped=who_helped,
+                what_model=what_model,
+                channel=channel,
+                channel_data=channel_data,
                 created_at=created_at,
                 completed_at=completed_at,
             )
@@ -255,7 +264,9 @@ async def __memory_save_turn(
             # annotation — apply it to the row just written (best-effort).
             if summary is not None or tags is not None:
                 await store.update_summary(
-                    rowid=rowid, summary=summary, tags=tags,
+                    rowid=rowid,
+                    summary=summary,
+                    tags=tags,
                 )
         # A saved turn is new work for the index drainer — wake it
         # (non-blocking event.set(), no DB work).
@@ -409,7 +420,8 @@ async def __memory_turn_recall(
             # exhausted window.
             logger.info(
                 "recall_no_headroom reserved=%d ceiling=%d",
-                reserved_tokens, policy.ceiling_tokens,
+                reserved_tokens,
+                policy.ceiling_tokens,
             )
             return json.dumps({"turns": []}, ensure_ascii=False)
         budget = min(budget, headroom)
@@ -436,7 +448,9 @@ async def __memory_turn_recall(
                     # than as nothing, since the range still stands.
                     logger.warning("recall_anchor_unknown anchor=%.20s", anchor)
                 hits = await store.search_time(
-                    limit=policy.limit, since=since, until=until,
+                    limit=policy.limit,
+                    since=since,
+                    until=until,
                     newest_first=anchor != "oldest",
                 )
                 # Re-sliced to the policy's own cap: ``turn_list`` clamps a
@@ -453,8 +467,13 @@ async def __memory_turn_recall(
                     # window.  Logged so the drop is not silent.
                     logger.info("recall_anchor_ignored anchor=%s", anchor)
                 result = await run_hybrid(
-                    store, manager, query=query, limit=policy.limit,
-                    since=since, until=until, overfetch=3,
+                    store,
+                    manager,
+                    query=query,
+                    limit=policy.limit,
+                    since=since,
+                    until=until,
+                    overfetch=3,
                 )
                 ranked = gate_turns(result.hits, policy=policy)
                 fit = fit_budget
@@ -462,8 +481,7 @@ async def __memory_turn_recall(
                     # The recalled set stands either way, but a degraded leg
                     # widens the empty case — which adds less, and on a query
                     # the keyword leg could not match, nothing.
-                    logger.info("recall_degraded reason=%.120s",
-                                hybrid_hint(result))
+                    logger.info("recall_degraded reason=%.120s", hybrid_hint(result))
 
             # The token budget needs each turn's stored messages, so it is a
             # second phase over what the first phase kept — and which rule
@@ -579,14 +597,16 @@ async def __memory_context_turns_clear() -> str:
     description=(
         "Search turns (each result carries its turn_id). Use turn_read for a "
         "full turn, or turn_list to browse. since/until window the search — "
-        + BOUND_GRAMMAR + "."
+        + BOUND_GRAMMAR
+        + "."
     ),
 )
 async def turn_search(
     query: str,
     mode: Literal["hybrid", "fts5", "grep"] = "hybrid",
     limit: int = 20,
-    since: str | None = None, until: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
 ) -> str:
     """Search the turn history (each result = one turn).
 
@@ -610,8 +630,13 @@ async def turn_search(
     # between turn_search and cabinet_search.
     try:
         outcome = await run_search(
-            turn_legs(store), _manager, query=query, mode=mode, limit=limit,
-            since=since, until=until,
+            turn_legs(store),
+            _manager,
+            query=query,
+            mode=mode,
+            limit=limit,
+            since=since,
+            until=until,
         )
     except InvalidTimeBound as e:
         # A bound in no known grammar is the caller's to fix: saying so beats a
@@ -634,12 +659,16 @@ async def turn_search(
 
     # Report the mode that actually RAN.  A degraded hybrid is an fts5 result,
     # and answering "hybrid" would misreport what was searched.
-    return json.dumps({
-        "mode": outcome.ran_mode,
-        "query": query,
-        "results": outcome.results,
-        "hint": outcome.hint,
-    }, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {
+            "mode": outcome.ran_mode,
+            "query": query,
+            "results": outcome.results,
+            "hint": outcome.hint,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 @mcp.tool(
@@ -650,8 +679,10 @@ async def turn_search(
     ),
 )
 async def turn_list(
-    since: str | None = None, until: str | None = None,
-    limit: int = 50, offset: int = 0,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> str:
     """List turns, newest first — the browse to turn_search's search.
 
@@ -667,7 +698,10 @@ async def turn_list(
     store = await _ensure_store()
     try:
         data = await store.turn_list(
-            since=since, until=until, limit=limit, offset=offset,
+            since=since,
+            until=until,
+            limit=limit,
+            offset=offset,
         )
     except InvalidTimeBound as e:
         return f"Error: {e}"
@@ -684,9 +718,14 @@ async def turn_list(
             # one, and the caller has no reason to call turn_read.
             entry["user_message"] = message[:200] + "…"
     return json.dumps(
-        {"total": data["total"], "limit": len(entries),
-         "offset": max(0, offset), "entries": entries},
-        ensure_ascii=False, indent=2,
+        {
+            "total": data["total"],
+            "limit": len(entries),
+            "offset": max(0, offset),
+            "entries": entries,
+        },
+        ensure_ascii=False,
+        indent=2,
     )
 
 
@@ -716,7 +755,10 @@ async def turn_token_usage(
     store = await _ensure_store()
     try:
         result = await store.token_usage(
-            rowid=turn_id, since=since, until=until, limit=limit,
+            rowid=turn_id,
+            since=since,
+            until=until,
+            limit=limit,
         )
         # No user_message in the dump — the tool is usage-only, and message
         # text would burn tokens for nothing (the ids are enough to turn_read).
@@ -729,8 +771,7 @@ async def turn_token_usage(
 @mcp.tool(
     name="turn_count",
     description=(
-        "Count turns (all, within an ISO time range, or search matches via "
-        "grep/fts5)."
+        "Count turns (all, within an ISO time range, or search matches via grep/fts5)."
     ),
 )
 async def turn_count(
@@ -759,7 +800,10 @@ async def turn_count(
     store = await _ensure_store()
     try:
         result = await store.count_turns(
-            since=since, until=until, query=query, mode=chosen,
+            since=since,
+            until=until,
+            query=query,
+            mode=chosen,
         )
         return json.dumps(result, ensure_ascii=False, indent=2)
     except InvalidTimeBound as e:
@@ -804,7 +848,8 @@ async def turn_read(turn_id: int) -> str:
 )
 async def turn_summarize(
     turn_id: int | None = None,
-    summary: str | None = None, tags: str | None = None,
+    summary: str | None = None,
+    tags: str | None = None,
 ) -> str:
     """Write a summary and tags for a turn, making it findable by keyword search.
 
@@ -819,23 +864,31 @@ async def turn_summarize(
             # Current turn — captured at save time: save_to_memory extracts
             # this call and passes summary/tags to __memory_save_turn.  No
             # latest_rowid lookup (cross-source race), no write here.
-            return json.dumps({
-                "status": "captured",
-                "turn_id": None,
-                "message": (
-                    "annotation captured for the current turn — written when "
-                    "this turn is saved"
-                ),
-            }, ensure_ascii=False, indent=2)
+            return json.dumps(
+                {
+                    "status": "captured",
+                    "turn_id": None,
+                    "message": (
+                        "annotation captured for the current turn — written when "
+                        "this turn is saved"
+                    ),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
         if summary is None and tags is None:
             return "Error: nothing to write — pass summary and/or tags"
         if not await store.update_summary(
-            rowid=turn_id, summary=summary, tags=tags,
+            rowid=turn_id,
+            summary=summary,
+            tags=tags,
         ):
             # The UPDATE matched no row: announcing "updated" here told the
             # caller its annotation landed on a turn that does not exist.
             return f"Error: turn not found — {turn_id}"
-        return json.dumps({"status": "updated", "turn_id": turn_id}, ensure_ascii=False, indent=2)
+        return json.dumps(
+            {"status": "updated", "turn_id": turn_id}, ensure_ascii=False, indent=2
+        )
     except Exception as e:
         logger.exception("summarize_failed turn_id=%s", turn_id)
         return f"Error: {e}"
@@ -902,7 +955,7 @@ async def __check() -> str:
             semantic["semantic_ready"] = False
             semantic["state"] = "no_manager"
             semantic["unembedded"] = 0
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — health probe reports facts, never raises
         logger.warning("memdb_check_failed err=%s", e)
         semantic["error"] = str(e)
 
@@ -935,7 +988,10 @@ def main():
     _db_path = Path(args.db).expanduser() if args.db else _get_db_path()
 
     logger.info(
-        "memdb_start log=%s pid=%s db=%s", _log_path, os.getpid(), _db_path,
+        "memdb_start log=%s pid=%s db=%s",
+        _log_path,
+        os.getpid(),
+        _db_path,
     )
 
     try:

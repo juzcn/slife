@@ -14,18 +14,19 @@ Model refs: "provider-id/model-name"
 
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any
 
-from slife.env import parse_env_ref, resolve_env, resolve_secret_value
-from slife.a2a.config import A2AConfig
 import slife.timeouts as _timeouts  # module ref (not the instance) — reload-safe, patchable
+from slife.a2a.config import A2AConfig
+from slife.env import parse_env_ref, resolve_env, resolve_secret_value
 
 logger = logging.getLogger(__name__)
 
 # Package directory — carries the git-tracked seed configs (slife.yaml,
-# local_embed.yaml, tools.yaml) force-included into the wheel, plus the
+# tools.yaml, sharefile.yaml) force-included into the wheel, plus the
 # bundled skills tree.
 _PKG_DIR = Path(__file__).resolve().parent
 
@@ -44,6 +45,7 @@ def _resolve_secret(value: str, *, accept_keyring_uri: bool = False) -> str:
     # keyring: URI
     if accept_keyring_uri:
         from credstore import is_keyring_uri, resolve_uri
+
         if is_keyring_uri(value):
             return resolve_uri(value)
 
@@ -54,9 +56,8 @@ def _resolve_secret(value: str, *, accept_keyring_uri: bool = False) -> str:
         return resolve_secret_value(value)
     return value
 
-_T = TypeVar("_T")
 
-def _resolve_env_lenient(value: _T) -> _T:
+def _resolve_env_lenient[T](value: T) -> T:
     """Resolve ${VAR} references without raising on missing vars.
 
     Missing vars are left as-is (e.g. ``${DEEPSEEK_API_KEY}``) so
@@ -78,8 +79,9 @@ def _try_credstore_lookup(key: str) -> str | None:
     """
     try:
         from credstore import get_credential
+
         return get_credential(key)
-    except Exception:
+    except Exception:  # noqa: BLE001 — credstore/keyring raise from several unrelated families (KeyringError, OSError, RuntimeError, ValueError); a missing secret here is not an error
         return None
 
 
@@ -308,10 +310,10 @@ DEFAULT_CONTEXT_WINDOW = 131072
 class ModelConfig:
     """Configuration for a single LLM model."""
 
-    ref: str                       # "deepseek/deepseek-v4-flash"
-    provider: str                  # "deepseek"
-    api_model: str                 # "deepseek-v4-flash" (sent to API)
-    display_name: str              # "DeepSeek V4 Flash"
+    ref: str  # "deepseek/deepseek-v4-flash"
+    provider: str  # "deepseek"
+    api_model: str  # "deepseek-v4-flash" (sent to API)
+    display_name: str  # "DeepSeek V4 Flash"
     api_key: str
     #: Endpoint the API key is sent to.  Empty means "not configured" — the
     #: DeepSeek host is NEVER an implicit fallback, or a non-DeepSeek model
@@ -328,7 +330,7 @@ class ModelConfig:
     top_p: float = 1.0
     thinking_enabled: bool = False
     reasoning_effort: str | None = None
-    compat: dict | None = None          # compat config (e.g. {thinkingFormat: "openai"})
+    compat: dict | None = None  # compat config (e.g. {thinkingFormat: "openai"})
 
     @classmethod
     def from_dict(cls, data: dict) -> "ModelConfig":
@@ -381,7 +383,8 @@ class ModelConfig:
         if context_window <= 0:
             logger.warning(
                 "context_window_invalid value=%r using=%d",
-                raw_window, DEFAULT_CONTEXT_WINDOW,
+                raw_window,
+                DEFAULT_CONTEXT_WINDOW,
             )
             context_window = DEFAULT_CONTEXT_WINDOW
         max_tokens = data.get("max_tokens", 4096)
@@ -479,7 +482,8 @@ class EmbeddingsConfig:
         pid = self.active_model
         if pid not in self.providers or not isinstance(self.providers.get(pid), dict):
             pid = next(
-                (k for k, v in self.providers.items() if isinstance(v, dict)), "",
+                (k for k, v in self.providers.items() if isinstance(v, dict)),
+                "",
             )
         pcfg = self.providers.get(pid) if pid else None
         if not isinstance(pcfg, dict):
@@ -590,7 +594,9 @@ class Config:
     max_iterations: int = 30  # model calls per turn; 0 = no cap
     context_floor: float = 0.2
     context_ceiling: float = 0.8
-    tool_result_ceiling: float = 0.2  # max tool result = 20% of context window (HARD constraint, see DESIGN)
+    tool_result_ceiling: float = (
+        0.2  # max tool result = 20% of context window (HARD constraint, see DESIGN)
+    )
     # Recall caps — the per-turn context rebuild's own configuration.  The
     # rebuild replaces the whole context from a recall selection, so these
     # bound *what the model is sent*, not an increment on top of it.
@@ -755,12 +761,14 @@ class Config:
             logger.warning("config_no_path action=%s server=%s", action, server)
             return None
         from slife.tools._config_io import read_config
+
         return read_config(self._path)
 
     def _write_config(self, raw: dict) -> None:
         """Write the YAML config back to disk."""
         assert self._path is not None
         from slife.tools._config_io import write_config
+
         write_config(self._path, raw)
 
     def _tools_config_path(self) -> Path:
@@ -772,6 +780,7 @@ class Config:
         if self._tools_path is not None:
             return self._tools_path
         from slife.paths import get_tools_config_path
+
         return get_tools_config_path()
 
     def _read_tools_config(self, action: str, name: str) -> dict | None:
@@ -780,11 +789,13 @@ class Config:
             logger.warning("config_no_path action=%s name=%s", action, name)
             return None
         from slife.tools._config_io import read_config
+
         return read_config(self._tools_config_path())
 
     def _write_tools_config(self, raw: dict) -> None:
         """Write tools.yaml back to disk (own atomic temp+replace)."""
         from slife.tools._config_io import write_config
+
         write_config(self._tools_config_path(), raw)
 
     # ── CLI tool persistence ─────────────────────────────────────────
@@ -809,7 +820,11 @@ class Config:
 
         Always updates the in-memory ``cli_tools`` snapshot.
         """
-        entry: dict = {"command": command, "description": description, "install": install}
+        entry: dict = {
+            "command": command,
+            "description": description,
+            "install": install,
+        }
         if source:
             entry["source"] = source
         if enabled is not None:
@@ -1038,6 +1053,7 @@ class Config:
         # keyring: URI
         if api_key_raw.startswith("keyring:"):
             from credstore import parse_keyring_uri
+
             parsed = parse_keyring_uri(api_key_raw)
             # parse_keyring_uri returns (service, key) tuple
             key_name = parsed[1] if parsed else api_key_raw
@@ -1065,9 +1081,12 @@ class Config:
         ``tools.yaml`` from the package directory into ``path.parent``
         (the slife data dir) — the out-of-the-box defaults for a fresh
         install, and a supplement for existing installs that lack a newly
-        added config.  ``local_embed.yaml`` seeds to ``~/.local-embed/``
-        (local-embed is a separate standalone app).  Existing files are
-        never overwritten.
+        added config.  Existing files are never overwritten.
+
+        Configs belonging to the extracted applications — local-embed's
+        ``~/.local-embed/local_embed.yaml`` and credstore's ``~/.credstore/``
+        — are deliberately NOT touched: those are separate projects and own
+        their own config.
 
         A freshly seeded ``slife.yaml`` is followed by an active-model
         API-key check: when the key is missing, prints setup
@@ -1110,22 +1129,11 @@ class Config:
             logger.info("config_seeded from=%s to=%s", pkg, target)
             print(f"\n  First run — created: {target}")
 
-        # local-embed is a separate standalone app — it hosts its own config in
-        # its own data dir (~/.local-embed, matching its standalone resolver).
-        # Seed the same way: missing → copy, never overwrite.
-        name = "local_embed.yaml"
-        target = Path.home() / ".local-embed" / name
-        if not target.exists():
-            pkg = pkg_dir / name
-            if pkg.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy(pkg, target)
-                try:
-                    os.chmod(target, 0o600)
-                except OSError:
-                    pass  # non-POSIX or filesystem without chmod — best effort
-                logger.info("config_seeded from=%s to=%s", pkg, target)
-                print(f"\n  First run — created: {target}")
+        # local-embed's config is NOT seeded here.  It is a separate
+        # application from its own repository (github.com/juzcn/local-embed)
+        # and owns ~/.local-embed/local_embed.yaml itself — slife neither
+        # writes there nor points it elsewhere.  Configure it with
+        # `local-embed set …`.  The same goes for credstore (~/.credstore).
 
         if not fresh:
             return  # existing user config — the fresh-install key check is moot
@@ -1192,7 +1200,9 @@ class Config:
                     "env_unresolved key=%s var=%s — credential not in shell or "
                     "credstore; child processes (MCP/subagent) will not have it. "
                     "Run: credstore set %s",
-                    key, var_name, var_name,
+                    key,
+                    var_name,
+                    var_name,
                 )
                 continue
             # 4. Plain config value — inject directly
@@ -1204,7 +1214,8 @@ class Config:
 
     @classmethod
     def from_yaml(
-        cls, path: str | Path = "slife.yaml",
+        cls,
+        path: str | Path = "slife.yaml",
         agent_name: str = "slife",
     ) -> "Config":
         """Load from YAML file with provider->model hierarchy.
@@ -1219,8 +1230,8 @@ class Config:
         path = Path(path).expanduser()
         logger.debug("config_load path=%s", path)
         # Seeds missing configs from the package defaults (slife.yaml +
-        # tools.yaml into the data dir, local_embed.yaml into
-        # ~/.local-embed); no-op for files the user already has.
+        # tools.yaml + sharefile.yaml into the data dir); no-op for files the
+        # user already has.
         cls._seed_first_run_config(path)
 
         from slife.tools._config_io import read_config
@@ -1234,13 +1245,9 @@ class Config:
         tools_raw = read_config(tools_path)
 
         # Models
-        all_models, provider_count = cls._parse_models_section(
-            raw.get("models", {})
-        )
+        all_models, provider_count = cls._parse_models_section(raw.get("models", {}))
         if not all_models:
-            raise ValueError(
-                "No models defined. Add models.providers.<id>.models[]."
-            )
+            raise ValueError("No models defined. Add models.providers.<id>.models[].")
         logger.debug(
             "config_models count=%d providers=%d",
             len(all_models),
@@ -1364,9 +1371,7 @@ class Config:
         #   tool_load: {threshold: 100}
         tool_load_section = _parse_section(tools_raw, "tool_load", dict, {})
         try:
-            tool_load_threshold = int(
-                tool_load_section.get("threshold", 100) or 100
-            )
+            tool_load_threshold = int(tool_load_section.get("threshold", 100) or 100)
             if tool_load_threshold <= 0:
                 tool_load_threshold = 100
         except (TypeError, ValueError):
@@ -1385,7 +1390,8 @@ class Config:
         if not any(m.ref == active_ref for m in all_models):
             logger.warning(
                 "config_active_model_stale ref=%s fallback=%s",
-                active_ref, all_models[0].ref,
+                active_ref,
+                all_models[0].ref,
             )
             active_ref = all_models[0].ref
 
@@ -1426,8 +1432,8 @@ class Config:
         config._tools_path = tools_path
         # mcp-gateway is a built-in slife plugin — it resolves tools.yaml in
         # the same data dir as slife.yaml (via slife.paths.get_data_dir).
-        # local-embed is a separate standalone app that resolves its own
-        # ~/.local-embed/local_embed.yaml.  We do NOT set $TOOLS_FILE /
-        # $LOCAL_EMBED_FILE — both plugins find the files the installer and
-        # _seed_first_run_config (above) write.
+        # local-embed is a separate application that resolves its own
+        # ~/.local-embed/local_embed.yaml and owns that file: slife neither
+        # seeds it nor points at it with $LOCAL_EMBED_FILE.  Same for
+        # $TOOLS_FILE — the plugins find their files themselves.
         return config

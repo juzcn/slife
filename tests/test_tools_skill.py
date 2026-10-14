@@ -1,22 +1,21 @@
 """Tests for Slife.tools.skill — skill management with source tracking."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import json
-import pytest
 from pathlib import Path
 
+import pytest
+
 from slife.tools.skill import (
-    SetSkillTool,
-    RemoveSkillTool,
     ListSkillsTool,
+    RemoveSkillTool,
+    SetSkillTool,
     UseSkillTool,
-    get_skills_summary,
     _iter_skills,
     _parse_frontmatter,
+    get_skills_summary,
 )
 
+pytestmark = pytest.mark.unit
 
 # ── _parse_frontmatter ──────────────────────────────────────────────────
 
@@ -69,9 +68,16 @@ class TestSetSkillToolExecute:
         result = await tool.execute(
             name="my-skill",
             files=[
-                {"path": "SKILL.md", "content": "---\nname: my-skill\ndescription: A skill\n---\n# My Skill"},
+                {
+                    "path": "SKILL.md",
+                    "content": "---\nname: my-skill\ndescription: A skill\n---\n# My Skill",
+                },
             ],
-            source={"url": "https://github.com/example/my-skill", "type": "github", "version": "v1.0.0"},
+            source={
+                "url": "https://github.com/example/my-skill",
+                "type": "github",
+                "version": "v1.0.0",
+            },
         )
 
         assert "[OK]" in result
@@ -94,7 +100,10 @@ class TestSetSkillToolExecute:
         result = await tool.execute(
             name="no-source-skill",
             files=[
-                {"path": "SKILL.md", "content": "---\nname: no-source-skill\ndescription: Desc\n---\n# Body"},
+                {
+                    "path": "SKILL.md",
+                    "content": "---\nname: no-source-skill\ndescription: Desc\n---\n# Body",
+                },
             ],
         )
 
@@ -123,7 +132,10 @@ class TestSetSkillToolExecute:
         result = await tool.execute(
             name="new-skill",
             files=[
-                {"path": "SKILL.md", "content": "---\nname: new-skill\ndescription: Desc\n---\n# Body"},
+                {
+                    "path": "SKILL.md",
+                    "content": "---\nname: new-skill\ndescription: Desc\n---\n# Body",
+                },
             ],
             source={"type": "marketplace", "version": "2.0.0"},
         )
@@ -140,7 +152,9 @@ class TestSetSkillToolExecute:
         skills_dir = tmp_path / "skills"
         skill_dir = skills_dir / "existing"
         skill_dir.mkdir(parents=True)
-        skill_dir.joinpath("SKILL.md").write_text("---\nname: existing\n---\nbody", encoding="utf-8")
+        skill_dir.joinpath("SKILL.md").write_text(
+            "---\nname: existing\n---\nbody", encoding="utf-8"
+        )
 
         tool = SetSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(
@@ -160,7 +174,8 @@ class TestSetSkillToolExecute:
         d = skills_dir / "existing"
         d.mkdir(parents=True)
         (d / "SKILL.md").write_text(
-            "---\nname: existing\n---\nORIGINAL", encoding="utf-8",
+            "---\nname: existing\n---\nORIGINAL",
+            encoding="utf-8",
         )
 
         tool = SetSkillTool(skills_dir=str(skills_dir))
@@ -188,7 +203,8 @@ class TestSetSkillToolExecute:
         d.mkdir(parents=True)
         (d / "SKILL.md").write_text("---\nname: existing\n---\nold", encoding="utf-8")
         (d / "_meta.json").write_text(
-            json.dumps({"ownerId": "abc", "slug": "keep-me"}), encoding="utf-8",
+            json.dumps({"ownerId": "abc", "slug": "keep-me"}),
+            encoding="utf-8",
         )
 
         tool = SetSkillTool(skills_dir=str(skills_dir))
@@ -260,7 +276,8 @@ class TestGetSkillsSummary:
         d = skills_dir / "my-skill"
         d.mkdir()
         (d / "SKILL.md").write_text(
-            "---\nname: my-skill\ndescription: Does stuff\n---\n# Body", encoding="utf-8"
+            "---\nname: my-skill\ndescription: Does stuff\n---\n# Body",
+            encoding="utf-8",
         )
 
         summary = get_skills_summary(str(skills_dir))
@@ -273,15 +290,21 @@ class TestGetSkillsSummary:
         d = skills_dir / "sourced-skill"
         d.mkdir()
         (d / "SKILL.md").write_text(
-            "---\nname: sourced-skill\ndescription: Has source\n---\n# Body", encoding="utf-8"
+            "---\nname: sourced-skill\ndescription: Has source\n---\n# Body",
+            encoding="utf-8",
         )
-        (d / "_meta.json").write_text(json.dumps({
-            "source": {
-                "type": "github",
-                "url": "https://github.com/example/repo",
-                "version": "v2.0.0",
-            },
-        }), encoding="utf-8")
+        (d / "_meta.json").write_text(
+            json.dumps(
+                {
+                    "source": {
+                        "type": "github",
+                        "url": "https://github.com/example/repo",
+                        "version": "v2.0.0",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
 
         summary = get_skills_summary(str(skills_dir))
         assert "github" in summary
@@ -382,7 +405,8 @@ class TestListSkillsToolExecute:
         d = skills_dir / "my-skill"
         d.mkdir()
         (d / "SKILL.md").write_text(
-            "---\nname: my-skill\ndescription: Does stuff\n---\n# Body", encoding="utf-8"
+            "---\nname: my-skill\ndescription: Does stuff\n---\n# Body",
+            encoding="utf-8",
         )
         tool = ListSkillsTool(skills_dir=str(skills_dir))
         result = await tool.execute()
@@ -397,7 +421,8 @@ class TestUseSkillToolExecute:
         d = skills_dir / "my-skill"
         d.mkdir(parents=True)
         (d / "SKILL.md").write_text(
-            "---\nname: my-skill\ndescription: Desc\n---\n# Instructions\nDo stuff.", encoding="utf-8"
+            "---\nname: my-skill\ndescription: Desc\n---\n# Instructions\nDo stuff.",
+            encoding="utf-8",
         )
         tool = UseSkillTool(skills_dir=str(skills_dir))
         result = await tool.execute(name="my-skill")
@@ -418,7 +443,8 @@ class TestUseSkillToolExecute:
         d = skills_dir / "dir-name"
         d.mkdir(parents=True)
         (d / "SKILL.md").write_text(
-            "---\nname: frontmatter-name\ndescription: Desc\n---\n# Body", encoding="utf-8"
+            "---\nname: frontmatter-name\ndescription: Desc\n---\n# Body",
+            encoding="utf-8",
         )
         tool = UseSkillTool(skills_dir=str(skills_dir))
         # Match by directory name
@@ -443,7 +469,10 @@ class TestSetSkillToolArchive:
         # Build a valid zip with SKILL.md
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
-            zf.writestr("SKILL.md", "---\nname: zipped\ndescription: From zip\n---\n# Zipped Skill")
+            zf.writestr(
+                "SKILL.md",
+                "---\nname: zipped\ndescription: From zip\n---\n# Zipped Skill",
+            )
         archive_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 
         tool = SetSkillTool(skills_dir=str(skills_dir))
@@ -463,7 +492,10 @@ class TestSetSkillToolArchive:
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
-            zf.writestr("my-skill-v1/SKILL.md", "---\nname: wrapped\ndescription: Wrapped\n---\n# Wrapped")
+            zf.writestr(
+                "my-skill-v1/SKILL.md",
+                "---\nname: wrapped\ndescription: Wrapped\n---\n# Wrapped",
+            )
         archive_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 
         tool = SetSkillTool(skills_dir=str(skills_dir))
@@ -636,7 +668,8 @@ class TestSkillCatalogRows:
         skill_dir = tmp_path / "skills" / "quiet"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: quiet\ndescription: hush\n---\nbody\n", encoding="utf-8",
+            "---\nname: quiet\ndescription: hush\n---\nbody\n",
+            encoding="utf-8",
         )
 
         rows = skill_catalog_rows(tmp_path / "skills", disabled={"quiet"})
@@ -665,13 +698,14 @@ class TestSkillCatalogRows:
 
         assert set(rows) == {"deploy", "broken"}
         assert rows["broken"]["status"] == "error"
-        assert rows["broken"]["schema"] is None       # nothing to index
+        assert rows["broken"]["schema"] is None  # nothing to index
         assert rows["deploy"]["status"] == "enabled"  # untouched by its neighbour
 
         # Making the file readable again is what puts the row back.
         (root / "broken" / "SKILL.md").rmdir()
         (root / "broken" / "SKILL.md").write_text(
-            "---\nname: broken\n---\nfixed\n", encoding="utf-8",
+            "---\nname: broken\n---\nfixed\n",
+            encoding="utf-8",
         )
 
         assert skill_catalog_rows(root)["broken"]["status"] == "enabled"

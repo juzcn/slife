@@ -1,25 +1,23 @@
 """Tests for Slife.subagent.process — SubagentManager and SubagentProcess."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
+import slife.timeouts as _timeouts
 from slife.subagent.process import (
-    SubagentProcess,
-    SubagentManager,
     PoolFullError,
+    SubagentManager,
+    SubagentProcess,
     TaskTimeout,
+    clear_manager,
     get_manager,
     set_manager,
-    clear_manager,
 )
-import slife.timeouts as _timeouts
 
+pytestmark = pytest.mark.unit
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -29,13 +27,20 @@ def _mock_config(**overrides):
     cfg = Mock()
     cfg.subagent_config = {"max_subagents": 5}
     cfg._path = None
-    cfg.to_dict = Mock(return_value={
-        "models": [], "active_model_ref": "", "tools": [],
-        "max_iterations": 30, "agent_name": "slife",
-        "mcp_config": None, "memdb_config": None,
-        "wechat_config": None, "a2a_config": None,
-        "subagent_config": {"max_subagents": 5},
-    })
+    cfg.to_dict = Mock(
+        return_value={
+            "models": [],
+            "active_model_ref": "",
+            "tools": [],
+            "max_iterations": 30,
+            "agent_name": "slife",
+            "mcp_config": None,
+            "memdb_config": None,
+            "wechat_config": None,
+            "a2a_config": None,
+            "subagent_config": {"max_subagents": 5},
+        }
+    )
     for k, v in overrides.items():
         setattr(cfg, k, v)
     return cfg
@@ -338,10 +343,14 @@ class TestSubagentProcessReadStdout:
     async def test_dispatch_tolerates_malformed_notification(self):
         """A non-dict result/params must not raise (REVIEW C4)."""
         proc = self._proc()
-        proc._dispatch_message({
-            "jsonrpc": "2.0", "result": "ready",
-            "params": "x", "method": "worker/complete",
-        })
+        proc._dispatch_message(
+            {
+                "jsonrpc": "2.0",
+                "result": "ready",
+                "params": "x",
+                "method": "worker/complete",
+            }
+        )
         assert proc._ready.is_set() is False  # string result is not the ready signal
 
     @pytest.mark.asyncio
@@ -388,7 +397,8 @@ class TestSubagentProcessReadStdout:
         monkeypatch.setattr("slife.logfmt.PROTOCOL_LINE_LIMIT", 1024)
         reader = asyncio.StreamReader(limit=1024)
         reader.feed_data(
-            b"T" * 2048 + b"\n"
+            b"T" * 2048
+            + b"\n"
             + b'{"jsonrpc":"2.0","id":"rpc-1","result":"after-overlong"}\n'
         )
         reader.feed_eof()
@@ -503,8 +513,10 @@ class TestSubagentManagerStopAll:
     @pytest.mark.asyncio
     async def test_stop_all_stops_everything(self):
         manager = SubagentManager(_mock_config())
-        p1 = Mock(); p1.stop = AsyncMock()
-        p2 = Mock(); p2.stop = AsyncMock()
+        p1 = Mock()
+        p1.stop = AsyncMock()
+        p2 = Mock()
+        p2.stop = AsyncMock()
         manager._subagents = {"a": p1, "b": p2}
 
         await manager.stop_all()
@@ -936,6 +948,7 @@ def _mark_started():
     needs the state it leaves behind — which is what the spawn tests above
     fabricate by hand.
     """
+
     async def fake_start(self):
         self._running = True
         self._process = Mock()
@@ -1035,7 +1048,8 @@ class TestIdleWorker:
     def test_all_busy_is_none(self):
         manager = SubagentManager(_mock_config())
         manager._subagents = {
-            "w1": self._proc(busy=True), "w2": self._proc(busy=True),
+            "w1": self._proc(busy=True),
+            "w2": self._proc(busy=True),
         }
         assert manager.idle_worker() is None
 
@@ -1071,10 +1085,14 @@ class TestSendTaskToPool:
         manager._subagents = {"worker-1": idle}
 
         assert await manager.send_task_to_pool("do X") == (
-            "worker-1", "rpc-1", True,
+            "worker-1",
+            "rpc-1",
+            True,
         )
         idle.send_task_async.assert_awaited_once_with(
-            "do X", mode="auto", seed=None,
+            "do X",
+            mode="auto",
+            seed=None,
         )
 
     @pytest.mark.asyncio
@@ -1083,8 +1101,13 @@ class TestSendTaskToPool:
         manager = SubagentManager(_mock_config())
         manager._subagents = {"worker-1": self._proc(busy=True)}
 
-        with _mark_started(), patch.object(
-            SubagentProcess, "send_task_async", AsyncMock(return_value="rpc-9"),
+        with (
+            _mark_started(),
+            patch.object(
+                SubagentProcess,
+                "send_task_async",
+                AsyncMock(return_value="rpc-9"),
+            ),
         ):
             result = await manager.send_task_to_pool("do X")
 
@@ -1111,11 +1134,15 @@ class TestSendTaskToPool:
         manager = SubagentManager(_mock_config())
         manager._subagents = {"worker-1": self._proc(busy=True)}
 
-        with patch.object(
-            SubagentProcess, "start", AsyncMock(side_effect=OSError("no interpreter")),
+        with (
+            patch.object(
+                SubagentProcess,
+                "start",
+                AsyncMock(side_effect=OSError("no interpreter")),
+            ),
+            pytest.raises(OSError),
         ):
-            with pytest.raises(OSError):
-                await manager.send_task_to_pool("do X")
+            await manager.send_task_to_pool("do X")
 
     @pytest.mark.asyncio
     async def test_the_mode_and_seed_reach_the_worker(self):
@@ -1127,5 +1154,7 @@ class TestSendTaskToPool:
         await manager.send_task_to_pool("do X", mode="poll", seed=seed)
 
         idle.send_task_async.assert_awaited_once_with(
-            "do X", mode="poll", seed=seed,
+            "do X",
+            mode="poll",
+            seed=seed,
         )

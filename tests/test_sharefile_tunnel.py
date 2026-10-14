@@ -5,21 +5,19 @@ NgrokTunnel is one provider among three; it shares its lifecycle with
 behaviour every provider inherits.
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
-import sys
 import os
+import sys
 import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.plugins.sharefile import providers as tmod
 from slife.plugins.sharefile.providers import NgrokTunnel, _read_auth_token
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
+pytestmark = pytest.mark.unit
 
 # ── NgrokTunnel ───────────────────────────────────────────────────────────────
 
@@ -61,9 +59,11 @@ class TestNgrokTunnelStatus:
         mock_ngrok = MagicMock()
         mock_ngrok.forward.side_effect = ConnectionError("persistent error")
 
-        with patch.object(tmod, "_read_auth_token", return_value="token"), \
-             patch.object(tmod, "_import_ngrok", return_value=mock_ngrok), \
-             patch("time.sleep"):
+        with (
+            patch.object(tmod, "_read_auth_token", return_value="token"),
+            patch.object(tmod, "_import_ngrok", return_value=mock_ngrok),
+            patch("time.sleep"),
+        ):
             tunnel = NgrokTunnel()
             with pytest.raises(RuntimeError, match="3 attempts"):
                 tunnel.start(9090)
@@ -89,8 +89,10 @@ class TestNgrokTunnelStatus:
         mock_listener.url.return_value = "https://test.ngrok.io/"
         mock_ngrok.forward.return_value = mock_listener
 
-        with patch.object(tmod, "_read_auth_token", return_value="token"), \
-             patch.object(tmod, "_import_ngrok", return_value=mock_ngrok):
+        with (
+            patch.object(tmod, "_read_auth_token", return_value="token"),
+            patch.object(tmod, "_import_ngrok", return_value=mock_ngrok),
+        ):
             tunnel = NgrokTunnel()
             tunnel.start(8080)
 
@@ -156,8 +158,10 @@ class TestNgrokTunnelStart:
         mock_listener.url.return_value = "https://test.ngrok.io/"
         mock_ngrok.forward.return_value = mock_listener
 
-        with patch.object(tmod, "_read_auth_token", return_value="test-token"), \
-             patch.object(tmod, "_import_ngrok", return_value=mock_ngrok):
+        with (
+            patch.object(tmod, "_read_auth_token", return_value="test-token"),
+            patch.object(tmod, "_import_ngrok", return_value=mock_ngrok),
+        ):
             tunnel = NgrokTunnel()
             url = tunnel.start(8080)
 
@@ -165,7 +169,9 @@ class TestNgrokTunnelStart:
         assert tunnel._public_url == "https://test.ngrok.io"
         assert os.environ.get("SLIFE_SHAREFILE_URL") == "https://test.ngrok.io"
         mock_ngrok.forward.assert_called_once_with(
-            "localhost:8080", authtoken="test-token", pooling_enabled=True,
+            "localhost:8080",
+            authtoken="test-token",
+            pooling_enabled=True,
         )
 
     def test_missing_token_raises(self):
@@ -179,8 +185,10 @@ class TestNgrokTunnelStart:
         """start() returns the existing URL without calling ngrok when already up."""
         tunnel = NgrokTunnel()
         tunnel._public_url = "https://existing.ngrok.io"
-        with patch.object(tmod, "_read_auth_token") as mock_token, \
-             patch.object(tmod, "_import_ngrok") as mock_import:
+        with (
+            patch.object(tmod, "_read_auth_token") as mock_token,
+            patch.object(tmod, "_import_ngrok") as mock_import,
+        ):
             url = tunnel.start(8080)
         assert url == "https://existing.ngrok.io"
         mock_token.assert_not_called()
@@ -196,9 +204,11 @@ class TestNgrokTunnelStart:
             mock_listener,
         ]
 
-        with patch.object(tmod, "_read_auth_token", return_value="token"), \
-             patch.object(tmod, "_import_ngrok", return_value=mock_ngrok), \
-             patch("time.sleep"):
+        with (
+            patch.object(tmod, "_read_auth_token", return_value="token"),
+            patch.object(tmod, "_import_ngrok", return_value=mock_ngrok),
+            patch("time.sleep"),
+        ):
             tunnel = NgrokTunnel()
             url = tunnel.start(8080)
 
@@ -210,9 +220,11 @@ class TestNgrokTunnelStart:
         mock_ngrok = MagicMock()
         mock_ngrok.forward.side_effect = ConnectionError("persistent error")
 
-        with patch.object(tmod, "_read_auth_token", return_value="token"), \
-             patch.object(tmod, "_import_ngrok", return_value=mock_ngrok), \
-             patch("time.sleep"):
+        with (
+            patch.object(tmod, "_read_auth_token", return_value="token"),
+            patch.object(tmod, "_import_ngrok", return_value=mock_ngrok),
+            patch("time.sleep"),
+        ):
             tunnel = NgrokTunnel()
             with pytest.raises(RuntimeError, match="3 attempts"):
                 tunnel.start(9090)
@@ -235,8 +247,12 @@ class TestNgrokTunnelStart:
         """
         tunnel = NgrokTunnel()
         tunnel._starting = True
-        tunnel._starting_at = time.monotonic() - _timeouts.timeouts.ready.tunnel_start - 10
-        with patch.object(tunnel, "_do_start", return_value="https://fresh.ngrok.io") as mock_do:
+        tunnel._starting_at = (
+            time.monotonic() - _timeouts.timeouts.ready.tunnel_start - 10
+        )
+        with patch.object(
+            tunnel, "_do_start", return_value="https://fresh.ngrok.io"
+        ) as mock_do:
             url = tunnel.start(8080)
         assert url == "https://fresh.ngrok.io"
         mock_do.assert_called_once_with(8080)
@@ -248,7 +264,9 @@ class TestNgrokTunnelStart:
         """After a superseded start, a fresh concurrent start is guarded again."""
         tunnel = NgrokTunnel()
         tunnel._starting = True
-        tunnel._starting_at = time.monotonic() - _timeouts.timeouts.ready.tunnel_start - 10
+        tunnel._starting_at = (
+            time.monotonic() - _timeouts.timeouts.ready.tunnel_start - 10
+        )
         with patch.object(tunnel, "_do_start", return_value="https://fresh.ngrok.io"):
             tunnel.start(8080)
         # A second start while a *new* attempt is in flight must be rejected.
@@ -326,9 +344,14 @@ class TestNgrokTunnelStartMonitor:
             tunnel._public_url = "https://monitor.ngrok.io"
             return tunnel._public_url
 
-        with patch("asyncio.sleep", side_effect=fast_sleep), \
-             patch("slife.plugins.sharefile.providers._ngrok_tunnel_alive", return_value=True), \
-             patch.object(tunnel, "start", side_effect=fake_start):
+        with (
+            patch("asyncio.sleep", side_effect=fast_sleep),
+            patch(
+                "slife.plugins.sharefile.providers._ngrok_tunnel_alive",
+                return_value=True,
+            ),
+            patch.object(tunnel, "start", side_effect=fake_start),
+        ):
             task = asyncio.create_task(tunnel._run_monitor(8080))
             try:
                 for _ in range(200):
@@ -354,9 +377,16 @@ class TestNgrokTunnelStartMonitor:
         async def fast_sleep(_d):
             await real_sleep(0.01)
 
-        with patch("asyncio.sleep", side_effect=fast_sleep), \
-             patch("slife.plugins.sharefile.providers._ngrok_tunnel_alive", return_value=True), \
-             patch.object(tunnel, "start", return_value="https://already-up.ngrok.io") as fake_start:
+        with (
+            patch("asyncio.sleep", side_effect=fast_sleep),
+            patch(
+                "slife.plugins.sharefile.providers._ngrok_tunnel_alive",
+                return_value=True,
+            ),
+            patch.object(
+                tunnel, "start", return_value="https://already-up.ngrok.io"
+            ) as fake_start,
+        ):
             task = asyncio.create_task(tunnel._run_monitor(8080))
             try:
                 for _ in range(20):
@@ -395,11 +425,15 @@ class TestNgrokTunnelStartMonitor:
         # come to rest, not restart a tunnel that is up.
         alive_results = iter([False, True])
 
-        with patch("asyncio.sleep", side_effect=fast_sleep), \
-             patch("slife.timeouts.timeouts.ready.tunnel_heal", 0.0), \
-             patch("slife.plugins.sharefile.providers._ngrok_tunnel_alive",
-                   side_effect=lambda _u: next(alive_results, True)), \
-             patch.object(tunnel, "start", side_effect=fake_start) as mock_start:
+        with (
+            patch("asyncio.sleep", side_effect=fast_sleep),
+            patch("slife.timeouts.timeouts.ready.tunnel_heal", 0.0),
+            patch(
+                "slife.plugins.sharefile.providers._ngrok_tunnel_alive",
+                side_effect=lambda _u: next(alive_results, True),
+            ),
+            patch.object(tunnel, "start", side_effect=fake_start) as mock_start,
+        ):
             task = asyncio.create_task(tunnel._run_monitor(8080))
             try:
                 for _ in range(200):
@@ -430,8 +464,10 @@ class TestNgrokTunnelStartMonitor:
         async def fast_sleep(_d):
             await real_sleep(0.01)
 
-        with patch("asyncio.sleep", side_effect=fast_sleep), \
-             patch.object(tunnel, "start") as mock_start:
+        with (
+            patch("asyncio.sleep", side_effect=fast_sleep),
+            patch.object(tunnel, "start") as mock_start,
+        ):
             task = asyncio.create_task(tunnel._run_monitor(8080))
             try:
                 for _ in range(30):
@@ -463,9 +499,11 @@ class TestNgrokTunnelStartMonitor:
         async def fast_sleep(_d):
             await real_sleep(0.01)
 
-        with patch("asyncio.sleep", side_effect=fast_sleep), \
-             patch("slife.plugins.sharefile.providers._ngrok_tunnel_alive", probes), \
-             patch.object(tunnel, "start") as mock_start:
+        with (
+            patch("asyncio.sleep", side_effect=fast_sleep),
+            patch("slife.plugins.sharefile.providers._ngrok_tunnel_alive", probes),
+            patch.object(tunnel, "start") as mock_start,
+        ):
             task = asyncio.create_task(tunnel._run_monitor(8080))
             try:
                 for _ in range(200):
@@ -513,8 +551,7 @@ class TestServerOwnedTunnel:
         active = server._sharefile_config.active_provider
         assert isinstance(server._tunnel, TunnelProvider)
         assert isinstance(server._tunnel, expected[active]), (
-            f"active_provider={active!r} but built "
-            f"{type(server._tunnel).__name__}"
+            f"active_provider={active!r} but built {type(server._tunnel).__name__}"
         )
 
     def test_is_active_and_public_url(self, monkeypatch):
@@ -569,13 +606,18 @@ class TestNgrokTunnelAlive:
         monkeypatch.setitem(sys.modules, "ngrok", mod)
 
     def test_our_url_is_listed(self, monkeypatch):
-        self._install(monkeypatch, self._ngrok(
-            [self._Listener(self.URL), self._Listener("https://other.ngrok.app")],
-        ))
+        self._install(
+            monkeypatch,
+            self._ngrok(
+                [self._Listener(self.URL), self._Listener("https://other.ngrok.app")],
+            ),
+        )
         assert tmod._ngrok_tunnel_alive(self.URL) is True
 
     def test_absent_from_a_non_empty_list_is_the_one_answer(self, monkeypatch):
-        self._install(monkeypatch, self._ngrok([self._Listener("https://other.ngrok.app")]))
+        self._install(
+            monkeypatch, self._ngrok([self._Listener("https://other.ngrok.app")])
+        )
         assert tmod._ngrok_tunnel_alive(self.URL) is False
 
     def test_an_empty_list_is_unknown_not_dead(self, monkeypatch):
@@ -604,11 +646,10 @@ class TestReadAuthToken:
         """Falls back to NGROK_AUTHTOKEN env var when credstore is unavailable."""
         monkeypatch.setenv("NGROK_AUTHTOKEN", "env-token-123")
         # Make get_credential raise so _read_auth_token falls back to the env var.
-        with patch(
-            "credstore.get_credential", side_effect=OSError("mock")
-        ) as mock_get, patch(
-            "slife.plugins.sharefile.providers.logger"
-        ) as mock_logger:
+        with (
+            patch("credstore.get_credential", side_effect=OSError("mock")) as mock_get,
+            patch("slife.plugins.sharefile.providers.logger") as mock_logger,
+        ):
             result = _read_auth_token()
         assert result == "env-token-123"
         mock_get.assert_called_once_with("NGROK_AUTHTOKEN")

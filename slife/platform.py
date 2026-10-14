@@ -4,17 +4,17 @@ import asyncio
 import ctypes
 import logging
 import os
+import platform as _platform
 import shutil
 import signal
 import subprocess as _subprocess
 import sys
 import time
-import platform as _platform
 
 IS_WINDOWS = sys.platform == "win32"
 
-from slife.threads import run_daemon
 import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
+from slife.threads import run_daemon
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ def _taskkill_tree_sync(pid: int, label: str = "") -> None:
             stdout=_subprocess.DEVNULL,
             stderr=_subprocess.DEVNULL,
             timeout=_timeouts.timeouts.grace.force,
+            check=False,
         )
     except Exception as e:  # noqa: BLE001 — a cleanup path must never raise
         logger.debug("taskkill_failed pid=%s label=%s err=%s", pid, label, e)
@@ -57,8 +58,10 @@ def _descendant_pids(pid: int) -> list[int]:
     try:
         out = _subprocess.run(
             ["ps", "-eo", "pid=,ppid="],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
             timeout=_timeouts.timeouts.grace.force,
+            check=False,
         ).stdout
     except Exception as e:  # noqa: BLE001 — best-effort cleanup
         logger.debug("ps_tree_failed pid=%s err=%s", pid, e)
@@ -83,7 +86,9 @@ def _descendant_pids(pid: int) -> list[int]:
 
 
 def _signal_pids_sync(
-    pids: list[int], sig: int = signal.SIGTERM, label: str = "",
+    pids: list[int],
+    sig: int = signal.SIGTERM,
+    label: str = "",
 ) -> None:
     """Signal each pid, ignoring the ones already gone (POSIX).  Never raises.
 
@@ -234,11 +239,16 @@ def _windows_job() -> int | None:
         info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         kernel32.SetInformationJobObject.restype = ctypes.c_int
         kernel32.SetInformationJobObject.argtypes = [
-            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
         ]
         if not kernel32.SetInformationJobObject(
-            handle, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
-            ctypes.byref(info), ctypes.sizeof(info),
+            handle,
+            _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
         ):
             logger.debug("job_set_info_failed err=%s", ctypes.get_last_error())
             return None
@@ -270,16 +280,26 @@ def assign_to_job_object(pid: int, label: str = "") -> bool:
         kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
         process_handle = kernel32.OpenProcess(
-            _PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid,
+            _PROCESS_SET_QUOTA | _PROCESS_TERMINATE,
+            False,
+            pid,
         )
         if not process_handle:
-            logger.debug("job_open_process_failed pid=%s label=%s err=%s",
-                         pid, label, ctypes.get_last_error())
+            logger.debug(
+                "job_open_process_failed pid=%s label=%s err=%s",
+                pid,
+                label,
+                ctypes.get_last_error(),
+            )
             return False
         try:
             if not kernel32.AssignProcessToJobObject(handle, process_handle):
-                logger.debug("job_assign_failed pid=%s label=%s err=%s",
-                             pid, label, ctypes.get_last_error())
+                logger.debug(
+                    "job_assign_failed pid=%s label=%s err=%s",
+                    pid,
+                    label,
+                    ctypes.get_last_error(),
+                )
                 return False
         finally:
             kernel32.CloseHandle(process_handle)
@@ -297,7 +317,11 @@ def resolve_command(command: str) -> str:
     via shutil.which(). On other platforms, returns the command as-is.
     """
     if IS_WINDOWS and not command.lower().endswith((".exe", ".cmd", ".bat")):
-        resolved = shutil.which(command) or shutil.which(command + ".cmd") or shutil.which(command + ".exe")
+        resolved = (
+            shutil.which(command)
+            or shutil.which(command + ".cmd")
+            or shutil.which(command + ".exe")
+        )
         if resolved:
             return resolved
     return command
@@ -349,7 +373,11 @@ def _resolve_skill_script(script_path: str) -> str:
 
     if script_path.startswith(("skills/", "skills\\")):
         skills_dir = get_skills_dir()
-        rel = script_path[len("skills/"):].lstrip("/\\") if script_path.startswith("skills/") else script_path[len("skills\\"):].lstrip("/\\")
+        rel = (
+            script_path[len("skills/") :].lstrip("/\\")
+            if script_path.startswith("skills/")
+            else script_path[len("skills\\") :].lstrip("/\\")
+        )
         resolved = skills_dir / rel
         if resolved.is_file():
             return str(resolved)
@@ -371,7 +399,7 @@ def _close_pipe_transports(process: asyncio.subprocess.Process) -> None:
     if process.stdin:
         try:
             process.stdin.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort pipe close must never raise
             pass
     # stdout / stderr are StreamReader — transport is at ._transport.
     for attr in ("stdout", "stderr"):
@@ -380,7 +408,7 @@ def _close_pipe_transports(process: asyncio.subprocess.Process) -> None:
             continue
         try:
             pipe._transport.close()  # type: ignore[attr-defined]
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort pipe close must never raise
             pass
 
 
@@ -415,7 +443,7 @@ async def terminate_process(
             if process.stdin:
                 try:
                     process.stdin.close()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 — best-effort pipe close must never raise
                     pass
 
             # Graceful termination.  Windows has no graceful signal to send —
@@ -424,12 +452,21 @@ async def terminate_process(
             # in one taskkill (the same fix the sync ladder below carries).
             # POSIX: the tree is read BEFORE anything is signalled — a dead
             # parent's children are reparented to init and unfindable.
-            descendants = [] if IS_WINDOWS else await run_daemon(
-                _descendant_pids, process.pid, name="ps-tree",
+            descendants = (
+                []
+                if IS_WINDOWS
+                else await run_daemon(
+                    _descendant_pids,
+                    process.pid,
+                    name="ps-tree",
+                )
             )
             if IS_WINDOWS:
                 await run_daemon(
-                    _taskkill_tree_sync, process.pid, label, name="taskkill-tree",
+                    _taskkill_tree_sync,
+                    process.pid,
+                    label,
+                    name="taskkill-tree",
                 )
             else:
                 process.send_signal(signal.SIGTERM)
@@ -437,17 +474,19 @@ async def terminate_process(
             # Wait for graceful exit
             try:
                 await asyncio.wait_for(
-                    process.wait(), timeout=_timeouts.timeouts.grace.gentle,
+                    process.wait(),
+                    timeout=_timeouts.timeouts.grace.gentle,
                 )
                 logger.debug("process_exited pid=%s label=%s", process.pid, label)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("process_force_kill pid=%s label=%s", process.pid, label)
                 process.kill()
                 try:
                     await asyncio.wait_for(
-                        process.wait(), timeout=_timeouts.timeouts.grace.force,
+                        process.wait(),
+                        timeout=_timeouts.timeouts.grace.force,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass  # Best effort
             if descendants:
                 # Whatever the child left behind: a plugin killed before its
@@ -460,7 +499,7 @@ async def terminate_process(
                 await run_daemon(_signal_pids_sync, descendants, name="tree-sweep")
     except ProcessLookupError:
         pass  # Already exited
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — teardown must never raise to the caller
         logger.debug("process_terminate_error label=%s err=%s", label, e)
     finally:
         # Close stdout/stderr transports to prevent "unclosed transport"
@@ -511,8 +550,9 @@ def terminate_process_sync(
         try:
             _taskkill_tree_sync(process.pid, label)
         except Exception as e:  # noqa: BLE001 — this runs in a shutdown finally
-            logger.debug("terminate_process_sync_kill_error %spid=%s err=%s",
-                         tag, process.pid, e)
+            logger.debug(
+                "terminate_process_sync_kill_error %spid=%s err=%s", tag, process.pid, e
+            )
         return
     # POSIX: read the tree BEFORE the signal — once this child dies its own
     # children are reparented to init and can no longer be found.  The sweep
@@ -524,7 +564,12 @@ def terminate_process_sync(
         try:
             process.terminate()
         except Exception:
-            logger.debug("terminate_process_sync_terminate_error %spid=%s", tag, process.pid, exc_info=True)
+            logger.debug(
+                "terminate_process_sync_terminate_error %spid=%s",
+                tag,
+                process.pid,
+                exc_info=True,
+            )
             return
         pid = process.pid
         deadline = time.monotonic() + timeout
@@ -575,27 +620,44 @@ def desktop_notify(title: str, message: str) -> None:
     try:
         if system == "Windows":
             _subprocess.run(
-                ["powershell", "-Command",
-                 f"Add-Type -AssemblyName System.Windows.Forms; "
-                 f"$n = New-Object System.Windows.Forms.NotifyIcon; "
-                 f"$n.Icon = [System.Drawing.SystemIcons]::Information; "
-                 f"$n.BalloonTipTitle = '{_ps_quote(title)}'; "
-                 f"$n.BalloonTipText = '{_ps_quote(message)}'; "
-                 f"$n.Visible = $true; "
-                 f"$n.ShowBalloonTip(5000);"],
-                capture_output=True, timeout=10,  # noqa-timeout — desktop notify, sync + best-effort (never fails the caller)
+                [
+                    "powershell",
+                    "-Command",
+                    (
+                        f"Add-Type -AssemblyName System.Windows.Forms; "
+                        f"$n = New-Object System.Windows.Forms.NotifyIcon; "
+                        f"$n.Icon = [System.Drawing.SystemIcons]::Information; "
+                        f"$n.BalloonTipTitle = '{_ps_quote(title)}'; "
+                        f"$n.BalloonTipText = '{_ps_quote(message)}'; "
+                        f"$n.Visible = $true; "
+                        f"$n.ShowBalloonTip(5000);"
+                    ),
+                ],
+                capture_output=True,
+                timeout=10,  # noqa-timeout — desktop notify, sync + best-effort (never fails the caller)
+                check=False,
             )
         elif system == "Darwin":
             _subprocess.run(
-                ["osascript", "-e",
-                 f'display notification "{_applescript_quote(message)}" with title "{_applescript_quote(title)}"'],
-                capture_output=True, timeout=5,  # noqa-timeout — desktop notify, sync + best-effort
+                [
+                    "osascript",
+                    "-e",
+                    f'display notification "{_applescript_quote(message)}" with title "{_applescript_quote(title)}"',
+                ],
+                capture_output=True,
+                timeout=5,  # noqa-timeout — desktop notify, sync + best-effort
+                check=False,
             )
         else:
             _subprocess.run(
                 ["notify-send", title, message],
-                capture_output=True, timeout=5,  # noqa-timeout — desktop notify, sync + best-effort
+                capture_output=True,
+                timeout=5,  # noqa-timeout — desktop notify, sync + best-effort
+                check=False,
             )
-    except Exception:
-        # Desktop notification is best-effort — never let it fail the caller
+    except Exception:  # noqa: BLE001, S110 — best-effort: must never fail the caller
+        # Desktop notification is best-effort — never let it fail the caller.
+        # The docstring states this contract and test_platform enforces it: a
+        # narrowed handler would let an unexpected failure through, which is
+        # exactly the "never raises" guarantee being dropped.
         pass

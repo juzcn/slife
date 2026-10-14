@@ -1,26 +1,25 @@
 """Tests for slife.tools.system — SystemToolsListTool, CheckAsyncTool, CancelAsyncTool."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import asyncio
+from typing import ClassVar
 from unittest.mock import MagicMock
 
 import pytest
 
 from slife.tools.system import (
-    SystemToolsListTool,
-    CheckAsyncTool,
     CancelAsyncTool,
+    CheckAsyncTool,
     SetMaxIterationsTool,
-    _system_category,
-    _strip_server_prefix,
-    _tasks,
-    schedule,
+    SystemToolsListTool,
     _get_task,
     _pop_task,
+    _strip_server_prefix,
+    _system_category,
+    _tasks,
+    schedule,
 )
 
+pytestmark = pytest.mark.unit
 
 # ── _system_category ──────────────────────────────────────────────────────
 
@@ -34,9 +33,11 @@ class TestSystemCategory:
         class _T(Tool):
             name = "thing"
             description = "Does a thing."
-            parameters = {"type": "object", "properties": {}}
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
             category = "Custom"
-            async def execute(self, **kwargs): return "ok"
+
+            async def execute(self, **kwargs):
+                return "ok"
 
         assert _system_category(_T()) == "Custom"
 
@@ -61,9 +62,11 @@ class TestSystemCategory:
         class _T(Tool):
             name = "thing"
             description = "Does a thing."
-            parameters = {"type": "object", "properties": {}}
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
             category = ""
-            async def execute(self, **kwargs): return "ok"
+
+            async def execute(self, **kwargs):
+                return "ok"
 
         assert _system_category(_T()) == "Other"
 
@@ -78,6 +81,7 @@ class TestStripServerPrefix:
 
     def _proxy(self, server: str, desc: str):
         from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
+
         tool = MagicMock(spec=MCPProxyTool)
         tool._server = server
         tool._route = ProxyRoute.DIRECT
@@ -94,14 +98,19 @@ class TestStripServerPrefix:
         class _Native(Tool):
             name = "thing"
             description = "Does a thing."
-            parameters = {"type": "object", "properties": {}}
-            async def execute(self, **kwargs): return "ok"
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
+
+            async def execute(self, **kwargs):
+                return "ok"
 
         assert _strip_server_prefix(_Native(), "Native desc.") == "Native desc."
 
     def test_prefix_mismatch_untouched(self):
         tool = self._proxy("memdb", "Search turns.")
-        assert _strip_server_prefix(tool, "[other] Search turns.") == "[other] Search turns."
+        assert (
+            _strip_server_prefix(tool, "[other] Search turns.")
+            == "[other] Search turns."
+        )
 
 
 # ── SystemToolsListTool ──────────────────────────────────────────────────
@@ -115,7 +124,9 @@ class TestSystemToolsListTool:
         assert tool.name == "system_tools_list"
         assert tool.category == "System"
         assert tool.parameters == {
-            "type": "object", "properties": {}, "required": [],
+            "type": "object",
+            "properties": {},
+            "required": [],
             "additionalProperties": False,
         }
 
@@ -133,8 +144,10 @@ class TestSystemToolsListTool:
     async def test_registry_empty(self):
         """When registry has no tools, returns appropriate message."""
         from slife.tools.registry import ToolRegistry
+
         tool = SystemToolsListTool()
         from slife.tools.context import ToolContext
+
         try:
             tool._ctx = ToolContext(registry=ToolRegistry())
             result = await tool.execute()
@@ -145,21 +158,24 @@ class TestSystemToolsListTool:
     @pytest.mark.asyncio
     async def test_builtin_tools_listed(self):
         """Native tools are listed under their own category."""
-        from slife.tools.registry import ToolRegistry
         from slife.tools.base import Tool
+        from slife.tools.registry import ToolRegistry
 
         class _TestNative(Tool):
             name = "check_something"
             description = "Checks something."
-            parameters = {"type": "object", "properties": {}}
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
             category = "System"
-            async def execute(self, **kwargs): return "ok"
+
+            async def execute(self, **kwargs):
+                return "ok"
 
         registry = ToolRegistry()
         registry.register(_TestNative())
 
         tool = SystemToolsListTool()
         from slife.tools.context import ToolContext
+
         try:
             tool._ctx = ToolContext(registry=registry)
             result = await tool.execute()
@@ -172,15 +188,17 @@ class TestSystemToolsListTool:
     async def test_mcp_proxy_tools_excluded(self):
         """External MCP proxy tools are NOT listed — the model already gets
         their full schemas natively, so a second listing is redundant cost."""
-        from slife.tools.registry import ToolRegistry
         from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
         from slife.tools.base import Tool
+        from slife.tools.registry import ToolRegistry
 
         class _Native(Tool):
             name = "echo"
             description = "Echo back."
-            parameters = {"type": "object", "properties": {}}
-            async def execute(self, **kwargs): return "ok"
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
+
+            async def execute(self, **kwargs):
+                return "ok"
 
         # Minimal MCPProxyTool-like mock so isinstance checks pass.
         # _route is an instance attribute (set in __init__), so spec= alone
@@ -199,6 +217,7 @@ class TestSystemToolsListTool:
 
         tool = SystemToolsListTool()
         from slife.tools.context import ToolContext
+
         try:
             tool._ctx = ToolContext(registry=registry)
             result = await tool.execute()
@@ -212,8 +231,8 @@ class TestSystemToolsListTool:
     async def test_builtin_plugin_tools_grouped_by_plugin_name(self):
         """Built-in plugin tools (bare names) group under their plugin name —
         source-based, no name-prefix guessing (T-12)."""
-        from slife.tools.registry import ToolRegistry
         from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
+        from slife.tools.registry import ToolRegistry
 
         plugin_tool = MagicMock(spec=MCPProxyTool)
         plugin_tool.name = "wechat_login"
@@ -227,6 +246,7 @@ class TestSystemToolsListTool:
 
         tool = SystemToolsListTool()
         from slife.tools.context import ToolContext
+
         try:
             tool._ctx = ToolContext(registry=registry)
             result = await tool.execute()
@@ -241,9 +261,9 @@ class TestSystemToolsListTool:
         it is inventoried by ``job-list`` and searchable in the catalog, so it
         stays out of this listing — while the job-coding plugin's own tools
         (job-write …) are system tools and stay in."""
-        from slife.tools.registry import ToolRegistry
         from slife.mcp.tool_adapter import MCPProxyTool, ProxyRoute
         from slife.tools.context import ToolContext
+        from slife.tools.registry import ToolRegistry
 
         def _job_tool(name):
             tool = MagicMock(spec=MCPProxyTool)
@@ -255,9 +275,9 @@ class TestSystemToolsListTool:
             return tool
 
         registry = ToolRegistry()
-        registry.register(_job_tool("job-translate"))     # the user's
-        registry.register(_job_tool("job-write"))         # the plugin's own
-        registry.register(_job_tool("turn_search"))       # another plugin's
+        registry.register(_job_tool("job-translate"))  # the user's
+        registry.register(_job_tool("job-write"))  # the plugin's own
+        registry.register(_job_tool("turn_search"))  # another plugin's
 
         tool = SystemToolsListTool()
         try:
@@ -272,20 +292,23 @@ class TestSystemToolsListTool:
     @pytest.mark.asyncio
     async def test_harness_marker_for_underscore_tools(self):
         """Native harness tools (_turn_prompt) are shown with a marker."""
-        from slife.tools.registry import ToolRegistry
         from slife.tools.base import Tool
+        from slife.tools.registry import ToolRegistry
 
         class _Harness(Tool):
             name = "_turn_prompt"
             description = "Per-turn prompt."
-            parameters = {"type": "object", "properties": {}}
-            async def execute(self, **kwargs): return "ok"
+            parameters: ClassVar[dict] = {"type": "object", "properties": {}}
+
+            async def execute(self, **kwargs):
+                return "ok"
 
         registry = ToolRegistry()
         registry.register(_Harness())
 
         tool = SystemToolsListTool()
         from slife.tools.context import ToolContext
+
         try:
             tool._ctx = ToolContext(registry=registry)
             result = await tool.execute()
@@ -312,8 +335,10 @@ class TestAsyncTaskHelpers:
     @pytest.mark.asyncio
     async def test_schedule_returns_task_id(self):
         """schedule() returns an 8-char hex task_id."""
+
         async def dummy():
             return "done"
+
         tid = schedule(dummy())
         assert len(tid) == 8
         assert all(c in "0123456789abcdef" for c in tid)
@@ -321,8 +346,10 @@ class TestAsyncTaskHelpers:
     @pytest.mark.asyncio
     async def test_schedule_adds_to_tasks(self):
         """schedule() adds the task to the global _tasks dict."""
+
         async def dummy():
             return "done"
+
         tid = schedule(dummy())
         assert tid in _tasks
         assert isinstance(_tasks[tid], asyncio.Task)
@@ -330,8 +357,10 @@ class TestAsyncTaskHelpers:
     @pytest.mark.asyncio
     async def test_get_task_returns_task(self):
         """_get_task retrieves a scheduled task."""
+
         async def dummy():
             return "done"
+
         tid = schedule(dummy())
         task = _get_task(tid)
         assert task is not None
@@ -344,8 +373,10 @@ class TestAsyncTaskHelpers:
     @pytest.mark.asyncio
     async def test_pop_task_removes_and_returns(self):
         """_pop_task removes the task from _tasks and returns it."""
+
         async def dummy():
             return "done"
+
         tid = schedule(dummy())
         assert tid in _tasks
         task = _pop_task(tid)
@@ -359,8 +390,10 @@ class TestAsyncTaskHelpers:
     @pytest.mark.asyncio
     async def test_scheduled_task_completes(self):
         """A scheduled task eventually completes with its result."""
+
         async def return_value():
             return "the result"
+
         tid = schedule(return_value())
         task = _get_task(tid)
         assert task is not None
@@ -370,8 +403,10 @@ class TestAsyncTaskHelpers:
     @pytest.mark.asyncio
     async def test_scheduled_task_captures_exception(self):
         """A failing task captures the exception in its result string."""
+
         async def raise_error():
             raise ValueError("test error")
+
         tid = schedule(raise_error())
         task = _get_task(tid)
         assert task is not None
@@ -382,8 +417,10 @@ class TestAsyncTaskHelpers:
     @pytest.mark.asyncio
     async def test_multiple_scheduled_tasks(self):
         """Multiple tasks can be scheduled simultaneously."""
+
         async def return_x(x):
             return x
+
         tid1 = schedule(return_x("one"))
         tid2 = schedule(return_x("two"))
         tid3 = schedule(return_x("three"))
@@ -517,10 +554,7 @@ class TestCancelAsyncTool:
         tool = CancelAsyncTool()
 
         async def slow():
-            try:
-                await asyncio.sleep(10)
-            except asyncio.CancelledError:
-                raise
+            await asyncio.sleep(10)
 
         tid = schedule(slow())
         assert tid in _tasks

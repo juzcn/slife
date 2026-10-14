@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from croniter import croniter
 
-__all__ = ["ScheduleError", "next_run", "previous_run", "is_valid"]
+__all__ = ["ScheduleError", "is_valid", "next_run", "previous_run"]
 
 
 class ScheduleError(ValueError):

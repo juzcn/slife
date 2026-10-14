@@ -191,7 +191,7 @@ def estimate_turn_tokens(turn: dict) -> int:
     if isinstance(messages, str):
         try:
             messages = json.loads(messages)
-        except Exception:
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
             messages = "[]"
     if isinstance(messages, list):
         body = sum(estimate_message_tokens(m) for m in messages)
@@ -359,7 +359,7 @@ def _trim_note_in(content: str) -> int | None:
     start = content.rfind(INFO_PREFIX)
     if start == -1:
         return None
-    payload = content[start + len(INFO_PREFIX):].lstrip()
+    payload = content[start + len(INFO_PREFIX) :].lstrip()
     return start if payload[:1].isdigit() else None
 
 
@@ -380,7 +380,9 @@ def wechat_marker(peer_wechat_id: str, context_token: str | None = None) -> str:
 
 
 def a2a_marker(
-    agent_name: str, task_id: str | None = None, type: str = "task_request",
+    agent_name: str,
+    task_id: str | None = None,
+    type: str = "task_request",
 ) -> str:
     """Content prefix for ANY inbound A2A message — one envelope, a type field.
 
@@ -430,7 +432,7 @@ def a2a_message_type(text: str) -> str | None:
     if end == -1:
         return None
     try:
-        payload = json.loads(text[len(A2A_PREFIX):end])
+        payload = json.loads(text[len(A2A_PREFIX) : end])
     except (json.JSONDecodeError, TypeError):
         return None
     if not isinstance(payload, dict):
@@ -500,19 +502,17 @@ def _unwrap_with_footnote(text: str) -> tuple[str, tuple[int, int] | None]:
     :func:`info_footnote_span`: the display string plus the half-open span
     of the unwrapped INFO payload in that string.
     """
-    if text.startswith(WECHAT_MARKER):
-        text = text[len(WECHAT_MARKER):]
+    text = text.removeprefix(WECHAT_MARKER)
     for prefix in (WECHAT_PREFIX, SUBAGENT_PREFIX, A2A_PREFIX):
         if text.startswith(prefix):
             end = text.find("]", len(prefix))
             if end != -1:
-                text = text[end + 1:].lstrip()
+                text = text[end + 1 :].lstrip()
     start = text.rfind(INFO_PREFIX)
     if start == -1:
         return text, None
-    payload = text[start + len(INFO_PREFIX):]
-    if payload.endswith("]"):
-        payload = payload[:-1]
+    payload = text[start + len(INFO_PREFIX) :]
+    payload = payload.removesuffix("]")
     return text[:start] + payload, (start, start + len(payload))
 
 
@@ -593,7 +593,9 @@ class MessageHistory:
 
     @classmethod
     def from_history(
-        cls, system_prompt: str, messages: list[dict],
+        cls,
+        system_prompt: str,
+        messages: list[dict],
     ) -> "MessageHistory":
         """Build a history seeded from an inherited message history.
 
@@ -655,7 +657,8 @@ class MessageHistory:
         if [t.get("rowid") for t in ordered] != [t.get("rowid") for t in turns]:
             logger.warning(
                 "rebuild_reordered turns=%d — caller passed a non-chronological "
-                "selection", len(turns),
+                "selection",
+                len(turns),
             )
 
         sys_msg = (
@@ -750,7 +753,8 @@ class MessageHistory:
         return repaired
 
     def add_user_message(
-        self, content: str,
+        self,
+        content: str,
     ) -> None:
         """Add a user message — the user's text, verbatim.
 
@@ -776,7 +780,9 @@ class MessageHistory:
         logger.debug("conv_user text=%.80s", content)
 
     def add_assistant_message(
-        self, content: str | None, tool_calls: list | None = None,
+        self,
+        content: str | None,
+        tool_calls: list | None = None,
         thinking: str | None = None,
     ) -> None:
         """Add an assistant message, optionally with tool calls and thinking.
@@ -806,13 +812,16 @@ class MessageHistory:
                     fn["arguments"] = sanitize_secrets(str(fn["arguments"]))
                 sanitized_calls.append(tc_copy)
             msg["tool_calls"] = sanitized_calls
-            tc_names = [
-                tc.get("function", {}).get("name", "?")
-                for tc in tool_calls
-            ]
-            logger.debug("conv_assistant tool_calls=%s think=%d", tc_names, len(thinking or ""))
+            tc_names = [tc.get("function", {}).get("name", "?") for tc in tool_calls]
+            logger.debug(
+                "conv_assistant tool_calls=%s think=%d", tc_names, len(thinking or "")
+            )
         else:
-            logger.debug("conv_assistant text_len=%d think=%d", len(content or ""), len(thinking or ""))
+            logger.debug(
+                "conv_assistant text_len=%d think=%d",
+                len(content or ""),
+                len(thinking or ""),
+            )
         self.messages.append(msg)
 
     def append_trim_marker(self, count: int) -> None:
@@ -893,7 +902,10 @@ class MessageHistory:
         return cleaned
 
     def add_tool_result(
-        self, tool_call_id: str, content: str, is_error: bool = False,
+        self,
+        tool_call_id: str,
+        content: str,
+        is_error: bool = False,
     ) -> None:
         """Add a tool result message.
 
@@ -904,15 +916,18 @@ class MessageHistory:
         detection rule in a second component.  Stripped from the wire
         format by :meth:`to_openai_messages` (not an OpenAI field).
         """
-        self.messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "content": content,
-            "is_error": is_error,
-        })
+        self.messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": content,
+                "is_error": is_error,
+            }
+        )
 
     def inject_images_to_last_user(
-        self, image_blocks: list[dict],
+        self,
+        image_blocks: list[dict],
     ) -> None:
         """Append pre-built image blocks to the last user message.
 
@@ -932,7 +947,8 @@ class MessageHistory:
                     ]
                 self.messages[i]["content"].extend(image_blocks)
                 logger.debug(
-                    "conv_inject_images count=%d", len(image_blocks),
+                    "conv_inject_images count=%d",
+                    len(image_blocks),
                 )
                 break
 
@@ -958,7 +974,8 @@ class MessageHistory:
             if not isinstance(content, list):
                 continue
             kept = [
-                p for p in content
+                p
+                for p in content
                 if not (isinstance(p, dict) and p.get("type") == "image_url")
             ]
             if len(kept) == len(content):
@@ -966,9 +983,7 @@ class MessageHistory:
             removed += len(content) - len(kept)
             if not kept:
                 msg["content"] = ""
-            elif all(
-                isinstance(p, dict) and p.get("type") == "text" for p in kept
-            ):
+            elif all(isinstance(p, dict) and p.get("type") == "text" for p in kept):
                 msg["content"] = "".join(str(p.get("text", "")) for p in kept)
             else:
                 msg["content"] = kept
@@ -977,7 +992,8 @@ class MessageHistory:
         return removed
 
     def to_openai_messages(
-        self, thinking_enabled: bool = False,
+        self,
+        thinking_enabled: bool = False,
     ) -> list[dict]:
         """Return messages for the per-backend API mappers.
 
@@ -1044,7 +1060,8 @@ class MessageHistory:
         del self.messages[last_user_idx:]
         logger.debug(
             "conv_pop_last_turn removed=%d remaining=%d",
-            removed, len(self.messages),
+            removed,
+            len(self.messages),
         )
         return removed
 
@@ -1097,9 +1114,7 @@ class MessageHistory:
             return {
                 "user_message": user_text,
                 "messages": list(msgs),
-                "estimated_tokens": sum(
-                    estimate_message_tokens(m) for m in msgs
-                ),
+                "estimated_tokens": sum(estimate_message_tokens(m) for m in msgs),
                 # The turn's rowid when known — runtime-only, stamped
                 # on the opening user message at save and on restore.  The
                 # trim reads it to drop the evicted turns from the persisted
@@ -1118,9 +1133,7 @@ class MessageHistory:
                 content = msg.get("content", "")
                 if isinstance(content, list):
                     current_user_msg = "".join(
-                        p.get("text", "")
-                        for p in content
-                        if p.get("type") == "text"
+                        p.get("text", "") for p in content if p.get("type") == "text"
                     )
                 else:
                     current_user_msg = str(content) if content else ""
@@ -1150,9 +1163,7 @@ class MessageHistory:
         :meth:`extract_turns`-format list and *tokens_freed* is the
         approximate number of tokens freed.
         """
-        sys_end = 1 if (
-            self.messages and self.messages[0]["role"] == "system"
-        ) else 0
+        sys_end = 1 if (self.messages and self.messages[0]["role"] == "system") else 0
 
         # Find the last user message — the current turn starts here and
         # must never be removed.
@@ -1187,9 +1198,7 @@ class MessageHistory:
             # Running total — subtract the removed slice's own estimate rather
             # than re-counting the whole remaining history each iteration
             # (the estimator is additive, so this stays exact).
-            slice_tokens = sum(
-                estimate_message_tokens(m) for m in slice_msgs
-            )
+            slice_tokens = sum(estimate_message_tokens(m) for m in slice_msgs)
             del self.messages[turn_start:turn_end]
             # Adjust last_user_idx — the slice we just deleted shifted
             # everything after it down.
@@ -1203,8 +1212,5 @@ class MessageHistory:
         turns = MessageHistory.extract_turns(removed_messages)
         # Same estimator as count_tokens — the logged freed amount must match
         # what the running total subtracted.
-        tokens_freed = sum(
-            estimate_message_tokens(m) for m in removed_messages
-        )
+        tokens_freed = sum(estimate_message_tokens(m) for m in removed_messages)
         return turns, max(tokens_freed, 1)
-

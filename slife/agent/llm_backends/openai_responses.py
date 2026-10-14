@@ -13,13 +13,13 @@ from typing import TYPE_CHECKING
 
 from openai import AsyncOpenAI
 
-from slife.config import ModelConfig
 from slife.agent.llm_client import (
-    TokenUsage,
     StreamChunk,
+    TokenUsage,
     _chat_response,
     _safe_close_stream,
 )
+from slife.config import ModelConfig
 
 if TYPE_CHECKING:
     import asyncio
@@ -38,7 +38,8 @@ class OpenAIResponsesBackend:
         )
         logger.debug(
             "responses_init model=%s provider=%s",
-            model.api_model, model.provider,
+            model.api_model,
+            model.provider,
         )
 
     # ── Internal adaptation (private) ─────────────────────────────────
@@ -74,12 +75,18 @@ class OpenAIResponsesBackend:
                     blocks: list[dict] = []
                     for part in content:
                         if part.get("type") == "image_url":
-                            blocks.append({
-                                "type": "input_image",
-                                "image_url": part.get("image_url", {}).get("url", ""),
-                            })
+                            blocks.append(
+                                {
+                                    "type": "input_image",
+                                    "image_url": part.get("image_url", {}).get(
+                                        "url", ""
+                                    ),
+                                }
+                            )
                         elif part.get("type") == "text":
-                            blocks.append({"type": "input_text", "text": part.get("text", "")})
+                            blocks.append(
+                                {"type": "input_text", "text": part.get("text", "")}
+                            )
                         else:
                             blocks.append(part)
                     converted.append({"role": "user", "content": blocks})
@@ -91,18 +98,22 @@ class OpenAIResponsesBackend:
                 # Each tool call becomes its own top-level function_call item —
                 # assistant items in the Responses API carry no ``tool_calls``.
                 for tc in msg.get("tool_calls", []):
-                    converted.append({
-                        "type": "function_call",
-                        "call_id": tc.get("id", ""),
-                        "name": tc.get("function", {}).get("name", ""),
-                        "arguments": tc.get("function", {}).get("arguments", "{}"),
-                    })
+                    converted.append(
+                        {
+                            "type": "function_call",
+                            "call_id": tc.get("id", ""),
+                            "name": tc.get("function", {}).get("name", ""),
+                            "arguments": tc.get("function", {}).get("arguments", "{}"),
+                        }
+                    )
             elif role == "tool":
-                converted.append({
-                    "type": "function_call_output",
-                    "call_id": msg.get("tool_call_id", ""),
-                    "output": str(content),
-                })
+                converted.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": msg.get("tool_call_id", ""),
+                        "output": str(content),
+                    }
+                )
         return instructions, converted
 
     @staticmethod
@@ -118,19 +129,19 @@ class OpenAIResponsesBackend:
             # Keep harness meta-params (_timeout/_async/_approve): the three
             # backends expose the same tool schemas to the model, so the LLM
             # can drive timeouts/async/approval uniformly on every API.
-            result.append({
-                "type": "function",
-                "name": fn.get("name", ""),
-                "description": fn.get("description", ""),
-                "parameters": schema,
-            })
+            result.append(
+                {
+                    "type": "function",
+                    "name": fn.get("name", ""),
+                    "description": fn.get("description", ""),
+                    "parameters": schema,
+                }
+            )
         return result
 
     # ── Build kwargs ──────────────────────────────────────────────────
 
-    def _build_kwargs(
-        self, messages: list[dict], tools: list[dict] | None
-    ) -> dict:
+    def _build_kwargs(self, messages: list[dict], tools: list[dict] | None) -> dict:
         instructions, input_items = self._oa_msgs_to_responses(messages)
         kwargs: dict = {
             "model": self.model_config.api_model,
@@ -162,7 +173,9 @@ class OpenAIResponsesBackend:
     # ── Chat ──────────────────────────────────────────────────────────
 
     async def chat(
-        self, messages: list[dict], tools: list[dict] | None = None,
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
     ) -> tuple:
         kwargs = self._build_kwargs(messages, tools)
         response = await self.client.responses.create(**kwargs)
@@ -191,7 +204,7 @@ class OpenAIResponsesBackend:
         self,
         messages: list[dict],
         tools: list[dict] | None = None,
-        cancel_event: "asyncio.Event | None" = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> AsyncIterator[StreamChunk]:
         kwargs = self._build_kwargs(messages, tools)
         kwargs["stream"] = True
@@ -200,7 +213,8 @@ class OpenAIResponsesBackend:
 
         logger.debug(
             "responses_stream_start model=%s msgs=%d tools=%d",
-            self.model_config.api_model, len(messages),
+            self.model_config.api_model,
+            len(messages),
             len(tools) if tools else 0,
         )
 
@@ -253,14 +267,18 @@ class OpenAIResponsesBackend:
                         ):
                             _tool_index[item_id] = _next_index
                             _next_index += 1
-                            yield StreamChunk(tool_deltas=[{
-                                "index": _tool_index[item_id],
-                                "id": meta.get("call_id") or item_id,
-                                "function": {
-                                    "name": meta.get("name", ""),
-                                    "arguments": "",
-                                },
-                            }])
+                            yield StreamChunk(
+                                tool_deltas=[
+                                    {
+                                        "index": _tool_index[item_id],
+                                        "id": meta.get("call_id") or item_id,
+                                        "function": {
+                                            "name": meta.get("name", ""),
+                                            "arguments": "",
+                                        },
+                                    }
+                                ]
+                            )
                 elif etype == "response.function_call_arguments.delta":
                     item_id = getattr(event, "item_id", "")
                     if item_id not in _tool_index:
@@ -269,16 +287,20 @@ class OpenAIResponsesBackend:
                         _tool_index[item_id] = _next_index
                         _next_index += 1
                     meta = _tool_meta.get(item_id, {})
-                    yield StreamChunk(tool_deltas=[{
-                        "index": _tool_index[item_id],
-                        # Responses correlates tool results by call_id, not
-                        # by the item id.
-                        "id": meta.get("call_id") or item_id,
-                        "function": {
-                            "name": meta.get("name", ""),
-                            "arguments": getattr(event, "delta", ""),
-                        },
-                    }])
+                    yield StreamChunk(
+                        tool_deltas=[
+                            {
+                                "index": _tool_index[item_id],
+                                # Responses correlates tool results by call_id, not
+                                # by the item id.
+                                "id": meta.get("call_id") or item_id,
+                                "function": {
+                                    "name": meta.get("name", ""),
+                                    "arguments": getattr(event, "delta", ""),
+                                },
+                            }
+                        ]
+                    )
                 elif etype in ("response.completed", "response.done"):
                     resp = getattr(event, "response", None)
                     if resp and hasattr(resp, "usage") and resp.usage:
@@ -290,8 +312,10 @@ class OpenAIResponsesBackend:
                         elapsed = (_time.monotonic() - t0) * 1000
                         logger.debug(
                             "responses_stream_done prompt=%d completion=%d total=%d took_ms=%.0f",
-                            usage.prompt_tokens, usage.completion_tokens,
-                            usage.total_tokens, elapsed,
+                            usage.prompt_tokens,
+                            usage.completion_tokens,
+                            usage.total_tokens,
+                            elapsed,
                         )
                         yield StreamChunk(usage=usage)
         finally:

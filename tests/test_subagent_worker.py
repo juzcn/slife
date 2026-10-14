@@ -1,8 +1,5 @@
 """Tests for slife.subagent.worker — worker JSON-RPC 2.0 over stdin/stdout."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
 import json
 from io import BytesIO
 from unittest.mock import MagicMock, patch
@@ -10,11 +7,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from slife.subagent.worker import (
-    _write,
     _notify,
+    _write,
     cancelled_reply_text,
     main,
 )
+
+pytestmark = pytest.mark.unit
 
 
 class TestWrite:
@@ -174,23 +173,33 @@ class TestRunWorkerHostFacts:
         monkeypatch.setenv("SLIFE_CONFIG_FILE", str(cfg_file))
         monkeypatch.delenv("SLIFE_CONFIG", raising=False)
         monkeypatch.setattr(
-            worker, "setup_server_logging", lambda *a, **k: tmp_path / "sub.log",
+            worker,
+            "setup_server_logging",
+            lambda *a, **k: tmp_path / "sub.log",
         )
         config = Config(
-            models=[ModelConfig(
-                ref="deepseek/deepseek-flash", provider="deepseek",
-                api_model="deepseek-flash", display_name="Flash",
-                api_key="sk-x", context_window=1000,
-            )],
+            models=[
+                ModelConfig(
+                    ref="deepseek/deepseek-flash",
+                    provider="deepseek",
+                    api_model="deepseek-flash",
+                    display_name="Flash",
+                    api_key="sk-x",
+                    context_window=1000,
+                )
+            ],
             active_model_ref="deepseek/deepseek-flash",
             tools=[],
         )
-        with patch("slife.config.Config.from_dict", return_value=config), \
-             patch(
-                 "slife.agent.service.AgentService", side_effect=self._Stop,
-             ):
-            with pytest.raises(self._Stop):
-                asyncio.run(worker.run_worker([]))
+        with (
+            patch("slife.config.Config.from_dict", return_value=config),
+            patch(
+                "slife.agent.service.AgentService",
+                side_effect=self._Stop,
+            ),
+            pytest.raises(self._Stop),
+        ):
+            asyncio.run(worker.run_worker([]))
 
     def test_the_worker_records_the_host_facts(self, monkeypatch, tmp_path):
         recorded: list[str] = []
@@ -209,21 +218,25 @@ class TestMain:
     """Tests for main() entry point."""
 
     def test_main_runs_worker(self):
-        with patch("slife.subagent.worker.asyncio.run") as mock_run:
-            with patch("slife.subagent.worker.run_worker") as mock_rw:
-                main([])
-                mock_run.assert_called_once()
-                mock_rw.assert_called_once_with([])
+        with (
+            patch("slife.subagent.worker.asyncio.run") as mock_run,
+            patch("slife.subagent.worker.run_worker") as mock_rw,
+        ):
+            main([])
+            mock_run.assert_called_once()
+            mock_rw.assert_called_once_with([])
 
     def test_main_forwards_argv(self):
         """main() forwards the FULL argv (program name included) —
         ``parse_cli_config_path`` slices argv[1:] itself, so a stripped
         argv would double-strip a positional config path."""
-        with patch("slife.subagent.worker.asyncio.run") as mock_run:
-            with patch("slife.subagent.worker.run_worker") as mock_rw:
-                main(["prog", "somefile.yaml", "--debug"])
-                mock_run.assert_called_once()
-                mock_rw.assert_called_once_with(["prog", "somefile.yaml", "--debug"])
+        with (
+            patch("slife.subagent.worker.asyncio.run") as mock_run,
+            patch("slife.subagent.worker.run_worker") as mock_rw,
+        ):
+            main(["prog", "somefile.yaml", "--debug"])
+            mock_run.assert_called_once()
+            mock_rw.assert_called_once_with(["prog", "somefile.yaml", "--debug"])
 
 
 class TestCancelledReplyText:

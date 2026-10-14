@@ -1,10 +1,12 @@
 """Tests for NotifyUserTool (slife.tools.system)."""
 
-import pytest; pytestmark = pytest.mark.unit
-
 from unittest.mock import patch
 
+import pytest
+
 from slife.tools.system import NotifyUserTool
+
+pytestmark = pytest.mark.unit
 
 
 class TestNotifyUserTool:
@@ -38,7 +40,8 @@ class TestNotifyUserTool:
         tool = NotifyUserTool()
         with patch("slife.platform.desktop_notify"):
             result = await tool.execute(
-                title="Deploy", message="Failed — see {output}",
+                title="Deploy",
+                message="Failed — see {output}",
             )
         assert "Notification sent" in result
         assert "{output}" in result

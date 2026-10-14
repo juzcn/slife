@@ -127,7 +127,8 @@ class TUIHandler:
         """
         self._chat_view.add_system_message(
             t("recall_notice", total=total, recalled=recalled)
-            if total else t("recall_none"),
+            if total
+            else t("recall_none"),
         )
 
     def on_trim(self, count: int) -> None:
@@ -150,7 +151,7 @@ class TUIHandler:
                 self._turn_assistants.remove(msg)
             try:
                 msg.display = False
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — best-effort widget teardown; a detached widget must not break the stream
                 pass
 
     async def on_stream_retry(self) -> None:
@@ -185,10 +186,7 @@ class TUIHandler:
         """
         self._ensure_assistant()
         if self._current_assistant:
-            if (
-                not self._current_assistant._buffer.strip()
-                and chunk.strip() == "."
-            ):
+            if not self._current_assistant._buffer.strip() and chunk.strip() == ".":
                 self._silent_dot = True
                 return
             # Real content follows the leading "." — it is NOT a bare-silence
@@ -266,9 +264,11 @@ class TUIHandler:
         """
         if getattr(self._app, "_model_picker_open", False):
             return
+        from textual.css.query import NoMatches
+
         try:
             self._app.query_one("#user-input").focus()
-        except Exception:
+        except NoMatches:
             pass  # input missing (e.g. app tearing down) — nothing to restore
 
     async def on_tool_result(

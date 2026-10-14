@@ -6,19 +6,41 @@ re-renders to a ✓ Switched / ✗ Canceled status line.  Pure priority
 bindings — no ``_on_key`` / ``on_click`` overrides.
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
 import asyncio
+
+import pytest
 
 from slife.config import ModelConfig
 from slife.ui.model_picker import ModelPicker
 
+pytestmark = pytest.mark.unit
+
 
 def _models():
     return [
-        ModelConfig(ref="alpha/m1", provider="alpha", api_model="m1", display_name="Alpha One", api_key="k"),
-        ModelConfig(ref="beta/m2", provider="beta", api_model="m2", display_name="Beta Two", api_key="k", supports_vision=True),
-        ModelConfig(ref="gamma/m3&[x]", provider="gamma", api_model="m3", display_name="Gamma & [Three]", api_key="k", thinking_enabled=True),
+        ModelConfig(
+            ref="alpha/m1",
+            provider="alpha",
+            api_model="m1",
+            display_name="Alpha One",
+            api_key="k",
+        ),
+        ModelConfig(
+            ref="beta/m2",
+            provider="beta",
+            api_model="m2",
+            display_name="Beta Two",
+            api_key="k",
+            supports_vision=True,
+        ),
+        ModelConfig(
+            ref="gamma/m3&[x]",
+            provider="gamma",
+            api_model="m3",
+            display_name="Gamma & [Three]",
+            api_key="k",
+            thinking_enabled=True,
+        ),
     ]
 
 
@@ -32,8 +54,13 @@ class TestModelPicker:
     async def test_lists_all_models(self):
         """Every model is rendered — no 9-slot cap, no ``… N more``."""
         many = [
-            ModelConfig(ref=f"p{i}/m{i}", provider=f"p{i}", api_model=f"m{i}",
-                        display_name=f"M{i}", api_key="k")
+            ModelConfig(
+                ref=f"p{i}/m{i}",
+                provider=f"p{i}",
+                api_model=f"m{i}",
+                display_name=f"M{i}",
+                api_key="k",
+            )
             for i in range(1, 13)
         ]
         future = asyncio.Future()
@@ -83,8 +110,8 @@ class TestModelPicker:
         """Cursor starts on the active model and clamps at both ends."""
         picker, future = self._make()
         assert picker._cursor == 1  # beta/m2
-        picker.action_cursor_up()    # -> alpha/m1
-        picker.action_cursor_up()    # clamp at top
+        picker.action_cursor_up()  # -> alpha/m1
+        picker.action_cursor_up()  # clamp at top
         assert picker._cursor == 0
         picker.action_cursor_down()
         picker.action_cursor_down()  # -> beta, then gamma

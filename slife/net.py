@@ -98,9 +98,7 @@ import uuid
 #: see ``file_save``'s guard, which carries the residual.  Every other address in
 #: these ranges is unreachable as a destination: either the proxy maps it back
 #: to a name, or nothing answers.
-FAKE_IP_NETS: tuple[
-    ipaddress.IPv4Network | ipaddress.IPv6Network, ...
-] = (
+FAKE_IP_NETS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
     ipaddress.ip_network("198.18.0.0/15"),
     ipaddress.ip_network("2001:2::/48"),
     ipaddress.ip_network("fdfe:dcba:9876::/48"),
@@ -158,8 +156,7 @@ def is_fake_ip_address(address: object) -> bool:
     # not a question with one answer across Python versions, and "is this in
     # the v4 pool" must not depend on which one is running.
     return any(
-        ip.version == network.version and ip in network
-        for network in FAKE_IP_NETS
+        ip.version == network.version and ip in network for network in FAKE_IP_NETS
     )
 
 

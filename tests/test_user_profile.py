@@ -6,14 +6,15 @@ both identity templates), and the native ``profile_edit`` tool that
 delegates to the plugin and refreshes the session prompt on a write.
 """
 
-import pytest; pytestmark = pytest.mark.unit
-
 import json
 from unittest.mock import AsyncMock
+
+import pytest
 
 from slife.agent.system_prompt import USER_PROFILE_MAX_CHARS
 from slife.config import Config, ModelConfig
 
+pytestmark = pytest.mark.unit
 
 # ── memfiles internal read/write data layer ────────────────────────────
 
@@ -37,9 +38,7 @@ class TestUserProfileStoreInternal:
     async def test_write_replaces_the_whole_file(self, tmp_path, monkeypatch):
         """The thing append could never do: make text that was there go away."""
         plugin, memfiles = self._dir(tmp_path, monkeypatch, "1. stale line\n")
-        out = json.loads(
-            await getattr(plugin, "__user_profile_edit")("1. corrected\n")
-        )
+        out = json.loads(await getattr(plugin, "__user_profile_edit")("1. corrected\n"))
         assert out["chars"] == len("1. corrected\n")
         assert (memfiles / "USER.md").read_text(encoding="utf-8") == "1. corrected\n"
 
@@ -55,11 +54,17 @@ class TestUserProfileStoreInternal:
 
 def _cfg(agent_name: str = "testbot") -> Config:
     return Config(
-        models=[ModelConfig(
-            ref="test/test-model", provider="test", api_model="test-model",
-            display_name="Test Model", api_key="sk-test",
-            context_window=131072, supports_vision=False,
-        )],
+        models=[
+            ModelConfig(
+                ref="test/test-model",
+                provider="test",
+                api_model="test-model",
+                display_name="Test Model",
+                api_key="sk-test",
+                context_window=131072,
+                supports_vision=False,
+            )
+        ],
         active_model_ref="test/test-model",
         tools=[],
         agent_name=agent_name,
@@ -76,7 +81,9 @@ class TestUserProfileRender:
 
         monkeypatch.setattr(
             "slife.paths.get_memfiles_dir",
-            lambda agent_name: __import__("pathlib").Path("nope") / f"{agent_name}.files",
+            lambda agent_name: (
+                __import__("pathlib").Path("nope") / f"{agent_name}.files"
+            ),
         )
         result = build(_cfg())
         assert result.endswith(
@@ -119,8 +126,10 @@ class TestUserProfileRender:
 
         main = build(_cfg(), is_subagent=False)
         sub = build(_cfg(), is_subagent=True)
-        assert main[main.index("**User Profile**"):] == \
-            sub[sub.index("**User Profile**"):]
+        assert (
+            main[main.index("**User Profile**") :]
+            == sub[sub.index("**User Profile**") :]
+        )
 
 
 # ── Native profile_edit tool ──────────────────────────────────────────

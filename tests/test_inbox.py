@@ -1,17 +1,19 @@
 """Tests for Slife.agent.inbox — MessageHistoryStore and Inbox."""
 
-import pytest; pytestmark = pytest.mark.unit
-
-
-import pytest
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock
 
-from slife.a2a.identity import AgentName, AgentMessage, HUMAN, WECHAT
+import pytest
+
+from slife.a2a.identity import HUMAN, WECHAT, AgentMessage, AgentName
 from slife.agent.inbox import (
-    MessageHistoryStore, _MAX_REASON_CHARS, _error_reason,
+    _MAX_REASON_CHARS,
+    MessageHistoryStore,
+    _error_reason,
 )
 
+pytestmark = pytest.mark.unit
 
 # ── MessageHistoryStore ───────────────────────────────────────────────────
 
@@ -116,6 +118,7 @@ class TestInboxConstruction:
 
     def test_construction(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
         assert inbox._agent_loop is mock_loop
         assert inbox._histories is mock_store
@@ -124,6 +127,7 @@ class TestInboxConstruction:
     @pytest.mark.asyncio
     async def test_post_enqueues_message(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
         msg = AgentMessage(source=HUMAN, content="hello")
         await inbox.post(msg)
@@ -132,6 +136,7 @@ class TestInboxConstruction:
     @pytest.mark.asyncio
     async def test_post_from_remote_agent(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
         msg = AgentMessage(source=AgentName("agent-3"), content="task done")
         await inbox.post(msg)
@@ -139,17 +144,20 @@ class TestInboxConstruction:
 
     def test_busy_initial_false(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
         assert inbox.busy is False
 
     def test_pending_initial_zero(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
         assert inbox.pending == 0
 
     @pytest.mark.asyncio
     async def test_pending_increases_after_post(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
         await inbox.post(AgentMessage(source=HUMAN, content="1"))
         await inbox.post(AgentMessage(source=HUMAN, content="2"))
@@ -184,9 +192,14 @@ class TestInboxCancelCorrelation:
     @pytest.mark.asyncio
     async def test_drops_queued_matching_message(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
-        await inbox.post(AgentMessage(source=AgentName("peer"), content="a", correlation_id="cid-a"))
-        await inbox.post(AgentMessage(source=AgentName("peer"), content="b", correlation_id="cid-b"))
+        await inbox.post(
+            AgentMessage(source=AgentName("peer"), content="a", correlation_id="cid-a")
+        )
+        await inbox.post(
+            AgentMessage(source=AgentName("peer"), content="b", correlation_id="cid-b")
+        )
 
         inbox.cancel_correlation("cid-a")
 
@@ -196,6 +209,7 @@ class TestInboxCancelCorrelation:
     @pytest.mark.asyncio
     async def test_preempts_active_message(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
         inbox._current_corr = "cid-active"
 
@@ -206,6 +220,7 @@ class TestInboxCancelCorrelation:
     @pytest.mark.asyncio
     async def test_non_matching_corr_is_noop(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
         inbox._current_corr = "cid-active"
 
@@ -216,6 +231,7 @@ class TestInboxCancelCorrelation:
     @pytest.mark.asyncio
     async def test_empty_corr_is_noop(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
 
         inbox.cancel_correlation("")
@@ -253,7 +269,7 @@ class TestErrorReason:
 
     def test_code_read_off_the_body_when_the_sdk_exposes_no_attribute(self):
         class Rejected(ValueError):
-            body = {"error": {"type": "rate_limit_exceeded"}}
+            body: ClassVar[dict] = {"error": {"type": "rate_limit_exceeded"}}
 
         assert _error_reason(Rejected("slow down")) == (
             "error (rate_limit_exceeded: slow down)"
@@ -274,14 +290,21 @@ class TestErrorReason:
     def test_body_message_wins_over_the_rendered_body(self):
         """An SDK renders its whole body into ``str(exc)`` — the line must
         not repeat the code and spend its bound on JSON punctuation."""
+
         class Rejected(ValueError):
             status_code = 429
-            body = {"error": {"type": "rate_limit_error",
-                              "message": "Rate limit reached for gpt-4"}}
+            body: ClassVar[dict] = {
+                "error": {
+                    "type": "rate_limit_error",
+                    "message": "Rate limit reached for gpt-4",
+                }
+            }
 
             def __str__(self) -> str:
-                return ("Error code: 429 - {'message': 'Rate limit reached for "
-                        "gpt-4', 'type': 'rate_limit_error'}")
+                return (
+                    "Error code: 429 - {'message': 'Rate limit reached for "
+                    "gpt-4', 'type': 'rate_limit_error'}"
+                )
 
         assert _error_reason(Rejected()) == (
             "error (429 rate_limit_error: Rate limit reached for gpt-4)"
@@ -352,9 +375,14 @@ class TestInboxDropQueued:
     @pytest.mark.asyncio
     async def test_drops_matching_and_reports_true(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
-        await inbox.post(AgentMessage(source=AgentName("peer"), content="a", correlation_id="cid-a"))
-        await inbox.post(AgentMessage(source=AgentName("peer"), content="b", correlation_id="cid-b"))
+        await inbox.post(
+            AgentMessage(source=AgentName("peer"), content="a", correlation_id="cid-a")
+        )
+        await inbox.post(
+            AgentMessage(source=AgentName("peer"), content="b", correlation_id="cid-b")
+        )
 
         assert inbox.drop_queued("cid-a") is True
         assert [m.correlation_id for m in self._drain(inbox)] == ["cid-b"]
@@ -364,8 +392,11 @@ class TestInboxDropQueued:
     @pytest.mark.asyncio
     async def test_unknown_corr_reports_false(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
-        await inbox.post(AgentMessage(source=AgentName("peer"), content="a", correlation_id="cid-a"))
+        await inbox.post(
+            AgentMessage(source=AgentName("peer"), content="a", correlation_id="cid-a")
+        )
 
         assert inbox.drop_queued("cid-zzz") is False
         assert [m.correlation_id for m in self._drain(inbox)] == ["cid-a"]
@@ -374,6 +405,7 @@ class TestInboxDropQueued:
     async def test_running_message_is_not_reachable(self, mock_loop, mock_store):
         """The message being processed is the caller's call, never this one's."""
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
         inbox._current_corr = "cid-live"
 
@@ -383,6 +415,7 @@ class TestInboxDropQueued:
     @pytest.mark.asyncio
     async def test_empty_corr_reports_false(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
 
         assert inbox.drop_queued("") is False
@@ -413,14 +446,18 @@ class TestInboxInjection:
     @pytest.mark.asyncio
     async def test_has_injectable_false_when_empty(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
         assert inbox.has_injectable() is False
 
     @pytest.mark.asyncio
     async def test_has_injectable_true_when_queued_non_destructive(
-        self, mock_loop, mock_store,
+        self,
+        mock_loop,
+        mock_store,
     ):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
         await inbox.post(AgentMessage(source=AgentName("peer"), content="do X"))
         assert inbox.has_injectable() is True
@@ -430,6 +467,7 @@ class TestInboxInjection:
     async def test_extract_pulls_first_preserves_order(self, mock_loop, mock_store):
         """extract takes the FIRST queued message only; survivors keep FIFO."""
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
         await inbox.post(AgentMessage(source=AgentName("peer"), content="a"))
         await inbox.post(AgentMessage(source=AgentName("human"), content="b"))
@@ -442,6 +480,7 @@ class TestInboxInjection:
     @pytest.mark.asyncio
     async def test_extract_consumes_one_per_call(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
         await inbox.post(AgentMessage(source=AgentName("peer"), content="a"))
         await inbox.post(AgentMessage(source=AgentName("peer"), content="b"))
@@ -457,6 +496,7 @@ class TestInboxInjection:
     @pytest.mark.asyncio
     async def test_extract_empty_returns_none(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
         assert inbox.extract_injectable() is None
 
@@ -476,13 +516,21 @@ class TestInboxProcessOne:
     @pytest.fixture
     def mock_store(self):
         from slife.agent.inbox import MessageHistoryStore
+
         store = MagicMock(spec=MessageHistoryStore)
         store.get_or_create = MagicMock()
         store.handler_for = MagicMock(return_value=None)
         return store
 
-    def _make_msg(self, source=None, content="hi", images=None,
-                  handler=None, corr_id=None, on_reply=None):
+    def _make_msg(
+        self,
+        source=None,
+        content="hi",
+        images=None,
+        handler=None,
+        corr_id=None,
+        on_reply=None,
+    ):
         return AgentMessage(
             source=source or HUMAN,
             content=content,
@@ -495,6 +543,7 @@ class TestInboxProcessOne:
     @pytest.mark.asyncio
     async def test_process_human_message(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
 
         mock_result = MagicMock()
@@ -508,9 +557,11 @@ class TestInboxProcessOne:
         mock_loop.run.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_process_remote_task_replies_through_on_reply(self, mock_loop,
-                                                                mock_store):
+    async def test_process_remote_task_replies_through_on_reply(
+        self, mock_loop, mock_store
+    ):
         from slife.agent.inbox import Inbox
+
         on_reply = AsyncMock()
         inbox = Inbox(mock_loop, mock_store)
 
@@ -520,9 +571,12 @@ class TestInboxProcessOne:
         mock_loop.run = AsyncMock(return_value=mock_result)
         mock_store.get_or_create.return_value = MagicMock()
 
-        msg = self._make_msg(source=AgentName("remote-1"), content="task",
-                             corr_id="corr-1",
-                             on_reply=on_reply)
+        msg = self._make_msg(
+            source=AgentName("remote-1"),
+            content="task",
+            corr_id="corr-1",
+            on_reply=on_reply,
+        )
         await inbox._process_one(msg)
 
         # Replies are routed to the originating channel via on_reply.
@@ -567,7 +621,8 @@ class TestInboxProcessOne:
         mock_store.get_or_create.return_value = MagicMock()
 
         msg = self._make_msg(
-            source=SUBAGENT, content="Subagent **researcher** completed",
+            source=SUBAGENT,
+            content="Subagent **researcher** completed",
         )
         await inbox._process_one(msg)
 
@@ -577,13 +632,12 @@ class TestInboxProcessOne:
         subagent_call = next(
             c for c in on_activity.call_args_list if c[0][0] == "subagent_message"
         )
-        assert subagent_call.kwargs["content"] == (
-            "Subagent **researcher** completed"
-        )
+        assert subagent_call.kwargs["content"] == ("Subagent **researcher** completed")
 
     @pytest.mark.asyncio
     async def test_process_error_handling(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
 
         mock_loop.run = AsyncMock(side_effect=RuntimeError("loop crashed"))
@@ -597,6 +651,7 @@ class TestInboxProcessOne:
     @pytest.mark.asyncio
     async def test_process_on_turn_complete_called(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         on_turn_complete = AsyncMock()
         inbox = Inbox(mock_loop, mock_store, on_turn_complete=on_turn_complete)
 
@@ -614,12 +669,15 @@ class TestInboxProcessOne:
         assert call_kwargs["token_count"] == 77
 
     @pytest.mark.asyncio
-    async def test_on_turn_complete_passes_handler_timestamp(self, mock_loop, mock_store):
+    async def test_on_turn_complete_passes_handler_timestamp(
+        self, mock_loop, mock_store
+    ):
         """The turn timestamp captured by the TUI handler is forwarded as
         created_at so the turn save matches the live display time."""
         from datetime import datetime
 
         from slife.agent.inbox import Inbox
+
         on_turn_complete = AsyncMock()
         inbox = Inbox(mock_loop, mock_store, on_turn_complete=on_turn_complete)
 
@@ -637,9 +695,11 @@ class TestInboxProcessOne:
         assert call_kwargs["created_at"] is ts
 
     @pytest.mark.asyncio
-    async def test_process_on_turn_complete_error_swallowed(self, mock_loop,
-                                                             mock_store):
+    async def test_process_on_turn_complete_error_swallowed(
+        self, mock_loop, mock_store
+    ):
         from slife.agent.inbox import Inbox
+
         on_turn_complete = AsyncMock(side_effect=RuntimeError("persist failed"))
         inbox = Inbox(mock_loop, mock_store, on_turn_complete=on_turn_complete)
 
@@ -654,21 +714,27 @@ class TestInboxProcessOne:
         await inbox._process_one(msg)
 
     @pytest.mark.asyncio
-    async def test_memory_save_error_reported_like_loop_error(self, mock_loop,
-                                                              mock_store):
+    async def test_memory_save_error_reported_like_loop_error(
+        self, mock_loop, mock_store
+    ):
         """A4 regression: a MemorySaveError from on_turn_complete is surfaced
         like an LLM API error (loop_error activity + channel error reply), not
         swallowed silently.  The inbox is not frozen (transient) and returns
         to idle."""
         from slife.agent.inbox import Inbox, MemorySaveError
+
         on_activity = AsyncMock()
         on_reply = AsyncMock()
         on_turn_complete = AsyncMock(
-            side_effect=MemorySaveError("Memory service not connected — this turn was not saved"),
+            side_effect=MemorySaveError(
+                "Memory service not connected — this turn was not saved"
+            ),
         )
         inbox = Inbox(
-            mock_loop, mock_store,
-            on_activity=on_activity, on_turn_complete=on_turn_complete,
+            mock_loop,
+            mock_store,
+            on_activity=on_activity,
+            on_turn_complete=on_turn_complete,
         )
 
         mock_result = MagicMock()
@@ -678,8 +744,10 @@ class TestInboxProcessOne:
         mock_store.get_or_create.return_value = MagicMock()
 
         msg = self._make_msg(
-            source=AgentName("remote-1"), content="go",
-            corr_id="c1", on_reply=on_reply,
+            source=AgentName("remote-1"),
+            content="go",
+            corr_id="c1",
+            on_reply=on_reply,
         )
         await inbox._process_one(msg)
 
@@ -700,6 +768,7 @@ class TestInboxProcessOne:
     @pytest.mark.asyncio
     async def test_process_with_on_reply_callback(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         on_reply = AsyncMock()
         inbox = Inbox(mock_loop, mock_store)
 
@@ -714,12 +783,17 @@ class TestInboxProcessOne:
         await inbox._process_one(msg)
 
         on_reply.assert_awaited_once_with(
-            "Here is the answer.", cancelled=False, stop_reason="",
+            "Here is the answer.",
+            cancelled=False,
+            stop_reason="",
         )
 
     @pytest.mark.asyncio
     async def test_process_passes_cancelled_flag_to_on_reply(
-        self, mock_loop, mock_store, caplog,
+        self,
+        mock_loop,
+        mock_store,
+        caplog,
     ):
         """REVIEW C5 — a cancelled run tells the channel so it can signal the
         sender (e.g. A2A CancelTask), and hands it the loop's own reason.
@@ -730,7 +804,9 @@ class TestInboxProcessOne:
         own ceiling) are otherwise the same sentence.
         """
         import logging
+
         from slife.agent.inbox import Inbox
+
         on_reply = AsyncMock()
         inbox = Inbox(mock_loop, mock_store)
 
@@ -747,15 +823,21 @@ class TestInboxProcessOne:
             await inbox._process_one(msg)
 
         on_reply.assert_awaited_once_with(
-            "partial", cancelled=True, stop_reason="max_iterations",
+            "partial",
+            cancelled=True,
+            stop_reason="max_iterations",
         )
         # The parent-side line names it too — this is what an operator reads
         # when a lane ends without a report.
-        assert "inbox_cancelled_or_max_iter source=human reason=max_iterations" in caplog.text
+        assert (
+            "inbox_cancelled_or_max_iter source=human reason=max_iterations"
+            in caplog.text
+        )
 
     @pytest.mark.asyncio
     async def test_process_on_reply_error_swallowed(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         on_reply = AsyncMock(side_effect=RuntimeError("send failed"))
         inbox = Inbox(mock_loop, mock_store)
 
@@ -772,15 +854,19 @@ class TestInboxProcessOne:
     @pytest.mark.asyncio
     async def test_process_error_routes_through_on_reply(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         on_reply = AsyncMock()
         inbox = Inbox(mock_loop, mock_store)
 
         mock_loop.run = AsyncMock(side_effect=ValueError("broken"))
         mock_store.get_or_create.return_value = MagicMock()
 
-        msg = self._make_msg(source=AgentName("remote"), content="do it",
-                             corr_id="err-1",
-                             on_reply=on_reply)
+        msg = self._make_msg(
+            source=AgentName("remote"),
+            content="do it",
+            corr_id="err-1",
+            on_reply=on_reply,
+        )
         await inbox._process_one(msg)
 
         on_reply.assert_awaited_once()
@@ -793,25 +879,28 @@ class TestInboxProcessOne:
         loop_error line.  The verdict is emitted explicitly, never left for
         the TUI to re-derive from the result text."""
         from slife.agent.inbox import Inbox
+
         on_activity = AsyncMock()
         inbox = Inbox(mock_loop, mock_store, on_activity=on_activity)
 
         mock_loop.run = AsyncMock(side_effect=ValueError("broken"))
         mock_store.get_or_create.return_value = MagicMock()
 
-        msg = self._make_msg(source=AgentName("remote"), content="do it",
-                             corr_id="err-1")
+        msg = self._make_msg(
+            source=AgentName("remote"), content="do it", corr_id="err-1"
+        )
         await inbox._process_one(msg)
 
         done = next(
-            c for c in on_activity.call_args_list
-            if c.args[0] == "task_completed"
+            c for c in on_activity.call_args_list if c.args[0] == "task_completed"
         )
         assert done.kwargs["error"] is True
         assert done.kwargs["source"] == "remote"
 
     @pytest.mark.asyncio
-    async def test_process_bad_request_marks_the_turn_dropped(self, mock_loop, mock_store):
+    async def test_process_bad_request_marks_the_turn_dropped(
+        self, mock_loop, mock_store
+    ):
         """A **content filter** reject rolls the turn back — the message is
         what the provider will not accept, so keeping it would only re-earn
         the rejection.  The activity reports that explicitly: a bare error
@@ -836,13 +925,12 @@ class TestInboxProcessOne:
         mock_loop.run = AsyncMock(side_effect=_Filtered("blocked"))
         mock_store.get_or_create.return_value = history
 
-        msg = self._make_msg(source=AgentName("remote"), content="do it",
-                             corr_id="br-1")
+        msg = self._make_msg(
+            source=AgentName("remote"), content="do it", corr_id="br-1"
+        )
         await inbox._process_one(msg)
 
-        err = next(
-            c for c in on_activity.call_args_list if c.args[0] == "loop_error"
-        )
+        err = next(c for c in on_activity.call_args_list if c.args[0] == "loop_error")
         assert err.kwargs["dropped"] is True
         assert err.kwargs["images_dropped"] == 2
         # ... and the rollback is real, not merely reported.
@@ -850,7 +938,9 @@ class TestInboxProcessOne:
         mock_loop.forget_images.assert_called_once_with(history)
 
     @pytest.mark.asyncio
-    async def test_process_malformed_request_keeps_the_turn(self, mock_loop, mock_store):
+    async def test_process_malformed_request_keeps_the_turn(
+        self, mock_loop, mock_store
+    ):
         """A 400 that is NOT a content filter keeps the turn and saves it.
 
         The provider refused the *request* — an image it could not fetch, a
@@ -868,22 +958,26 @@ class TestInboxProcessOne:
 
         on_activity = AsyncMock()
         on_turn_complete = AsyncMock()
-        inbox = Inbox(mock_loop, mock_store, on_activity=on_activity,
-                      on_turn_complete=on_turn_complete)
+        inbox = Inbox(
+            mock_loop,
+            mock_store,
+            on_activity=on_activity,
+            on_turn_complete=on_turn_complete,
+        )
         history = MagicMock()
         mock_loop.forget_images = MagicMock(return_value=1)
 
-        mock_loop.run = AsyncMock(side_effect=_Malformed(
-            ".messages[124].image[0]: Failed to download image from "
-            "https://www.python.org/static/img/python-logo.png",
-        ))
+        mock_loop.run = AsyncMock(
+            side_effect=_Malformed(
+                ".messages[124].image[0]: Failed to download image from "
+                "https://www.python.org/static/img/python-logo.png",
+            )
+        )
         mock_store.get_or_create.return_value = history
 
         await inbox._process_one(self._make_msg(content="look at this"))
 
-        err = next(
-            c for c in on_activity.call_args_list if c.args[0] == "loop_error"
-        )
+        err = next(c for c in on_activity.call_args_list if c.args[0] == "loop_error")
         assert err.kwargs["dropped"] is False
         assert err.kwargs["images_dropped"] == 1
         history.pop_last_turn.assert_not_called()
@@ -898,6 +992,7 @@ class TestInboxProcessOne:
         must not claim it was dropped.  The attachments stay for the same
         reason: they are not what failed, so nothing about them changes."""
         from slife.agent.inbox import Inbox
+
         on_activity = AsyncMock()
         inbox = Inbox(mock_loop, mock_store, on_activity=on_activity)
         mock_loop.forget_images = MagicMock()
@@ -905,13 +1000,12 @@ class TestInboxProcessOne:
         mock_loop.run = AsyncMock(side_effect=TimeoutError("timed out"))
         mock_store.get_or_create.return_value = MagicMock()
 
-        msg = self._make_msg(source=AgentName("remote"), content="do it",
-                             corr_id="to-1")
+        msg = self._make_msg(
+            source=AgentName("remote"), content="do it", corr_id="to-1"
+        )
         await inbox._process_one(msg)
 
-        err = next(
-            c for c in on_activity.call_args_list if c.args[0] == "loop_error"
-        )
+        err = next(c for c in on_activity.call_args_list if c.args[0] == "loop_error")
         assert err.kwargs["dropped"] is False
         mock_store.get_or_create.return_value.pop_last_turn.assert_not_called()
         mock_loop.forget_images.assert_not_called()
@@ -921,6 +1015,7 @@ class TestInboxProcessOne:
         """The clean path emits the same kind WITHOUT the flag — the TUI's
         default is success, so only failures opt in."""
         from slife.agent.inbox import Inbox
+
         on_activity = AsyncMock()
         inbox = Inbox(mock_loop, mock_store, on_activity=on_activity)
 
@@ -930,19 +1025,20 @@ class TestInboxProcessOne:
         mock_loop.run = AsyncMock(return_value=mock_result)
         mock_store.get_or_create.return_value = MagicMock()
 
-        msg = self._make_msg(source=AgentName("remote"), content="do it",
-                             corr_id="ok-1")
+        msg = self._make_msg(
+            source=AgentName("remote"), content="do it", corr_id="ok-1"
+        )
         await inbox._process_one(msg)
 
         done = next(
-            c for c in on_activity.call_args_list
-            if c.args[0] == "task_completed"
+            c for c in on_activity.call_args_list if c.args[0] == "task_completed"
         )
         assert not done.kwargs.get("error")
 
     @pytest.mark.asyncio
     async def test_process_on_activity_error_swallowed(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         on_activity = AsyncMock(side_effect=RuntimeError("activity failed"))
         inbox = Inbox(mock_loop, mock_store, on_activity=on_activity)
 
@@ -959,6 +1055,7 @@ class TestInboxProcessOne:
     @pytest.mark.asyncio
     async def test_process_uses_message_handler(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         handler = MagicMock()
         inbox = Inbox(mock_loop, mock_store)
 
@@ -979,6 +1076,7 @@ class TestInboxProcessOne:
     @pytest.mark.asyncio
     async def test_process_with_images(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
 
         mock_result = MagicMock()
@@ -997,6 +1095,7 @@ class TestInboxProcessOne:
     @pytest.mark.asyncio
     async def test_process_no_images(self, mock_loop, mock_store):
         from slife.agent.inbox import Inbox
+
         inbox = Inbox(mock_loop, mock_store)
 
         mock_result = MagicMock()
@@ -1021,6 +1120,7 @@ class TestInboxRun:
     @pytest.mark.asyncio
     async def test_run_processes_single_message(self):
         from slife.agent.inbox import Inbox
+
         mock_loop = MagicMock()
         mock_loop.run = AsyncMock()
         mock_store = MagicMock()
@@ -1033,6 +1133,7 @@ class TestInboxRun:
 
         # Run the loop in a task and cancel after brief processing
         import asyncio
+
         task = asyncio.create_task(inbox.run())
         # Give it time to process one message
         await asyncio.sleep(0.01)
@@ -1047,6 +1148,7 @@ class TestInboxRun:
     @pytest.mark.asyncio
     async def test_run_with_wechat_message(self):
         from slife.agent.inbox import Inbox
+
         mock_loop = MagicMock()
         mock_loop.run = AsyncMock()
         mock_store = MagicMock()
@@ -1057,6 +1159,7 @@ class TestInboxRun:
         await inbox.post(AgentMessage(source=WECHAT, content="wechat msg"))
 
         import asyncio
+
         task = asyncio.create_task(inbox.run())
         await asyncio.sleep(0.01)
         task.cancel()

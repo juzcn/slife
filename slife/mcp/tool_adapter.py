@@ -62,14 +62,24 @@ class MCPProxyTool(Tool):
     # placeholder only.  Stating `additionalProperties` is also what keeps
     # the base class's close-a-harness-schema rule off it.
     parameters: ClassVar[dict] = {
-        "type": "object", "properties": {}, "additionalProperties": True,
+        "type": "object",
+        "properties": {},
+        "additionalProperties": True,
     }
 
     # Excluded from auto-discovery — instances are created manually by
     # create_proxy_tools() with per-server configuration.
     _skip_auto_register: ClassVar[bool] = True
 
-    def __init__(self, mcp_client, tool_info: dict, route: ProxyRoute = ProxyRoute.EXTERNAL, on_server_added=None, on_server_removed=None, on_server_updated=None):
+    def __init__(
+        self,
+        mcp_client,
+        tool_info: dict,
+        route: ProxyRoute = ProxyRoute.EXTERNAL,
+        on_server_added=None,
+        on_server_removed=None,
+        on_server_updated=None,
+    ):
         """
         Args:
             mcp_client: MCPClient instance connected to the slife-mcp wrapper.
@@ -195,13 +205,19 @@ class MCPProxyTool(Tool):
         source = kwargs.get("source")
         if not isinstance(source, dict):
             source = None
-        if self._tool_name not in (_MCP_SET, _MCP_SET_ENABLED) or not (self._on_server_added or self._on_server_updated):
+        if self._tool_name not in (_MCP_SET, _MCP_SET_ENABLED) or not (
+            self._on_server_added or self._on_server_updated
+        ):
             return
         try:
             parsed = json.loads(result)
             status = parsed.get("status", "")
             server_name = kwargs.get("name", "")
-            if status == "connected" and self._tool_name == _MCP_SET and self._on_server_added:
+            if (
+                status == "connected"
+                and self._tool_name == _MCP_SET
+                and self._on_server_added
+            ):
                 # mcp_set defined a server — persist full config + register tools.
                 await self._on_server_added(
                     name=server_name,
@@ -233,7 +249,8 @@ class MCPProxyTool(Tool):
         except json.JSONDecodeError:
             logger.warning(
                 "mcp_persist_parse_fail server=%s result=%.200s",
-                kwargs.get("name", "?"), result[:200],
+                kwargs.get("name", "?"),
+                result[:200],
             )
         except Exception:
             logger.exception(
@@ -259,13 +276,15 @@ class MCPProxyTool(Tool):
         except json.JSONDecodeError:
             logger.warning(
                 "mcp_removal_parse_fail server=%s result=%.200s",
-                kwargs.get("name", "?"), result[:200],
+                kwargs.get("name", "?"),
+                result[:200],
             )
         except Exception:
             logger.exception(
                 "mcp_removal_callback_failed server=%s",
                 kwargs.get("name", "?"),
             )
+
 
 def _route_for_server(server: str) -> ProxyRoute:
     """Return the execution route for *server*.
@@ -285,7 +304,11 @@ def _route_for_server(server: str) -> ProxyRoute:
 
 
 def create_proxy_tools(
-    mcp_client, tools: list[dict], on_server_added=None, on_server_removed=None, on_server_updated=None,
+    mcp_client,
+    tools: list[dict],
+    on_server_added=None,
+    on_server_removed=None,
+    on_server_updated=None,
 ) -> list[MCPProxyTool]:
     """Create MCPProxyTool instances from a list of tool info dicts.
 
@@ -305,7 +328,8 @@ def create_proxy_tools(
     """
     return [
         MCPProxyTool(
-            mcp_client, t,
+            mcp_client,
+            t,
             route=_route_for_server(t["server"]),
             on_server_added=on_server_added,
             on_server_removed=on_server_removed,

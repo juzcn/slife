@@ -38,7 +38,7 @@ def create_tools_from_config(
     registry = ToolRegistry()
 
     override_map: dict[str, dict] = {}
-    for entry in (overrides or []):
+    for entry in overrides or []:
         name = entry.get("name", "")
         if name:
             override_map[name] = entry
@@ -95,10 +95,12 @@ def disabled_tool_instances(
             continue
         try:
             disabled.append(tool_cls.from_config(cfg, config, ctx))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — isolation: a disabled tool that cannot build must not abort boot
             # A tool that cannot be built has no row to mirror — worse than a
             # missing catalog row is a boot that dies over one disabled tool.
-            logger.warning("disabled_tool_build_failed name=%s err=%s", tool_cls.name, e)
+            logger.warning(
+                "disabled_tool_build_failed name=%s err=%s", tool_cls.name, e
+            )
     return disabled
 
 
@@ -111,7 +113,7 @@ def _discover_tools():
     import slife.tools as pkg
 
     for _, modname, _ in pkgutil.iter_modules(pkg.__path__, pkg.__name__ + "."):
-        if modname.endswith(".base") or modname.endswith(".factory"):
+        if modname.endswith((".base", ".factory")):
             continue
         importlib.import_module(modname)
 

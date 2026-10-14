@@ -83,48 +83,57 @@ _PLUGIN_DEFS: tuple[PluginSpec, ...] = (
     # First: memdb / memfiles embed against it when it is the active
     # provider, so its endpoint is up before its consumers start.
     PluginSpec(
-        "local-embed", "local_embed.server",
+        "local-embed",
+        "local_embed.server",
         ctx_field="local_embed_client",
     ),
     PluginSpec(
-        "mcp-gateway", "slife.plugins.mcp_gateway.server",
+        "mcp-gateway",
+        "slife.plugins.mcp_gateway.server",
         ctx_field="mcp_client",
         gateway=True,
         after_ready_method="_after_ready_mcp",
     ),
     PluginSpec(
-        "memdb", "slife.plugins.memdb.server",
+        "memdb",
+        "slife.plugins.memdb.server",
         ctx_field="memdb_client",
         semantic_reload_tool="__memory_reload_semantic",
     ),
     PluginSpec(
-        "memfiles", "slife.plugins.memfiles.server",
+        "memfiles",
+        "slife.plugins.memfiles.server",
         ctx_field="memfiles_client",
         semantic_reload_tool="__memfiles_reload_semantic",
     ),
     PluginSpec(
-        "wechat", "slife.plugins.wechat.server",
+        "wechat",
+        "slife.plugins.wechat.server",
         ctx_field="wechat_client",
         enable_method="_gate_wechat",
         after_ready_method="_after_ready_wechat",
     ),
     PluginSpec(
-        "sharefile", "slife.plugins.sharefile.server",
+        "sharefile",
+        "slife.plugins.sharefile.server",
         ctx_field="sharefile_client",
         after_ready_method="_after_ready_sharefile",
     ),
     PluginSpec(
-        "a2a", "slife.plugins.a2a.server",
+        "a2a",
+        "slife.plugins.a2a.server",
         ctx_field="a2a_mcp_client",
         enable_method="_gate_a2a",
         after_ready_method="_after_ready_a2a",
     ),
     PluginSpec(
-        "media", "slife.plugins.media.server",
+        "media",
+        "slife.plugins.media.server",
         ctx_field="media_client",
     ),
     PluginSpec(
-        "job-coding", "slife.plugins.job_coding.server",
+        "job-coding",
+        "slife.plugins.job_coding.server",
         ctx_field="job_coding_client",
     ),
 )

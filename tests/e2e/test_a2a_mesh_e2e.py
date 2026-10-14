@@ -25,11 +25,11 @@ import pytest
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.properties import Properties
 
+import slife.timeouts as _timeouts
+from slife.a2a import task_store
 from slife.a2a.broker import probe_broker
 from slife.a2a.config import A2AConfig
 from slife.a2a.mesh import A2AMesh
-import slife.a2a.task_store as task_store
-import slife.timeouts as _timeouts
 
 pytestmark = pytest.mark.e2e
 
@@ -87,13 +87,18 @@ async def _clear_retained(agent: str) -> None:
     card = json.dumps({"name": agent, "description": "e2e test agent"})
     try:
         async with aiomqtt.Client(
-            hostname=BROKER_HOST, port=BROKER_PORT,
+            hostname=BROKER_HOST,
+            port=BROKER_PORT,
             protocol=aiomqtt.ProtocolVersion.V5,
             identifier=f"e2e-cleanup-{agent}",
             timeout=_CLEANUP_TIMEOUT,
         ) as client:
             await client.publish(
-                topic, card, qos=1, retain=True, properties=offline_props,
+                topic,
+                card,
+                qos=1,
+                retain=True,
+                properties=offline_props,
             )
             await client.publish(topic, b"", qos=1, retain=True)
     except Exception:
@@ -132,10 +137,14 @@ def _with_selector_loop(coro_factory):
 
 
 def _mesh(name: str) -> A2AMesh:
-    return A2AMesh(A2AConfig(
-        enabled=True, agent_name=name,
-        broker_host=BROKER_HOST, broker_port=BROKER_PORT,
-    ))
+    return A2AMesh(
+        A2AConfig(
+            enabled=True,
+            agent_name=name,
+            broker_host=BROKER_HOST,
+            broker_port=BROKER_PORT,
+        )
+    )
 
 
 async def _wait(pred, what: str, timeout: float = 6.0) -> None:  # noqa-timeout
@@ -207,8 +216,8 @@ async def _scenario_task_round_trip():
     a.on_inbound_task = lambda s, c, t, kind="task": a_inbound.append((s, c, t, kind))
     a.on_agent_change = lambda card, ev: a_agents.append((str(card.agent_name), ev))
     a.on_broadcast_event = lambda s, t: a_events.append((s, t))
-    b.on_task_completion = (
-        lambda c, r, x, p, kind="task": b_completions.append((c, r, x, p, kind))
+    b.on_task_completion = lambda c, r, x, p, kind="task": b_completions.append(
+        (c, r, x, p, kind)
     )
 
     try:
@@ -258,8 +267,8 @@ async def _scenario_cancel_round_trip():
     a_inbound, a_peer_cancels, b_completions = [], [], []
     a.on_inbound_task = lambda s, c, t, kind="task": a_inbound.append((s, c, t, kind))
     a.on_peer_cancel = lambda t, peer: a_peer_cancels.append((t, peer))
-    b.on_task_completion = (
-        lambda c, r, x, p, kind="task": b_completions.append((c, r, x, p, kind))
+    b.on_task_completion = lambda c, r, x, p, kind="task": b_completions.append(
+        (c, r, x, p, kind)
     )
 
     try:

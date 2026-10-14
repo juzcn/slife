@@ -40,16 +40,19 @@ def resolve_secret_value(value: str) -> str:
     text.  Works for both pure refs and refs embedded in a larger string.
     Never raises — callers that need strictness use :func:`resolve_env`.
     """
+
     def _replace(m: re.Match) -> str:
         var = m.group(1)
         env_val = os.environ.get(var)
         if not env_val:
             from slife.config import _try_credstore_lookup
+
             env_val = _try_credstore_lookup(var)
         if env_val:
             return env_val
         default = m.group(2)
         return default if default is not None else m.group(0)
+
     return _ENV_PATTERN.sub(_replace, value)
 
 
@@ -63,6 +66,7 @@ def resolve_env(value: Any) -> Any:
         KeyError: If a referenced env var is not set and no default is given.
     """
     if isinstance(value, str):
+
         def _replace(m):
             var_name = m.group(1)
             env_val = os.environ.get(var_name)
@@ -73,15 +77,15 @@ def resolve_env(value: Any) -> Any:
             # resolves to the default even when the key is held in credstore,
             # so the stored secret never wins.
             from slife.config import _try_credstore_lookup
+
             cred_val = _try_credstore_lookup(var_name)
             if cred_val is not None:
                 return cred_val
             default = m.group(2)
             if default is not None:
                 return default
-            raise KeyError(
-                f"Environment variable '{var_name}' is not set."
-            )
+            raise KeyError(f"Environment variable '{var_name}' is not set.")
+
         return _ENV_PATTERN.sub(_replace, value)
     elif isinstance(value, dict):
         return {k: resolve_env(v) for k, v in value.items()}

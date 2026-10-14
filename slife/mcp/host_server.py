@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.server_utils import (
     INTERNAL_TOOL_PREFIX,
     ToolsChangedNotifier,
@@ -50,7 +51,6 @@ from slife.server_utils import (
     request_tools_changed,
     tools_changed_bus,
 )
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 if TYPE_CHECKING:
     from slife.tools.catalog_service import ToolCatalogService
@@ -63,12 +63,14 @@ logger = logging.getLogger(__name__)
 #: iteration cap, or inject into its context).  Everything else in the registry
 #: is a consumer-usable capability — including plugin proxy tools, which
 #: execute in the owning plugin process just as for the agent itself.
-_EXCLUDED_NAMES = frozenset({
-    "_turn_prompt",        # harness marker injector — mutates the host context
-    "_check_new_input",    # mid-turn input injector — reads the host's queue
-    "_model_config_tool",  # internal base class, not a real tool
-    "set_max_iterations",  # changes the host loop's iteration cap
-})
+_EXCLUDED_NAMES = frozenset(
+    {
+        "_turn_prompt",  # harness marker injector — mutates the host context
+        "_check_new_input",  # mid-turn input injector — reads the host's queue
+        "_model_config_tool",  # internal base class, not a real tool
+        "set_max_iterations",  # changes the host loop's iteration cap
+    }
+)
 
 
 def is_exposed(tool) -> bool:
@@ -101,8 +103,8 @@ def _request_tools_changed() -> None:
 
 
 def build_registry_mcp(
-    registry: "ToolRegistry",
-    catalog: "ToolCatalogService | None" = None,
+    registry: ToolRegistry,
+    catalog: ToolCatalogService | None = None,
     instructions: str = "",
 ) -> FastMCP:
     """Build the in-process FastMCP server exposing *registry*.
@@ -117,7 +119,8 @@ def build_registry_mcp(
     """
     server = FastMCP(
         "slife",
-        instructions=instructions or (
+        instructions=instructions
+        or (
             "slife-as-plugin — the running slife agent's live tool registry. "
             "Consume these tools as you would any MCP server; they execute in "
             "the slife instance that serves this endpoint."
@@ -130,8 +133,10 @@ def build_registry_mcp(
 
     @server.tool(
         name="__check",
-        description=("slife live facts: exposed tools + unified tool catalog. "
-                     "Internal — harness probe, never exposed to the LLM."),
+        description=(
+            "slife live facts: exposed tools + unified tool catalog. "
+            "Internal — harness probe, never exposed to the LLM."
+        ),
     )
     async def __check(ctx: Context | None = None) -> str:
         exposed = [t.name for t in registry.list_tools() if is_exposed(t)]
@@ -147,7 +152,7 @@ def build_registry_mcp(
     return server
 
 
-async def _host_catalog_facts(catalog: "ToolCatalogService") -> dict:
+async def _host_catalog_facts(catalog: ToolCatalogService) -> dict:
     """Live facts for the host-as-plugin ``__check`` catalog block.
 
     Mirrors the memdb-style semantic surface so a harness/consumer probe can
@@ -177,17 +182,21 @@ async def _host_catalog_facts(catalog: "ToolCatalogService") -> dict:
         # builder — so a reader cannot tell the two apart, which is the point:
         # the index is shared, and its state is the same fact in either process.
         facts["semantic"] = {
-            **(sem.semantic_facts() if sem is not None
-               else await _published_semantic_facts(store)),
+            **(
+                sem.semantic_facts()
+                if sem is not None
+                else await _published_semantic_facts(store)
+            ),
             # The pending count is a DB fact, so it is answerable without a
             # drainer, and it is never published (a copy would go stale against
             # the rows it counts).
             "unembedded": (
-                await sem.unembedded() if sem is not None
+                await sem.unembedded()
+                if sem is not None
                 else await store.count_unembedded()
             ),
         }
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — the health probe must never raise
         # "Never raises" — a broken catalog OR a broken semantic surface both
         # report an error field instead of crashing the probe.
         facts["error"] = f"catalog probe failed: {e}"
@@ -219,7 +228,7 @@ def _current_exposed(server: FastMCP) -> set[str]:
     return out
 
 
-def _sync_registry(server: FastMCP, registry: "ToolRegistry") -> None:
+def _sync_registry(server: FastMCP, registry: ToolRegistry) -> None:
     """Make the server's exposed tool set match the live registry.
 
     Idempotent full diff: registers tools the registry has that the server
@@ -228,10 +237,7 @@ def _sync_registry(server: FastMCP, registry: "ToolRegistry") -> None:
     """
     from fastmcp.tools.function_tool import FunctionTool
 
-    exposed = {
-        t.name: t for t in registry.list_tools()
-        if is_exposed(t)
-    }
+    exposed = {t.name: t for t in registry.list_tools() if is_exposed(t)}
     current = _current_exposed(server)
     for name in current - exposed.keys():
         try:
@@ -247,9 +253,7 @@ def _sync_registry(server: FastMCP, registry: "ToolRegistry") -> None:
         # loop variable, making every tool execute the last-registered one.
         # `_name` never appears in the tool's inputSchema (parameters are set
         # explicitly below), so it is not client-injectable.
-        async def _run(
-            _name=name, ctx: Context | None = None, **kwargs
-        ):
+        async def _run(_name=name, ctx: Context | None = None, **kwargs):
             return await registry.execute(_name, **kwargs)
 
         _run.__name__ = name
@@ -263,7 +267,7 @@ def _sync_registry(server: FastMCP, registry: "ToolRegistry") -> None:
         )
         try:
             server.add_tool(ft)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — one bad tool must not abort host tool registration
             logger.warning("host_tool_register_failed name=%s err=%s", name, e)
 
 
@@ -302,9 +306,9 @@ async def _serve_host(server, host: str, sockets, port: int) -> None:
 
 
 def start_host_server(
-    registry: "ToolRegistry",
+    registry: ToolRegistry,
     *,
-    catalog: "ToolCatalogService | None" = None,
+    catalog: ToolCatalogService | None = None,
     port: int = 0,
     host: str = "127.0.0.1",
     instructions: str = "",
@@ -353,7 +357,8 @@ def start_host_server(
                 raise
             except Exception:
                 logger.exception(
-                    "host_server_serve_died — respawning in %.0fs", backoff,
+                    "host_server_serve_died — respawning in %.0fs",
+                    backoff,
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(

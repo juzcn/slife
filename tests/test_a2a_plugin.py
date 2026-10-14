@@ -7,13 +7,14 @@ the __check health probe.
 """
 
 import json
-import pytest; pytestmark = pytest.mark.unit
-
-
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 import slife.plugins.a2a.server as plugin
 from slife.a2a.config import A2AConfig
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
@@ -29,8 +30,10 @@ def _fresh_plugin_state():
 
 def _config(enabled: bool = True) -> A2AConfig:
     return A2AConfig(
-        enabled=enabled, agent_name="self-1",
-        broker_host="localhost", broker_port=1883,
+        enabled=enabled,
+        agent_name="self-1",
+        broker_host="localhost",
+        broker_port=1883,
     )
 
 
@@ -47,10 +50,12 @@ def _fake_client():
     client.broadcast = AsyncMock()
     client.complete_task = MagicMock(return_value="ok")
     client.collision = ""
-    client.list_agents = MagicMock(return_value=[
-        MagicMock(agent_name="self-1", status="online"),
-        MagicMock(agent_name="peer-1", status="online"),
-    ])
+    client.list_agents = MagicMock(
+        return_value=[
+            MagicMock(agent_name="self-1", status="online"),
+            MagicMock(agent_name="peer-1", status="online"),
+        ]
+    )
     return client
 
 
@@ -64,10 +69,13 @@ class TestPluginTools:
         assert result.startswith("corr-1")
         assert "The result will arrive in your inbox" in result
         client.send_message.assert_called_once_with(
-            "peer-1", "hello", message_type="task_request",
+            "peer-1",
+            "hello",
+            message_type="task_request",
         )
         # No timeout parameter — the tool never blocks.
         import inspect
+
         assert "timeout" not in inspect.signature(plugin.a2a_send_message).parameters
 
     @pytest.mark.asyncio
@@ -102,7 +110,10 @@ class TestPluginTools:
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
             result = await plugin.a2a_send_message(
-                "peer-1", "the answer", message_type="task_response", task_id="t-1",
+                "peer-1",
+                "the answer",
+                message_type="task_response",
+                task_id="t-1",
             )
         assert result == "ok"
         client.complete_task.assert_called_once_with("t-1", "the answer", False)
@@ -113,7 +124,9 @@ class TestPluginTools:
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
             result = await plugin.a2a_send_message(
-                "peer-1", "x", message_type="task_response",
+                "peer-1",
+                "x",
+                message_type="task_response",
             )
         assert result.startswith("Error")
         assert "task_id required" in result
@@ -125,12 +138,16 @@ class TestPluginTools:
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
             result = await plugin.a2a_send_message(
-                "peer-1", "hi there", message_type="message",
+                "peer-1",
+                "hi there",
+                message_type="message",
             )
         assert result.startswith("corr-1")
         assert "No task created" in result
         client.send_message.assert_called_once_with(
-            "peer-1", "hi there", message_type="message",
+            "peer-1",
+            "hi there",
+            message_type="message",
         )
 
     @pytest.mark.asyncio
@@ -138,7 +155,9 @@ class TestPluginTools:
         client = _fake_client()
         with patch.object(plugin, "_ensure_connected", AsyncMock(return_value=client)):
             result = await plugin.a2a_send_message(
-                "peer-1", "x", message_type="nope",
+                "peer-1",
+                "x",
+                message_type="nope",
             )
         assert result.startswith("Error")
         client.send_message.assert_not_called()
@@ -153,7 +172,8 @@ class TestDrain:
         plugin._on_inbound_task("jill", "do Y", "t-2")
         plugin._on_broadcast_event("bill", "hi all")
         plugin._on_agent_change(
-            MagicMock(agent_name="peer-1", status="online"), "online",
+            MagicMock(agent_name="peer-1", status="online"),
+            "online",
         )
         plugin._on_peer_cancel("t-1", "jack")
         plugin._on_task_completion("c-1", "result", False, "peer-1")
@@ -162,29 +182,63 @@ class TestDrain:
         data = json.loads(await getattr(plugin, "__a2a_drain_incoming")())
 
         assert data["tasks"] == [
-            {"type": "task", "source": "jack", "content": "do X", "task_id": "t-1", "kind": "task"},
-            {"type": "task", "source": "jill", "content": "do Y", "task_id": "t-2", "kind": "task"},
+            {
+                "type": "task",
+                "source": "jack",
+                "content": "do X",
+                "task_id": "t-1",
+                "kind": "task",
+            },
+            {
+                "type": "task",
+                "source": "jill",
+                "content": "do Y",
+                "task_id": "t-2",
+                "kind": "task",
+            },
         ]
         assert data["events"] == [
             {"type": "event", "source": "bill", "content": "hi all"},
         ]
-        assert data["presence"] == [{
-            "type": "presence", "event": "online",
-            "card": {"agent_name": "peer-1", "status": "online"},
-        }]
+        assert data["presence"] == [
+            {
+                "type": "presence",
+                "event": "online",
+                "card": {"agent_name": "peer-1", "status": "online"},
+            }
+        ]
         assert data["cancellations"] == [
             {"type": "cancel", "corr_id": "t-1", "peer": "jack"},
         ]
         assert data["task_completions"] == [
-            {"corr_id": "c-1", "result": "result", "cancelled": False, "peer": "peer-1", "kind": "task"},
-            {"corr_id": "c-2", "result": "", "cancelled": True, "peer": "peer-2", "kind": "task"},
+            {
+                "corr_id": "c-1",
+                "result": "result",
+                "cancelled": False,
+                "peer": "peer-1",
+                "kind": "task",
+            },
+            {
+                "corr_id": "c-2",
+                "result": "",
+                "cancelled": True,
+                "peer": "peer-2",
+                "kind": "task",
+            },
         ]
 
         # Second drain is empty — the queues were cleared.
         again = json.loads(await getattr(plugin, "__a2a_drain_incoming")())
-        assert all(again[k] == [] for k in (
-            "tasks", "events", "presence", "cancellations", "task_completions",
-        ))
+        assert all(
+            again[k] == []
+            for k in (
+                "tasks",
+                "events",
+                "presence",
+                "cancellations",
+                "task_completions",
+            )
+        )
 
     @pytest.mark.asyncio
     async def test_drain_reports_orphaned_tasks(self, monkeypatch, tmp_path):
@@ -193,6 +247,7 @@ class TestDrain:
         when the broker never came back up."""
         monkeypatch.setenv("SLIFE_A2A_INBOUND", str(tmp_path / "inbound.json"))
         from slife.a2a.inbound_store import InboundStore
+
         # Left in flight by a predecessor, then "restart": written through the
         # same $SLIFE_A2A_INBOUND the drain resolves for this agent.
         InboundStore().add("ec604319", "jack")
@@ -308,9 +363,11 @@ class TestLifecycle:
     @pytest.mark.asyncio
     async def test_ensure_connected_creates_and_connections_mesh(self):
         client = _fake_client()
-        with patch.object(plugin, "A2AMesh", return_value=client) as mock_cls:
-            with patch.object(plugin, "_load_config", return_value=_config()):
-                result = await plugin._ensure_connected()
+        with (
+            patch.object(plugin, "A2AMesh", return_value=client) as mock_cls,
+            patch.object(plugin, "_load_config", return_value=_config()),
+        ):
+            result = await plugin._ensure_connected()
         assert result is client
         mock_cls.assert_called_once()
         client.connect.assert_awaited_once()
@@ -327,18 +384,22 @@ class TestLifecycle:
         """A failed connect must not leak a half-started mesh (retry-safe)."""
         client = _fake_client()
         client.connect = AsyncMock(side_effect=RuntimeError("refused"))
-        with patch.object(plugin, "A2AMesh", return_value=client):
-            with patch.object(plugin, "_load_config", return_value=_config()):
-                with pytest.raises(RuntimeError, match="refused"):
-                    await plugin._ensure_connected()
+        with (
+            patch.object(plugin, "A2AMesh", return_value=client),
+            patch.object(plugin, "_load_config", return_value=_config()),
+            pytest.raises(RuntimeError, match="refused"),
+        ):
+            await plugin._ensure_connected()
         client.disconnect.assert_awaited()
         assert plugin._client is None
 
     @pytest.mark.asyncio
     async def test_ensure_connected_when_not_enabled(self):
-        with patch.object(plugin, "_load_config", return_value=_config(enabled=False)):
-            with pytest.raises(RuntimeError, match="not enabled"):
-                await plugin._ensure_connected()
+        with (
+            patch.object(plugin, "_load_config", return_value=_config(enabled=False)),
+            pytest.raises(RuntimeError, match="not enabled"),
+        ):
+            await plugin._ensure_connected()
 
     @pytest.mark.asyncio
     async def test_lifespan_eager_connects_and_disconnects(self):
@@ -365,7 +426,9 @@ class TestToolVisibility:
         tools = await plugin.mcp._list_tools()
         by_name = {t.name: t.description for t in tools}
         for name in (
-            "a2a_send_message", "a2a_cancel_task", "a2a_list_agents",
+            "a2a_send_message",
+            "a2a_cancel_task",
+            "a2a_list_agents",
             "a2a_broadcast",
         ):
             assert name in by_name, f"{name} missing from plugin tools"

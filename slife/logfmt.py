@@ -80,11 +80,11 @@ _NOISY_LOGGER_NAMES = (
     "httpx2",
     "asyncio",
     "urllib3",
-    "aiosqlite",              # dumps full SQL with messages JSON at DEBUG
-    "keyring.backend",        # probes 8 backends at startup (KWallet, SecretService, …)
+    "aiosqlite",  # dumps full SQL with messages JSON at DEBUG
+    "keyring.backend",  # probes 8 backends at startup (KWallet, SecretService, …)
     "win32ctypes.core.cffi",  # "Loaded cffi backend" — one-shot, not diagnostic
-    "credstore",              # "backend already initialized" — noise on every import
-    "charset_normalizer",     # "Encoding detection: Found gb18030 as plausible…" per file_read
+    "credstore",  # "backend already initialized" — noise on every import
+    "charset_normalizer",  # "Encoding detection: Found gb18030 as plausible…" per file_read
     # FastMCP installs its OWN handlers on its own loggers — a rich handler
     # writing straight to stderr — so no root-level console policy can reach
     # them.  Raising the level here is what stops them being emitted at all;
@@ -107,6 +107,7 @@ def silence_noisy_loggers() -> None:
     """
     for name in _NOISY_LOGGER_NAMES:
         logging.getLogger(name).setLevel(logging.WARNING)
+
 
 # ── Session ID ──────────────────────────────────────────────────────────
 
@@ -166,9 +167,7 @@ class SessionFormatter(logging.Formatter):
         record.rid = _request_id.get() or "--------"
         return super().format(record)
 
-    def formatTime(
-        self, record: logging.LogRecord, datefmt: str | None = None
-    ) -> str:
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
         """Return timestamp with milliseconds, e.g. 10:30:15.123.
 
         Local time — matches the session log filename (built with
@@ -398,7 +397,8 @@ async def read_stderr_lines(process, running_check=None) -> "AsyncIterator[str]"
             line, dropped = await read_line_bounded(stderr)
             if dropped or line is None:
                 logger.warning(
-                    "stderr_line_overlong_discarded min_bytes=%d", dropped,
+                    "stderr_line_overlong_discarded min_bytes=%d",
+                    dropped,
                 )
                 continue
             if not line:
@@ -453,6 +453,7 @@ def resolve_log_dir() -> Path:
     children); else dev mode ``./logs/``, production ``~/.slife/logs/``.
     """
     from slife.paths import get_logs_dir
+
     return get_logs_dir()
 
 
@@ -594,13 +595,17 @@ def sanitize_secrets(text: str) -> str:
 
     return text
 
+
 def ok_json(**extra: object) -> str:
     """Render ``{"status": "ok", ...}`` — the standard success envelope.
 
     Keys with ``None`` values are omitted.  Output is indented and safe
     for display in TUI tool-result widgets.
     """
-    payload: dict = {"status": "ok", **{k: v for k, v in extra.items() if v is not None}}
+    payload: dict = {
+        "status": "ok",
+        **{k: v for k, v in extra.items() if v is not None},
+    }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 

@@ -27,7 +27,7 @@ class TokenUsage:
     completion_tokens: int = 0
     total_tokens: int = 0
 
-    def __add__(self, other: "TokenUsage") -> "TokenUsage":
+    def __add__(self, other: TokenUsage) -> TokenUsage:
         return TokenUsage(
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,
             completion_tokens=self.completion_tokens + other.completion_tokens,
@@ -72,12 +72,15 @@ class LLMClient:
 
         if api == "anthropic-messages":
             from slife.agent.llm_backends.anthropic import AnthropicBackend
+
             self._backend = AnthropicBackend(model)
         elif api == "openai-responses":
             from slife.agent.llm_backends.openai_responses import OpenAIResponsesBackend
+
             self._backend = OpenAIResponsesBackend(model)
         else:
             from slife.agent.llm_backends.openai import OpenAIBackend
+
             self._backend = OpenAIBackend(model)
 
         logger.debug(
@@ -99,7 +102,7 @@ class LLMClient:
         self,
         messages: list[dict],
         tools: list[dict] | None = None,
-        cancel_event: "asyncio.Event | None" = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream a chat completion, yielding ``StreamChunk`` objects."""
         return self._backend.chat_stream(messages, tools, cancel_event)
@@ -113,7 +116,7 @@ async def _safe_close_stream(stream) -> None:
     if hasattr(stream, "close"):
         try:
             await stream.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — closing a backend stream is best-effort
             pass
 
 

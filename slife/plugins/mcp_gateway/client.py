@@ -16,19 +16,20 @@ from pathlib import Path
 from typing import Any
 
 import httpx2
-
 from mcp import ClientSession, MCPError
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Implementation
 
+import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 from slife.mcp.content import format_content_blocks
 from slife.mcp.era import negotiate_era, peer_era, watch_tools_changed
 from slife.plugins.mcp_gateway import __version__
-import slife.timeouts as _timeouts  # module ref — call-time lookup, reload/patch-safe
 
 
 async def close_exit_stack_bounded(
-    stack: AsyncExitStack, *, label: str = "cleanup",
+    stack: AsyncExitStack,
+    *,
+    label: str = "cleanup",
 ) -> None:
     """Close an ``AsyncExitStack`` with a grace timeout and the SDK teardown swallow.
 
@@ -47,14 +48,14 @@ async def close_exit_stack_bounded(
             stack.aclose(),
             timeout=_timeouts.timeouts.grace.cleanup,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.debug("%s_aclose_timeout abandoning stack", label)
     except RuntimeError as e:
         if "cancel scope" in str(e):
             logger.debug("%s_cancel_scope_suppressed err=%s", label, e)
         else:
             raise
-    except (Exception, BaseExceptionGroup):
+    except (Exception, BaseExceptionGroup):  # noqa: BLE001, S110 — teardown swallows any escape
         pass
 
 
@@ -80,6 +81,7 @@ def make_local_http_client(headers: dict | None = None) -> httpx2.AsyncClient:
         ),
         headers=headers,
     )
+
 
 logger = logging.getLogger(__name__)
 
@@ -117,11 +119,11 @@ def _install_cancel_scope_exception_handler() -> None:
         exc = context.get("exception")
         msg = str(context.get("message", ""))
         if (
-            (isinstance(exc, RuntimeError) and "cancel scope" in str(exc))
-            or "cancel scope" in msg
-        ):
+            isinstance(exc, RuntimeError) and "cancel scope" in str(exc)
+        ) or "cancel scope" in msg:
             logger.debug(
-                "asyncio_cancel_scope_suppressed err=%s", exc or msg,
+                "asyncio_cancel_scope_suppressed err=%s",
+                exc or msg,
             )
             return
         if previous is not None:
@@ -175,7 +177,7 @@ _IMAGE_MAGIC: dict[bytes, str] = {
     b"\xff\xd8\xff": ".jpg",
     b"GIF87a": ".gif",
     b"GIF89a": ".gif",
-    b"RIFF": ".webp",       # RIFF....WEBP — checked separately below
+    b"RIFF": ".webp",  # RIFF....WEBP — checked separately below
     b"BM": ".bmp",
 }
 
@@ -183,7 +185,7 @@ _IMAGE_MAGIC: dict[bytes, str] = {
 def _guess_image_extension(data: bytes) -> str | None:
     """Detect image format from magic bytes, returning e.g. ``".png"``."""
     for magic, ext in _IMAGE_MAGIC.items():
-        if data[:len(magic)] == magic:
+        if data[: len(magic)] == magic:
             if ext == ".webp" and data[8:12] != b"WEBP":
                 continue
             return ext
@@ -274,7 +276,8 @@ class MCPClient:
 
     @on_notification.setter
     def on_notification(
-        self, handler: Callable[[str, dict], Awaitable[None]] | None,
+        self,
+        handler: Callable[[str, dict], Awaitable[None]] | None,
     ) -> None:
         self._on_notification = handler
         if handler is not None:
@@ -298,8 +301,9 @@ class MCPClient:
         if peer_era(self._session) != "modern":
             return
         self._watch_task = asyncio.create_task(
-            watch_tools_changed(self._session, self._forward_tools_changed,
-                                link=self._url or ""),
+            watch_tools_changed(
+                self._session, self._forward_tools_changed, link=self._url or ""
+            ),
             name="mcp-listen",
         )
 
@@ -351,7 +355,10 @@ class MCPClient:
                     # mcp ≤2.0 yielded ``(read, write, get_session_id)``; mcp
                     # 2.1 dropped the session-id callback → a 2-tuple.  We
                     # never consumed it, so unpack the current shape only.
-                    read_stream, write_stream = await self._exit_stack.enter_async_context(
+                    (
+                        read_stream,
+                        write_stream,
+                    ) = await self._exit_stack.enter_async_context(
                         streamable_http_client(url, http_client=self._http_client),
                     )
                     # No host extras are passed: the one consumer was the mcp
@@ -365,9 +372,12 @@ class MCPClient:
                     # ``initialize``.)
                     self._session = await self._exit_stack.enter_async_context(
                         ClientSession(
-                            read_stream, write_stream,
+                            read_stream,
+                            write_stream,
                             message_handler=self._handle_server_message,
-                            client_info=Implementation(name="slife", version=__version__),
+                            client_info=Implementation(
+                                name="slife", version=__version__
+                            ),
                         ),
                     )
                     # Era negotiation, not a handshake: our own plugin servers
@@ -414,10 +424,12 @@ class MCPClient:
         self._url = url
         self._generation += 1
         logger.info(
-            "mcp_client_connected transport=%s url=%s attempts=%d era=%s "
-            "protocol=%s",
-            "streamable-http", url, attempt + 1,
-            peer_era(self._session), self._era,
+            "mcp_client_connected transport=%s url=%s attempts=%d era=%s protocol=%s",
+            "streamable-http",
+            url,
+            attempt + 1,
+            peer_era(self._session),
+            self._era,
         )
         # The listen stream a change handler needs (none, no stream — see
         # _ensure_watch_task).  The host wires its handler after this returns.
@@ -524,7 +536,7 @@ class MCPClient:
             # in the current task instead of during GC.
             try:
                 await asyncio.sleep(0)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — cleanup must never raise
                 pass
             self._exit_stack = None
         # Close our proxy-free HTTP client (the SDK does not own it when
@@ -532,7 +544,7 @@ class MCPClient:
         if self._http_client is not None:
             try:
                 await self._http_client.aclose()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — cleanup must never raise
                 pass
             self._http_client = None
         self._session = None
@@ -566,13 +578,14 @@ class MCPClient:
             await self._teardown_session()
             try:
                 await self.connect(url)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — a failed rebuild is reported, not raised
                 logger.warning("mcp_client_reconnect_failed url=%s err=%s", url, e)
                 return False
             return True
 
     async def _request_with_recovery(
-        self, op: Callable[[ClientSession], Awaitable[Any]],
+        self,
+        op: Callable[[ClientSession], Awaitable[Any]],
     ) -> Any:
         """Run one session request, rebuilding the link once when it died.
 
@@ -588,8 +601,11 @@ class MCPClient:
             try:
                 return await op(session)
             except Exception as e:
-                if (attempt == 2 or not _is_link_down(e)
-                        or not await self._rebuild_after_link_loss(generation)):
+                if (
+                    attempt == 2
+                    or not _is_link_down(e)
+                    or not await self._rebuild_after_link_loss(generation)
+                ):
                     raise
                 generation = self._generation
         raise AssertionError("unreachable")  # pragma: no cover
@@ -611,7 +627,8 @@ class MCPClient:
         # so a stuck SSE session on a subagent doesn't outlive the
         # parent's 30s spawn timeout.
         list_timeout = min(
-            self._tool_timeout, _timeouts.timeouts.ready.list_tools,
+            self._tool_timeout,
+            _timeouts.timeouts.ready.list_tools,
         )
         try:
             # asyncio.timeout, not asyncio.wait_for: a stuck SSE session on
@@ -632,8 +649,11 @@ class MCPClient:
             # ``input_schema`` is the canonical attr in mcp-types ≥2.0
             # (``inputSchema`` remains the JSON alias); the proxy contract is
             # the wire name, so the key keeps the camelCase form.
-            {"name": t.name, "description": t.description or "",
-             "inputSchema": t.input_schema}
+            {
+                "name": t.name,
+                "description": t.description or "",
+                "inputSchema": t.input_schema,
+            }
             for t in result.tools
         ]
 
@@ -658,18 +678,21 @@ class MCPClient:
         if ext is None:
             return None
         try:
-            tmp = tempfile.NamedTemporaryFile(
-                suffix=ext, delete=False, dir=tempfile.gettempdir(),
-            )
-            tmp.write(data)
-            tmp.close()
+            with tempfile.NamedTemporaryFile(
+                suffix=ext,
+                delete=False,
+                dir=tempfile.gettempdir(),
+            ) as tmp:
+                tmp.write(data)
             path = str(Path(tmp.name).resolve())
             self._temp_image_files.add(path)
             return path
-        except Exception:
+        except Exception:  # noqa: BLE001 — best-effort image save; failure returns None
             return None
 
-    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> str:
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any] | None = None
+    ) -> str:
         """Call an MCP tool.
 
         Returns the result text on success, or an ``"Error: …"`` string
@@ -699,7 +722,7 @@ class MCPClient:
             result = await self._request_with_recovery(
                 lambda session: session.call_tool(name, args),
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — call_tool never raises; errors become results
             msg = (
                 f"Tool '{name}' failed: {type(e).__name__}: {e}. "
                 f"Check the MCP server status."
